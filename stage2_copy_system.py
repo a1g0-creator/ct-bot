@@ -3771,15 +3771,6 @@ class Stage2CopyTradingSystem:
             # Проверяем изменения позиции
             position_key = f"{symbol}_{side}"
     
-            # --- НОРМАЛИЗАЦИЯ ДАННЫХ ПОЗИЦИИ (B) ---
-            price = safe_float(
-                position_data.get("entryPrice")
-                or position_data.get("sessionAvgPrice")
-                or position_data.get("markPrice")
-                or 0
-            )
-            # --- КОНЕЦ НОРМАЛИЗАЦИИ ---
-
             # ✅ ИСПРАВЛЕНО: Используем copy_manager.active_positions вместо self.active_positions
             if position_key in self.copy_manager.active_positions:
                 # Существующая позиция - проверяем изменения
@@ -3908,7 +3899,7 @@ class Stage2CopyTradingSystem:
             logger.error(f"Copy signal handler registration error: {e}")
     
     async def start_system(self):
-        """Идемпотентный запуск Stage-2, который управляет запуском Stage-1"""
+        """Идемпотентный запуск Stage-2 без повторного старта Stage-1"""
         if getattr(self, "_started", False):
             logger.info("Stage2.start_system() called again — ignored (idempotent)")
             return
@@ -3918,13 +3909,11 @@ class Stage2CopyTradingSystem:
             logger.info("🚀 Starting Stage 2 Copy Trading System...")
             self.system_stats['start_time'] = time.time()
 
-            # СНАЧАЛА запускаем монитор Stage-1, чтобы он установил WS и был готов к работе
-            if not getattr(self.base_monitor, "_started", False):
-                self.base_monitor.copy_trading_system = self # Передаем ссылку на себя в монитор
-                await self.base_monitor.start()
-                logger.info("✅ Base monitor (Stage 1) started successfully.")
+            # ⚠️ НЕ стартуем Stage-1 здесь. Он запускается оркестратором.
+            # if not getattr(self.base_monitor, "_started", False):
+            #     await self.base_monitor.start()
 
-            # Регистрируем обработчики и запускаем очереди копирования
+            # Регистрируем обработчики копирования один раз
             if not self._handlers_registered:
                 await self.copy_manager.start_copying()
                 self._handlers_registered = True
