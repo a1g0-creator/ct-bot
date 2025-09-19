@@ -3120,10 +3120,11 @@ class FinalFixedWebSocketManager:
     - ✅ Полная совместимость с websockets 15.0.1
     """
     
-    def __init__(self, api_key: str, api_secret: str, name: str = "websocket"):
+    def __init__(self, api_key: str, api_secret: str, name: str = "websocket", monitor=None):
         self.api_key = api_key
         self.api_secret = api_secret
         self.name = name
+        self.monitor = monitor # Ссылка на родительский монитор
         
         # Состояние WebSocket
         self.ws = None
@@ -3609,7 +3610,7 @@ class FinalFixedWebSocketManager:
                         logger.debug(f"WS_IN: channel={topic}, data_preview={str(preview)[:200]}")
 
                 # Роутинг событий (нормализованный префикс-матчинг по V5)
-                if isinstance(topic, str) and topic.startswith("position"):
+                if topic.startswith("position"):
                     # Главный триггер для копирования позиций
                     await self._handle_position_update(data)
 
@@ -3618,21 +3619,21 @@ class FinalFixedWebSocketManager:
                     if callable(cb):
                         await cb(data)
 
-                elif isinstance(topic, str) and topic.startswith("execution"):
+                elif topic.startswith("execution"):
                     await self._handle_execution_update(data)
 
                     cb = getattr(self, '_on_execution', None)
                     if callable(cb):
                         await cb(data)
 
-                elif isinstance(topic, str) and topic.startswith("order"):
+                elif topic.startswith("order"):
                     await self._handle_order_update(data)
 
                     cb = getattr(self, '_on_order_update', None)
                     if callable(cb):
                         await cb(data)
 
-                elif topic == 'wallet':
+                elif topic == "wallet":
                     await self._handle_wallet_update(data)
 
                 else:
@@ -4062,6 +4063,17 @@ class FinalFixedWebSocketManager:
                 except Exception as e:
                     logger.error("Position handler error: %s", e)
 
+            # 8) ИНТЕГРАЦИЯ С STAGE 2: Вызов обработчика системы копирования
+            if self.monitor and hasattr(self.monitor, 'copy_trading_system') and self.monitor.copy_trading_system:
+                if hasattr(self.monitor.copy_trading_system, 'handle_position_signal'):
+                    try:
+                        # Передаем только сами данные позиции, а не все сообщение
+                        for pos_item in items:
+                            await self.monitor.copy_trading_system.handle_position_signal(pos_item)
+                        logger.info(f"WS_HANDLE_POS: Forwarded {len(items)} position item(s) to Stage2.")
+                    except Exception as e:
+                        logger.error(f"Error calling Stage2 copy system handler: {e}")
+
             # 8) Статистика
             try:
                 self.stats['messages_processed'] = self.stats.get('messages_processed', 0) + 1
@@ -4114,11 +4126,26 @@ class FinalFixedWebSocketManager:
                 logger.debug("No copy queue available")
                 return
         
-            # Подготавливаем данные сигнала
-            symbol = position_data.get('symbol', '').upper()
-            side = position_data.get('side', 'Buy')
+            # --- НОРМАЛИЗАЦИЯ ДАННЫХ ПОЗИЦИИ (B) ---
+            symbol = (position_data.get('symbol') or '').upper()
+
+            # Используем каскад цен
+            price = safe_float(
+                position_data.get("entryPrice")
+                or position_data.get("sessionAvgPrice")
+                or position_data.get("markPrice")
+                or 0
+            )
+
+            side = (position_data.get('side') or "").strip()
+
+            try:
+                position_idx = int(position_data.get("positionIdx", position_data.get("position_idx", 0)))
+            except Exception:
+                position_idx = 0
+
             current_qty = float(position_data.get('size', position_data.get('qty', 0)))
-        
+
             # Создаем сигнал
             signal = {
                 'type': event_type,
@@ -4127,8 +4154,9 @@ class FinalFixedWebSocketManager:
                 'symbol': symbol,
                 'side': side,
                 'current_qty': current_qty,
+                'price': price, # Добавляем нормализованную цену
                 'prev_qty': prev_qty,
-                'position_idx': int(position_data.get('positionIdx', position_data.get('position_idx', 0))),
+                'position_idx': position_idx,
                 'leverage': int(position_data.get('leverage', 1)),
                 'data': position_data
             }
@@ -4150,6 +4178,15 @@ class FinalFixedWebSocketManager:
         except Exception as e:
             logger.error(f"Failed to generate copy signal: {e}")
             logger.error(f"Full traceback: {traceback.format_exc()}")
+
+        # --- ИСПРАВЛЕННАЯ ЛОГИКА ВЫЗОВА STAGE 2 ---
+        if self.monitor and hasattr(self.monitor, 'copy_trading_system') and self.monitor.copy_trading_system:
+            if hasattr(self.monitor.copy_trading_system, 'process_copy_signal'):
+                try:
+                    await self.monitor.copy_trading_system.process_copy_signal(signal)
+                    logger.info(f"WS_SIGNAL: Forwarded {event_type} for {symbol} to Stage2.")
+                except Exception as e:
+                    logger.error(f"Error calling process_copy_signal from WS handler: {e}")
 
     async def _positions_db_worker(self, worker_id: int = 1):
         """
@@ -4337,18 +4374,32 @@ class FinalFixedWebSocketManager:
         return await self.reconcile_positions_from_rest(interval_sec)
 
     async def _handle_wallet_update(self, data: dict):
-        """Обработка обновлений кошелька"""
+        """Обработка обновлений кошелька и запись снапшота в БД."""
         try:
-            wallets = data.get('data', [])
-            for wallet in wallets:
-                coin = wallet.get('coin')
-                balance = safe_float(wallet.get('walletBalance', 0))
-                
-                logger.info(f"{self.name} - Wallet update: {coin} balance={balance}")
-                
+            # data.data - это список с одним элементом-словарем для wallet
+            payload = data.get('data', [])
+            if not payload: return
+
+            wallet_data = payload[0]
+            account_type = wallet_data.get('accountType')
+
+            for coin_info in wallet_data.get('coin', []):
+                coin_name = coin_info.get('coin')
+                if coin_name == "USDT":
+                    wallet_balance = safe_float(coin_info.get('walletBalance', 0))
+                    equity = safe_float(coin_info.get('equity', 0))
+                    logger.info(f"{self.name} - Wallet Update: {account_type} USDT Balance: {wallet_balance}, Equity: {equity}")
+
+                    # Интеграция с системой снапшотов баланса
+                    if self.monitor and hasattr(self.monitor, 'copy_trading_system'):
+                        copy_system = self.monitor.copy_trading_system
+                        if hasattr(copy_system, 'drawdown_controller'):
+                            # Обновляем пиковый баланс и проверяем просадку
+                            await copy_system.drawdown_controller.check_drawdown_limits(equity)
+
                 if 'wallet_update' in self.message_handlers:
-                    await self.message_handlers['wallet_update'](wallet)
-                    
+                    await self.message_handlers['wallet_update'](coin_info)
+
         except Exception as e:
             logger.error(f"{self.name} - Wallet update handling error: {e}")
     
@@ -5385,11 +5436,10 @@ class FinalTradingMonitor:
         )
         
         # ✅ ИСПРАВЛЕНО: Используем окончательно исправленный WebSocket менеджер
-        self.websocket_manager = FinalFixedWebSocketManager(
-            SOURCE_API_KEY, SOURCE_API_SECRET, "SOURCE_WS"
-        )
+        self.websocket_manager = None # БУДЕТ ИНИЦИАЛИЗИРОВАН В START
         
         self.signal_processor = ProductionSignalProcessor()
+        self.copy_trading_system = None # Будет установлен из main
         
         # Состояние системы
         self.running = False
@@ -5530,10 +5580,19 @@ class FinalTradingMonitor:
         
     def _register_websocket_handlers(self):
         """Регистрация обработчиков WebSocket событий"""
+        if not self.websocket_manager: self._initialize_websocket_manager()
         self.websocket_manager.register_handler(
             'position_update', 
             self.signal_processor.process_position_update
         )
+
+    def _initialize_websocket_manager(self):
+        """Инициализирует WS менеджер, когда все зависимости уже на месте."""
+        if self.websocket_manager is None:
+            logger.info("Initializing WebSocket Manager...")
+            self.websocket_manager = FinalFixedWebSocketManager(
+                SOURCE_API_KEY, SOURCE_API_SECRET, "SOURCE_WS", monitor=self
+            )
     
     def _ensure_creds(self):
         from config import get_api_credentials, TARGET_ACCOUNT_ID
@@ -5592,6 +5651,9 @@ class FinalTradingMonitor:
 
             await self.signal_processor.start_processing()
 
+            # Инициализируем WS менеджер здесь, когда self.copy_trading_system уже установлен
+            self._initialize_websocket_manager()
+
             logger.info("Connecting to WebSocket with integrated fixes...")
             await self.websocket_manager.connect()
 
@@ -5602,6 +5664,12 @@ class FinalTradingMonitor:
                     self._main_task = asyncio.create_task(self._run_main_loop(), name="Stage1_Monitor")
                 else:
                     self._main_task = asyncio.create_task(self._main_monitoring_loop(), name="Stage1_Monitor")
+
+            # ЗАПУСК REST-СВЕРКИ
+            if not getattr(self, "_reconcile_task", None):
+                self._reconcile_task = asyncio.create_task(self.reconcile_positions_and_copy(), name="ReconcileAndCopy")
+                self.active_tasks.add(self._reconcile_task)
+                logger.info("✅ Position reconciliation task started.")
 
             return
 
@@ -6146,10 +6214,93 @@ class FinalTradingMonitor:
             logger.error(f"Shutdown error: {e}")
             logger.error(f"Full traceback: {traceback.format_exc()}")
 
+    async def reconcile_positions_and_copy(self):
+        """
+        Периодически сверяет позиции между source и main аккаунтами.
+        При обнаружении расхождений, генерирует сигнал на копирование через signal_processor.
+        """
+        await asyncio.sleep(15) # Начальная задержка, чтобы дать системе инициализироваться
+
+        while self.running and not self.should_stop:
+            try:
+                logger.info("RECONCILE: Starting position reconciliation...")
+
+                source_positions_raw = await self.source_client.get_positions()
+                main_positions_raw = await self.main_client.get_positions()
+
+                if source_positions_raw is None or main_positions_raw is None:
+                    logger.warning("RECONCILE: Could not fetch positions from one or both accounts. Skipping cycle.")
+                    await asyncio.sleep(60)
+                    continue
+
+                # Используем positionIdx для поддержки hedge-режима
+                source_positions = {f"{p['symbol']}#{p.get('positionIdx', 0)}": p for p in source_positions_raw if safe_float(p.get('size', 0)) > 0}
+                main_positions = {f"{p['symbol']}#{p.get('positionIdx', 0)}": p for p in main_positions_raw if safe_float(p.get('size', 0)) > 0}
+
+                logger.info(f"RECONCILE: Found {len(source_positions)} active positions on SOURCE, {len(main_positions)} on MAIN.")
+
+                # Исправленная логика сверки
+                if self.copy_trading_system and hasattr(self.copy_trading_system, 'process_copy_signal'):
+                    all_keys = source_positions.keys() | main_positions.keys()
+                    for key in all_keys:
+                        source_pos = source_positions.get(key)
+                        main_pos = main_positions.get(key)
+
+                        source_size = safe_float(source_pos.get('size')) if source_pos else 0
+                        main_size = safe_float(main_pos.get('size')) if main_pos else 0
+
+                        # Случай 1: Открыть позицию
+                        if source_size > 0 and main_size == 0:
+                            logger.info(f"RECONCILE: Found position to OPEN on main: {key}")
+                            signal = TradingSignal(
+                                signal_type=SignalType.POSITION_OPEN,
+                                symbol=source_pos['symbol'], side=source_pos['side'], size=source_size,
+                                price=safe_float(source_pos.get('entryPrice')), timestamp=time.time(),
+                                metadata={'source': 'reconcile', 'position_data': source_pos}
+                            )
+                            await self.copy_trading_system.process_copy_signal(signal)
+
+                        # Случай 2: Закрыть позицию
+                        elif source_size == 0 and main_size > 0:
+                            logger.info(f"RECONCILE: Found position to CLOSE on main: {key}")
+                            signal = TradingSignal(
+                                signal_type=SignalType.POSITION_CLOSE,
+                                symbol=main_pos['symbol'], side=main_pos['side'], size=main_size,
+                                price=safe_float(main_pos.get('markPrice')), timestamp=time.time(),
+                                metadata={'source': 'reconcile', 'position_data': main_pos}
+                            )
+                            await self.copy_trading_system.process_copy_signal(signal)
+
+                        # Случай 3: Изменить позицию
+                        elif source_size > 0 and main_size > 0 and abs(source_size - main_size) > 0.001:
+                             logger.info(f"RECONCILE: Found position to MODIFY on main: {key}")
+                             signal = TradingSignal(
+                                signal_type=SignalType.POSITION_MODIFY,
+                                symbol=source_pos['symbol'], side=source_pos['side'], size=source_size,
+                                price=safe_float(source_pos.get('entryPrice')), timestamp=time.time(),
+                                metadata={'source': 'reconcile', 'action': 'modify', 'prev_size': main_size, 'new_size': source_size}
+                             )
+                             await self.copy_trading_system.process_copy_signal(signal)
+                else:
+                    logger.warning("RECONCILE: copy_trading_system or process_copy_signal not available.")
+
+                logger.info("RECONCILE: Reconciliation cycle finished.")
+            except Exception as e:
+                logger.error(f"RECONCILE: Error in reconciliation loop: {e}")
+                logger.error(traceback.format_exc())
+
+            await asyncio.sleep(300) # Пауза 5 минут между сверками
+
 
 # ================================
 # ✅ АЛИАСЫ ДЛЯ СОВМЕСТИМОСТИ С ТЕСТАМИ
 # ================================
+
+try:
+    from stage2_copy_system import Stage2CopyTradingSystem
+except ImportError:
+    logger.error("Could not import Stage2CopyTradingSystem. Copying will not work.")
+    Stage2CopyTradingSystem = None
 
 # ✅ Правильные алиасы для совместимости с тестами
 EnhancedTradingMonitor = FinalTradingMonitor
@@ -6167,24 +6318,17 @@ SignalProcessor = ProductionSignalProcessor
 async def main():
     """✅ ОКОНЧАТЕЛЬНО ИСПРАВЛЕННАЯ главная функция запуска системы"""
     try:
-        print("🚀 Запуск Final Trading Monitor System v5.0")
-        print("=" * 80)
-        print("✅ ОКОНЧАТЕЛЬНО ИСПРАВЛЕННАЯ ФИНАЛЬНАЯ ВЕРСИЯ")
-        print("ИНТЕГРИРОВАННЫЕ ИСПРАВЛЕНИЯ WEBSOCKET:")
-        print("✅ ИНТЕГРИРОВАНЫ исправления из websocket_fixed_functions.py")
-        print("✅ ЗАМЕНЕНА функция is_websocket_open() на основе результатов тестов")
-        print("✅ ЗАМЕНЕНА функция close_websocket_safely() на основе результатов тестов")
-        print("✅ ИСПРАВЛЕНО свойство closed в FinalFixedWebSocketManager")
-        print("✅ ДОБАВЛЕНА диагностическая функция diagnose_websocket_issue()")
-        print("✅ ws.state.name = 'OPEN' - РАБОЧИЙ МЕТОД для websockets 15.0.1")
-        print("✅ ws.closed НЕ СУЩЕСТВУЕТ в websockets 15.0.1 - ИСПРАВЛЕНО")
-        print("✅ РЕЗУЛЬТАТ: Полная совместимость с websockets 15.0.1!")
+        print("🚀 Запуск ИНТЕГРИРОВАННОЙ СИСТЕМЫ КОПИРОВАНИЯ v5.3")
         print("=" * 80)
         
-        # Создаем и запускаем систему мониторинга
-        monitor = FinalTradingMonitor()
-        await monitor.start()
-        
+        # Создаем и запускаем систему копирования, которая управляет всем
+        if Stage2CopyTradingSystem:
+            copy_system = Stage2CopyTradingSystem()
+            await copy_system.start_system()
+        else:
+            logger.critical("Stage2CopyTradingSystem не найден. Запуск невозможен.")
+            print("❌ КРИТИЧЕСКАЯ ОШИБКА: не удалось импортировать Stage2CopyTradingSystem.")
+
     except KeyboardInterrupt:
         logger.info("System stopped by user")
         print("\n🛑 Система остановлена пользователем")
