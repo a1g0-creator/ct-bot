@@ -3608,20 +3608,15 @@ class FinalFixedWebSocketManager:
                     except Exception:
                         logger.debug(f"WS_IN: channel={topic}, data_preview={str(preview)[:200]}")
 
-                # Роутинг событий (нормализованный префикс-матчинг по V5)
-                if topic.startswith("position"):
-                    # Главный триггер для копирования позиций
+                # Роутинг событий для приватного стрима v5 (точные совпадения)
+                if topic == "position":
                     await self._handle_position_update(data)
-
-                elif topic.startswith("execution"):
-                    await self._handle_execution_update(data)
-
-                elif topic.startswith("order"):
+                elif topic == "order":
                     await self._handle_order_update(data)
-
+                elif topic == "execution":
+                    await self._handle_execution_update(data)
                 elif topic == "wallet":
                     await self._handle_wallet_update(data)
-
                 else:
                     logger.debug(f"{self.name} - Unknown topic: {topic}")
 
@@ -4839,6 +4834,15 @@ class FinalFixedWebSocketManager:
         except (AttributeError, RuntimeError):
             return 0
 
+    def get_stats(self) -> dict:
+        """Возвращает статистику для команды /ws_diag."""
+        return {
+            "status": self.status.value,
+            "subscriptions": self.subscriptions,
+            "messages_received": self.stats.get('messages_received', 0),
+            "messages_processed": self.stats.get('messages_processed', 0),
+        }
+
 # ================================
 # ИСПРАВЛЕННАЯ СИСТЕМА ОБРАБОТКИ СИГНАЛОВ (без изменений)
 # ================================
@@ -4934,7 +4938,7 @@ class ProductionSignalProcessor:
             side = (position_data.get('side') or "").strip()
 
             try:
-                position_idx = int(position_data.get('positionIdx', position_data.get('position_idx', 0)))
+                position_idx = int(position_data.get('positionIdx', position_data.get('position_idx', 0)) or 0)
             except (TypeError, ValueError):
                 position_idx = 0
 
@@ -4961,16 +4965,15 @@ class ProductionSignalProcessor:
                 if not is_known and current_size > 0:
                     signal_type = SignalType.POSITION_OPEN
                     eff_size = current_size
+                elif prev_size == 0 and current_size > 0:
+                    signal_type = SignalType.POSITION_OPEN
+                    eff_size = current_size
+                elif prev_size > 0 and current_size == 0:
+                    signal_type = SignalType.POSITION_CLOSE
+                    eff_size = prev_size
                 else:
-                    if prev_size == 0 and current_size > 0:
-                        signal_type = SignalType.POSITION_OPEN
-                        eff_size = current_size
-                    elif prev_size > 0 and current_size == 0:
-                        signal_type = SignalType.POSITION_CLOSE
-                        eff_size = prev_size  # закрываем весь предыдущий объём
-                    else:
-                        signal_type = SignalType.POSITION_MODIFY
-                        eff_size = abs(size_delta)
+                    signal_type = SignalType.POSITION_MODIFY
+                    eff_size = abs(size_delta)
 
                 signal = TradingSignal(
                     signal_type=signal_type,
@@ -4990,13 +4993,16 @@ class ProductionSignalProcessor:
                 await self.add_signal(signal)
 
             # ---- ОБНОВЛЯЕМ ЛОКАЛЬНОЕ СОСТОЯНИЕ ----
-            self.known_positions[state_key] = {
-                'size': current_size,
-                'side': side,
-                'position_idx': position_idx,
-                'last_update': time.time(),
-                'data': position_data
-            }
+            if current_size > 0:
+                self.known_positions[state_key] = {
+                    'size': current_size,
+                    'side': side,
+                    'position_idx': position_idx,
+                    'last_update': time.time(),
+                    'data': position_data
+                }
+            elif is_known:
+                del self.known_positions[state_key]
 
             # ---- ИСТОРИЯ ----
             self.position_history.append({
@@ -5568,7 +5574,6 @@ class FinalTradingMonitor:
 
             await self.signal_processor.start_processing()
 
-            # Запускаем одноразовую сверку перед подключением к WS
             await self.reconcile_positions_on_startup()
 
             logger.info("Connecting to WebSocket with integrated fixes...")
@@ -6145,23 +6150,21 @@ class FinalTradingMonitor:
             source_positions = {f"{p['symbol']}#{p.get('positionIdx', 0)}": p for p in source_positions_raw}
             main_positions = {f"{p['symbol']}#{p.get('positionIdx', 0)}": p for p in main_positions_raw}
 
-            all_keys = source_positions.keys() | main_positions.keys()
+            # Используем signal_processor как единую точку для генерации сигналов
+            # Это гарантирует, что локальное состояние (known_positions) будет корректно обновлено
 
-            for key in all_keys:
-                source_pos = source_positions.get(key)
-                main_pos = main_positions.get(key)
+            # Обрабатываем все позиции с донора. signal_processor сам определит, новая ли это позиция.
+            for key, source_pos in source_positions.items():
+                logger.info(f"STARTUP_RECONCILE: Processing source position {key} for potential sync.")
+                await self.signal_processor.process_position_update(source_pos)
 
-                # Создаем "синтетическое" событие, как будто оно пришло от WS
-                # Если позиции на доноре нет, передаем синтетическое событие о закрытии
-                if not source_pos and main_pos:
+            # Обрабатываем позиции, которые есть на main, но нет на source (для закрытия)
+            for key, main_pos in main_positions.items():
+                if key not in source_positions:
                      logger.info(f"STARTUP_RECONCILE: Position {key} exists on MAIN but not on SOURCE. Generating CLOSE signal.")
                      close_event = main_pos.copy()
                      close_event['size'] = '0'
                      await self.signal_processor.process_position_update(close_event)
-                # Если позиция на доноре есть, передаем ее. Обработчик сравнит с локальным состоянием.
-                elif source_pos:
-                    logger.info(f"STARTUP_RECONCILE: Processing position {key} from source for potential sync.")
-                    await self.signal_processor.process_position_update(source_pos)
 
             logger.info("STARTUP_RECONCILE: Initial position reconciliation finished.")
 
@@ -6190,27 +6193,22 @@ SignalProcessor = ProductionSignalProcessor
 async def main():
     """✅ ОКОНЧАТЕЛЬНО ИСПРАВЛЕННАЯ главная функция запуска системы"""
     try:
-        print("🚀 Запуск ИНТЕГРИРОВАННОЙ СИСТЕМЫ КОПИРОВАНИЯ v5.6")
+        print("🚀 Запуск Final Trading Monitor System v5.0")
+        print("=" * 80)
+        print("✅ ОКОНЧАТЕЛЬНО ИСПРАВЛЕННАЯ ФИНАЛЬНАЯ ВЕРСИЯ")
+        print("ИНТЕГРИРОВАННЫЕ ИСПРАВЛЕНИЯ WEBSOCKET:")
+        print("✅ ИНТЕГРИРОВАНЫ исправления из websocket_fixed_functions.py")
+        print("✅ ЗАМЕНЕНА функция is_websocket_open() на основе результатов тестов")
+        print("✅ ЗАМЕНЕНА функция close_websocket_safely() на основе результатов тестов")
+        print("✅ ИСПРАВЛЕНО свойство closed в FinalFixedWebSocketManager")
+        print("✅ ДОБАВЛЕНА диагностическая функция diagnose_websocket_issue()")
+        print("✅ ws.state.name = 'OPEN' - РАБОЧИЙ МЕТОД для websockets 15.0.1")
+        print("✅ ws.closed НЕ СУЩЕСТВУЕТ в websockets 15.0.1 - ИСПРАВЛЕНО")
+        print("✅ РЕЗУЛЬТАТ: Полная совместимость с websockets 15.0.1!")
         print("=" * 80)
         
-        # 1. Создаем систему мониторинга (Этап 1), которая содержит signal_processor
+        # Создаем и запускаем систему мониторинга
         monitor = FinalTradingMonitor()
-
-        # 2. Создаем систему копирования (Этап 2)
-        if Stage2CopyTradingSystem:
-            # Stage2 получает signal_processor от Stage1 для единой точки входа сигналов
-            copy_system = Stage2CopyTradingSystem(base_monitor=monitor)
-
-            # Регистрируем обработчик из Stage2 в SignalProcessor'е из Stage1
-            # Это ключевая связка: все сигналы из Stage1 теперь пойдут в Stage2
-            monitor.signal_processor.register_copy_system_callback(copy_system.process_copy_signal)
-
-            logger.info("✅ Stage 1 and Stage 2 systems created and linked via SignalProcessor.")
-        else:
-            logger.error("Stage 2 could not be started. Check imports. Running in monitor-only mode.")
-
-        # 3. Запускаем систему мониторинга, которая теперь управляет всем
-        # Внутри start() будет вызвана одноразовая сверка, а затем запущены все циклы
         await monitor.start()
 
     except KeyboardInterrupt:
