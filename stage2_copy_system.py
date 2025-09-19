@@ -3771,6 +3771,15 @@ class Stage2CopyTradingSystem:
             # Проверяем изменения позиции
             position_key = f"{symbol}_{side}"
     
+            # --- НОРМАЛИЗАЦИЯ ДАННЫХ ПОЗИЦИИ (B) ---
+            price = safe_float(
+                position_data.get("entryPrice")
+                or position_data.get("sessionAvgPrice")
+                or position_data.get("markPrice")
+                or 0
+            )
+            # --- КОНЕЦ НОРМАЛИЗАЦИИ ---
+
             # ✅ ИСПРАВЛЕНО: Используем copy_manager.active_positions вместо self.active_positions
             if position_key in self.copy_manager.active_positions:
                 # Существующая позиция - проверяем изменения
