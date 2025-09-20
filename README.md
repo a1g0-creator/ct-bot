@@ -1,26 +1,16 @@
-# Bybit V5 Enhanced Trading System
+# Bybit V5 Copy Trading Bot
 
-Этот репозиторий содержит продвинутую систему для копитрейдинга на Bybit, использующую API v5. Система спроектирована для высокой производительности, надежности и отказоустойчивости.
+This is a Python-based copy trading bot for the Bybit exchange, using their V5 API and WebSocket streams.
 
-## Ключевые компоненты
+## Key Features
 
-- **`enhanced_trading_system_final_fixed.py`**: Основной файл, управляющий всей логикой, включая API-клиенты, WebSocket-менеджер и обработку сигналов.
-- **`stage2_copy_system.py`**: Ядро системы копирования, которое обрабатывает сигналы и исполняет ордера.
-- **`config.py`**: Управление конфигурацией, ключами API и конечными точками.
-- **`app/`**: Вспомогательные модули, включая логирование, работу с базой данных и хранение состояний.
+- Connects to Bybit's V5 private WebSocket for real-time position, order, execution, and wallet updates.
+- Copies trades from a "donor" account to a "main" account.
+- Performs REST API-based position reconciliation on startup to ensure state consistency.
+- Includes a Telegram bot for diagnostics and manual control.
 
-## Основные возможности
+## Official Bybit WebSocket V5 Documentation
 
-- **Надежное WebSocket-соединение**: Использует кастомный механизм heartbeat и автоматическое переподключение для стабильной работы с приватными каналами Bybit (`position`, `wallet`, `execution`, `order`).
-- **REST-сверка (Reconciliation)**: При запуске система автоматически сверяет позиции между донорским и основным аккаунтами и выставляет сигналы на выравнивание, если обнаруживает расхождения.
-- **Промышленное логирование**: Встроенная система логирования с ротацией файлов, различными уровнями детализации и возможностью вывода в JSON-формате для дальнейшего анализа.
-- **Отказоустойчивость**: Реализованы паттерны, такие как Circuit Breaker и Exponential Backoff, для умной обработки сетевых ошибок и проблем с API.
-- **Мониторинг**: Включает в себя мониторинг состояния соединений и системных метрик (CPU, память).
+For detailed information on the WebSocket API, authentication, and subscriptions, refer to the official documentation:
 
-## Ссылка на документацию
-
-Для получения подробной информации о работе с WebSocket API v5 от Bybit, обратитесь к официальной документации:
-
-[**Bybit V5 WebSocket API Documentation**](https://bybit-exchange.github.io/docs/v5/ws/connect)
-
-Этот документ является ключевым для понимания логики аутентификации, подписок и форматов сообщений.
+[Bybit V5 WebSocket Documentation](https://bybit-exchange.github.io/docs/v5/ws/connect)
