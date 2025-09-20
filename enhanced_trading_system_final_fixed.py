@@ -3608,15 +3608,33 @@ class FinalFixedWebSocketManager:
                     except Exception:
                         logger.debug(f"WS_IN: channel={topic}, data_preview={str(preview)[:200]}")
 
-                # Роутинг событий для приватного стрима v5 (точные совпадения)
-                if topic == "position":
+                # Роутинг событий (нормализованный префикс-матчинг по V5)
+                if isinstance(topic, str) and topic.startswith("position"):
+                    # Главный триггер для копирования позиций
                     await self._handle_position_update(data)
-                elif topic == "order":
-                    await self._handle_order_update(data)
-                elif topic == "execution":
+
+                    # Опциональный расширенный хук
+                    cb = getattr(self, '_on_position_update', None)
+                    if callable(cb):
+                        await cb(data)
+
+                elif isinstance(topic, str) and topic.startswith("execution"):
                     await self._handle_execution_update(data)
-                elif topic == "wallet":
+
+                    cb = getattr(self, '_on_execution', None)
+                    if callable(cb):
+                        await cb(data)
+
+                elif isinstance(topic, str) and topic.startswith("order"):
+                    await self._handle_order_update(data)
+
+                    cb = getattr(self, '_on_order_update', None)
+                    if callable(cb):
+                        await cb(data)
+
+                elif topic == 'wallet':
                     await self._handle_wallet_update(data)
+
                 else:
                     logger.debug(f"{self.name} - Unknown topic: {topic}")
 
@@ -4834,15 +4852,6 @@ class FinalFixedWebSocketManager:
         except (AttributeError, RuntimeError):
             return 0
 
-    def get_stats(self) -> dict:
-        """Возвращает статистику для команды /ws_diag."""
-        return {
-            "status": self.status.value,
-            "subscriptions": self.subscriptions,
-            "messages_received": self.stats.get('messages_received', 0),
-            "messages_processed": self.stats.get('messages_processed', 0),
-        }
-
 # ================================
 # ИСПРАВЛЕННАЯ СИСТЕМА ОБРАБОТКИ СИГНАЛОВ (без изменений)
 # ================================
@@ -4906,7 +4915,7 @@ class ProductionSignalProcessor:
                 pass
         
         logger.info("Signal processing system stopped")
-    
+
     def register_copy_system_callback(self, callback_func):
         """
         НОВЫЙ МЕТОД: Регистрация callback функции для системы копирования
@@ -4930,57 +4939,69 @@ class ProductionSignalProcessor:
             if not isinstance(position_data, dict):
                 return
 
-            # ---- НОРМАЛИЗАЦИЯ КЛЮЧЕВЫХ ПОЛЕЙ (B) ----
-            symbol = (position_data.get('symbol') or '').upper()
-            if not symbol: return
+            # ---- НОРМАЛИЗАЦИЯ КЛЮЧЕВЫХ ПОЛЕЙ ----
+            symbol_raw = position_data.get('symbol')
+            if not symbol_raw:
+                return
+            symbol = str(symbol_raw).upper()
 
-            current_size = safe_float(position_data.get('size', position_data.get('qty', 0.0)))
+            # поддерживаем оба поля размера
+            current_size = safe_float(
+                position_data.get('size', position_data.get('qty', 0.0))
+            ) or 0.0
+
+            # ВАЖНО: в UTA при нулевой позиции side = "" (пустая строка) — это валидно
             side = (position_data.get('side') or "").strip()
 
+            # ВАЖНО: hedge mode — учитываем positionIdx
             try:
-                position_idx = int(position_data.get('positionIdx', position_data.get('position_idx', 0)) or 0)
-            except (TypeError, ValueError):
+                position_idx = int(position_data.get('position_idx', position_data.get('positionIdx', 0)))
+            except Exception:
                 position_idx = 0
-
-            price = safe_float(
-                position_data.get('entryPrice') or
-                position_data.get('sessionAvgPrice') or
-                position_data.get('markPrice') or 0
-            )
-
-            logger.info(f"SIGNAL_PROCESSOR: Processing update for {symbol}#{position_idx}, size={current_size}, side='{side}'")
 
             # ключ состояния: SYMBOL#IDX (чтобы long/short не мешали друг другу)
             state_key = f"{symbol}#{position_idx}"
 
             # ---- СРАВНЕНИЕ С ПРЕДЫДУЩИМ СОСТОЯНИЕМ ----
-            prev_size = safe_float(self.known_positions.get(state_key, {}).get('size', 0.0))
+            prev_size = 0.0
             is_known = state_key in self.known_positions
-            size_delta = current_size - prev_size
+            if is_known:
+                prev_position = self.known_positions[state_key]
+                prev_size = safe_float(prev_position.get('size', 0.0)) or 0.0
 
-            logger.debug(f"State check: key={state_key}, prev_size={prev_size}, new_size={current_size}, delta={size_delta}")
+            size_delta = current_size - prev_size
 
             # ---- ГЕНЕРАЦИЯ СИГНАЛОВ ----
             if abs(size_delta) > 0.001:  # Минимальное значимое изменение
+
+                # Цена входа по V5: entryPrice; запасные варианты — sessionAvgPrice/markPrice
+                entry_price = safe_float(
+                    position_data.get('entryPrice')
+                    or position_data.get('sessionAvgPrice')
+                    or position_data.get('markPrice')
+                    or 0
+                ) or 0.0
+
                 if not is_known and current_size > 0:
                     signal_type = SignalType.POSITION_OPEN
                     eff_size = current_size
-                elif prev_size == 0 and current_size > 0:
-                    signal_type = SignalType.POSITION_OPEN
-                    eff_size = current_size
-                elif prev_size > 0 and current_size == 0:
-                    signal_type = SignalType.POSITION_CLOSE
-                    eff_size = prev_size
                 else:
-                    signal_type = SignalType.POSITION_MODIFY
-                    eff_size = abs(size_delta)
+                    if prev_size == 0 and current_size > 0:
+                        signal_type = SignalType.POSITION_OPEN
+                        eff_size = current_size
+                    elif prev_size > 0 and current_size == 0:
+                        signal_type = SignalType.POSITION_CLOSE
+                        eff_size = prev_size  # закрываем весь предыдущий объём
+                    else:
+                        signal_type = SignalType.POSITION_MODIFY
+                        eff_size = abs(size_delta)
 
                 signal = TradingSignal(
                     signal_type=signal_type,
                     symbol=symbol,
                     side=side,
                     size=eff_size,
-                    price=price,
+                    price=entry_price,
                     timestamp=time.time(),
                     metadata={
                         'prev_size': prev_size,
@@ -4993,16 +5014,13 @@ class ProductionSignalProcessor:
                 await self.add_signal(signal)
 
             # ---- ОБНОВЛЯЕМ ЛОКАЛЬНОЕ СОСТОЯНИЕ ----
-            if current_size > 0:
-                self.known_positions[state_key] = {
-                    'size': current_size,
-                    'side': side,
-                    'position_idx': position_idx,
-                    'last_update': time.time(),
-                    'data': position_data
-                }
-            elif is_known:
-                del self.known_positions[state_key]
+            self.known_positions[state_key] = {
+                'size': current_size,
+                'side': side,
+                'position_idx': position_idx,
+                'last_update': time.time(),
+                'data': position_data
+            }
 
             # ---- ИСТОРИЯ ----
             self.position_history.append({
@@ -5509,6 +5527,84 @@ class FinalTradingMonitor:
         """Обработчик системных сигналов"""
         logger.info(f"Received signal {signum}, initiating graceful shutdown...")
         self.should_stop = True
+
+    async def reconcile_positions_on_startup(self):
+        """
+        ✅ ИСПРАВЛЕНО: Сверяет позиции на SOURCE и MAIN аккаунтах при старте и генерирует
+        сигналы для выравнивания состояния. Использует прямое сравнение состояний.
+        """
+        logger.info("🚀 Starting initial position reconciliation...")
+        try:
+            source_positions_raw = await self.source_client.get_positions()
+            main_positions_raw = await self.main_client.get_positions()
+
+            source_positions = {f"{p.get('symbol')}#{p.get('positionIdx', 0)}": p for p in source_positions_raw}
+            main_positions = {f"{p.get('symbol')}#{p.get('positionIdx', 0)}": p for p in main_positions_raw}
+
+            logger.info(f"Found {len(source_positions)} active positions on SOURCE, {len(main_positions)} on MAIN.")
+            enqueued_signals = 0
+
+            # Сценарий 1: Позиция есть на SOURCE, но нет на MAIN -> Открыть
+            for key, source_pos in source_positions.items():
+                if key not in main_positions:
+                    signal = TradingSignal(
+                        signal_type=SignalType.POSITION_OPEN,
+                        symbol=source_pos['symbol'],
+                        side=source_pos['side'],
+                        size=safe_float(source_pos['size']),
+                        price=safe_float(source_pos.get('entryPrice') or source_pos.get('markPrice')),
+                        timestamp=time.time(),
+                        metadata={'reason': 'reconcile_open'}
+                    )
+                    await self.signal_processor.add_signal(signal)
+                    enqueued_signals += 1
+                    logger.info(f"RECONCILE: Enqueued OPEN signal for {key}")
+
+            # Сценарий 2: Позиция есть на MAIN, но нет на SOURCE -> Закрыть
+            for key, main_pos in main_positions.items():
+                if key not in source_positions:
+                    signal = TradingSignal(
+                        signal_type=SignalType.POSITION_CLOSE,
+                        symbol=main_pos['symbol'],
+                        side=main_pos['side'],
+                        size=safe_float(main_pos['size']),
+                        price=safe_float(main_pos.get('markPrice')),
+                        timestamp=time.time(),
+                        metadata={'reason': 'reconcile_close'}
+                    )
+                    await self.signal_processor.add_signal(signal)
+                    enqueued_signals += 1
+                    logger.info(f"RECONCILE: Enqueued CLOSE signal for {key}")
+
+            # Сценарий 3: Позиция есть на обоих, но есть расхождение -> Модифицировать
+            for key, source_pos in source_positions.items():
+                if key in main_positions:
+                    main_pos = main_positions[key]
+                    source_size = safe_float(source_pos.get('size', 0))
+                    main_size = safe_float(main_pos.get('size', 0))
+
+                    if abs(source_size - main_size) > 1e-9:
+                        signal = TradingSignal(
+                            signal_type=SignalType.POSITION_MODIFY,
+                            symbol=source_pos['symbol'],
+                            side=source_pos['side'],
+                            size=source_size,
+                            price=safe_float(source_pos.get('markPrice')),
+                            timestamp=time.time(),
+                            metadata={'reason': 'reconcile_modify', 'prev_size': main_size, 'new_size': source_size}
+                        )
+                        await self.signal_processor.add_signal(signal)
+                        enqueued_signals += 1
+                        logger.info(f"RECONCILE: Enqueued MODIFY signal for {key} (size {main_size} -> {source_size})")
+
+            if enqueued_signals > 0:
+                logger.info(f"✅ REST reconcile completed: enqueued {enqueued_signals} signals for alignment.")
+            else:
+                logger.info("✅ REST reconcile completed: No discrepancies found.")
+
+        except Exception as e:
+            logger.error(f"Critical error during position reconciliation: {e}", exc_info=True)
+            await send_telegram_alert(f"🚨 RECONCILE FAILED: {e}")
         
     def _register_websocket_handlers(self):
         """Регистрация обработчиков WebSocket событий"""
@@ -5574,6 +5670,7 @@ class FinalTradingMonitor:
 
             await self.signal_processor.start_processing()
 
+            # ✅ ИСПРАВЛЕНО: Запускаем сверку позиций по REST перед подключением к WS.
             await self.reconcile_positions_on_startup()
 
             logger.info("Connecting to WebSocket with integrated fixes...")
@@ -6129,48 +6226,6 @@ class FinalTradingMonitor:
         except Exception as e:
             logger.error(f"Shutdown error: {e}")
             logger.error(f"Full traceback: {traceback.format_exc()}")
-
-    async def reconcile_positions_on_startup(self):
-        """
-        Выполняет одноразовую сверку позиций при запуске для синхронизации состояния.
-        """
-        try:
-            logger.info("STARTUP_RECONCILE: Running initial position reconciliation...")
-
-            source_positions_raw = await self.source_client.get_positions()
-            main_positions_raw = await self.main_client.get_positions()
-
-            if source_positions_raw is None:
-                logger.error("STARTUP_RECONCILE: Could not fetch source positions. Aborting.")
-                return
-            if main_positions_raw is None:
-                logger.warning("STARTUP_RECONCILE: Could not fetch main positions. Assuming empty.")
-                main_positions_raw = []
-
-            source_positions = {f"{p['symbol']}#{p.get('positionIdx', 0)}": p for p in source_positions_raw}
-            main_positions = {f"{p['symbol']}#{p.get('positionIdx', 0)}": p for p in main_positions_raw}
-
-            # Используем signal_processor как единую точку для генерации сигналов
-            # Это гарантирует, что локальное состояние (known_positions) будет корректно обновлено
-
-            # Обрабатываем все позиции с донора. signal_processor сам определит, новая ли это позиция.
-            for key, source_pos in source_positions.items():
-                logger.info(f"STARTUP_RECONCILE: Processing source position {key} for potential sync.")
-                await self.signal_processor.process_position_update(source_pos)
-
-            # Обрабатываем позиции, которые есть на main, но нет на source (для закрытия)
-            for key, main_pos in main_positions.items():
-                if key not in source_positions:
-                     logger.info(f"STARTUP_RECONCILE: Position {key} exists on MAIN but not on SOURCE. Generating CLOSE signal.")
-                     close_event = main_pos.copy()
-                     close_event['size'] = '0'
-                     await self.signal_processor.process_position_update(close_event)
-
-            logger.info("STARTUP_RECONCILE: Initial position reconciliation finished.")
-
-        except Exception as e:
-            logger.error(f"STARTUP_RECONCILE: Failed during initial reconciliation: {e}")
-            logger.error(traceback.format_exc())
 
 
 # ================================

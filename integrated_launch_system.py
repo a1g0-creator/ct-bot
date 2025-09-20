@@ -1630,6 +1630,21 @@ class IntegratedTradingSystem:
             await self.stage2_system.initialize()
 
             # ===================================================================
+            # КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Соединяем обработчик сигналов (Этап 1)
+            # с системой исполнения (Этап 2).
+            # ===================================================================
+            if self.stage1_monitor and hasattr(self.stage1_monitor, 'signal_processor') and self.stage2_system:
+                if hasattr(self.stage2_system, 'process_copy_signal'):
+                    self.stage1_monitor.signal_processor.register_copy_system_callback(
+                        self.stage2_system.process_copy_signal
+                    )
+                    logger.info("✅ Signal processor connected to Stage 2 copy system.")
+                else:
+                    logger.error("CRITICAL: Stage2 has no process_copy_signal method!")
+            else:
+                logger.error("CRITICAL: Failed to connect Signal Processor to Stage 2: components missing.")
+
+            # ===================================================================
             # КРИТИЧЕСКИ ВАЖНО: Интегрируем Telegram bot с системами
             # ===================================================================
             self.integrate_telegram_bot_with_systems()
@@ -1752,43 +1767,6 @@ class IntegratedTradingSystem:
     
         logger.info("Telegram bot references refreshed (monitor & stage2)")
 
-    async def ws_diag_command(self, update, context):
-        """Handler for the /ws_diag command."""
-        user_id = update.effective_user.id
-        if user_id not in ADMIN_IDS:
-            await update.message.reply_text("⛔️ Access denied.")
-            return
-
-        ws_manager = getattr(self.stage1_monitor, "websocket_manager", None)
-        if not ws_manager:
-            await update.message.reply_text("WS manager not available.")
-            return
-
-        stats = ws_manager.get_stats()
-
-        # expires - извлекаем из auth_message, если он там есть
-        auth_expires = getattr(ws_manager, 'auth_expires', None)
-        expires_in_str = 'N/A'
-        if auth_expires:
-            expires_in = (auth_expires - time.time() * 1000) / 1000
-            expires_in_str = f"{expires_in:.0f}s"
-
-
-        message = (
-            f"<b>WebSocket Diagnostics</b>\n\n"
-            f"<b>URL:</b> <code>{SOURCE_WS_URL}</code>\n"
-            f"<b>Env:</b> <code>{os.getenv('ENVIRONMENT', 'prod')}</code>\n"
-            f"<b>Auth Payload:</b> <code>GET/realtime{{expires}}</code>\n"
-            f"<b>Auth Expires in:</b> {expires_in_str}\n"
-            f"<b>Subscribed Topics:</b> <code>{stats.get('subscriptions', [])}</code>\n"
-            f"<b>Status:</b> {stats.get('status')}\n\n"
-            f"<b>Received Total:</b> {stats.get('messages_received', 0)}\n"
-            f"<b>Processed Total:</b> {stats.get('messages_processed', 0)}\n\n"
-            f"<b>Copy Enabled:</b> {getattr(self.stage2_system, 'copy_enabled', 'N/A')}\n"
-            f"<b>Stage2 Active:</b> {getattr(self.stage2_system, 'system_active', 'N/A')}\n"
-        )
-        await update.message.reply_html(message)
-
 
     async def _initialize_telegram_bot(self):
         """🔧 ИСПРАВЛЕННАЯ инициализация Telegram Bot + актуализация ссылок на системы"""
@@ -1817,11 +1795,6 @@ class IntegratedTradingSystem:
             # иначе аккуратно подключаем fallback из stage2_telegram_bot
             try:
                 app = getattr(self.telegram_bot, "app", None) or getattr(self.telegram_bot, "application", None)
-                if app:
-                    from telegram.ext import CommandHandler
-                    app.add_handler(CommandHandler("ws_diag", self.ws_diag_command))
-                    logger.info("✅ /ws_diag command handler registered.")
-
                 if app and app.bot_data.get("keys_menu_registered"):
                     logger.info("Primary /keys handler is registered — skipping fallback")
                 else:
@@ -2675,17 +2648,6 @@ async def run_integrated_system():
     try:
         # Создаем и запускаем интегрированную систему
         system = IntegratedTradingSystem()
-
-        # --- ИНТЕГРАЦИЯ STAGE 1 и STAGE 2 ---
-        system.stage1_monitor = FinalTradingMonitor()
-        system.stage2_system = Stage2CopyTradingSystem(base_monitor=system.stage1_monitor)
-
-        # Связываем signal_processor с обработчиком в stage2
-        system.stage1_monitor.signal_processor.register_copy_system_callback(
-            system.stage2_system.process_copy_signal
-        )
-        logger.info("✅ Systems wired together successfully.")
-
         await system.start_integrated_system()
         
     except KeyboardInterrupt:
