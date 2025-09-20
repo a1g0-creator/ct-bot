@@ -3088,6 +3088,11 @@ class Stage2CopyTradingSystem:
         # 7) Доп. поля
         self._last_stage2_report_ts = 0.0
 
+        # Idempotency cache to prevent duplicate orders
+        self._recent_actions = {}
+        self._idempotency_window_sec = 5  # 5-second window
+        self._idempotency_lock = asyncio.Lock()
+
         # ВАЖНО: не регистрируем обработчики здесь, чтобы не плодить дубли.
         # Регистрация произойдёт один раз в start_system() через
         # await self.copy_manager.start_copying()
@@ -3098,59 +3103,41 @@ class Stage2CopyTradingSystem:
         )
     
     async def initialize(self):
-        """ИСПРАВЛЕННАЯ инициализация системы копирования"""
+        """Инициализация системы копирования и регистрация обработчиков."""
         try:
             logger.info("Initializing Stage 2 Copy Trading System...")
-    
-            # Инициализируем компоненты
+
+            # Инициализация всех компонентов
             self.kelly_calculator = AdvancedKellyCalculator()
-    
-            self.copy_manager = PositionCopyManager(
-                self.base_monitor.source_client,
-                self.base_monitor.main_client
-            )
-    
+            self.copy_manager = PositionCopyManager(self.source_client, self.main_client)
             self.trailing_manager = DynamicTrailingStopManager()
             self.drawdown_controller = DrawdownController()
-            self.order_manager = AdaptiveOrderManager(self.base_monitor.main_client)
-    
-            # ✅ ИСПРАВЛЕНО: Регистрируем обработчик через WebSocket менеджер
+            self.order_manager = AdaptiveOrderManager(self.main_client)
+
+            # Регистрация обработчика для WS сообщений о позициях
             if hasattr(self.base_monitor, 'websocket_manager'):
+                # Убедимся, что регистрируем правильный, исправленный обработчик
                 self.base_monitor.websocket_manager.register_handler(
-                    'position_update', 
-                    self.handle_position_signal
+                    'position',
+                    self.on_position_item
                 )
-                logger.info("Copy signal handler registered through WebSocket manager")
+                logger.info("Stage 2 'on_position_item' handler registered for 'position' topic.")
             
-                # ✅ НОВОЕ: Дополнительная проверка регистрации
-                handlers = self.base_monitor.websocket_manager.message_handlers.get('position_update', [])
-                logger.info(f"Registered position handlers count: {len(handlers)}")
-            
-                # ✅ НОВОЕ: Тестовый вызов для проверки
-                try:
-                    test_position = {
-                        'symbol': 'TEST',
-                        'size': '0.0',
-                        'side': 'Buy',
-                        'markPrice': '0'
-                    }
-                    await self.handle_position_signal(test_position)
-                    logger.info("✅ Test position signal handled successfully")
-                except Exception as e:
-                    logger.warning(f"Test position signal failed: {e}")
-    
             self.system_active = True
             logger.info("✅ Stage 2 Copy Trading System initialized successfully")
-    
+
         except Exception as e:
-            logger.error(f"Stage 2 initialization error: {e}")
+            logger.error(f"Stage 2 initialization error: {e}", exc_info=True)
             raise
 
     def register_ws_handlers(self, ws_manager):
+        """Регистрирует обработчики WS. Теперь 'position' вместо 'position_update'."""
         if getattr(self, "_position_handler_registered", False):
             return
-        ws_manager.register_handler("position_update", self.handle_position_signal)
+        # Важно: подписываемся на 'position', как и в WS менеджере.
+        ws_manager.register_handler("position", self.on_position_item)
         self._position_handler_registered = True
+        logger.info("Stage 2 WS handler 'on_position_item' registered for 'position' topic.")
 
     def get_integration_status(self):
         """Получение статуса интеграции систем"""
@@ -3171,25 +3158,95 @@ class Stage2CopyTradingSystem:
             logger.error(f"Integration status error: {e}")
             return {'error': str(e)}
 
-    async def handle_position_update(self, data):
+    async def on_position_item(self, item: dict):
         """
-        Обертка для совместимости с position_handlers из WebSocketManager.
-        Вызывается из списка position_handlers и делегирует в существующий handle_position_signal.
+        Новый обработчик, который получает ОДИН нормализованный объект позиции (item)
+        и запускает логику копирования.
         """
         try:
-            # Если это обновление с массивом позиций (от reconcile)
-            if isinstance(data, dict) and 'data' in data:
-                items = data.get('data', [])
-                for item in items:
-                    await self.handle_position_signal(item)
-            # Если это одиночная позиция  
-            elif isinstance(data, dict):
-                await self.handle_position_signal(data)
-            else:
-                logger.warning(f"Unknown position update format: {type(data)}")
+            if not isinstance(item, dict):
+                logger.warning(f"on_position_item received non-dict data: {type(item)}")
+                return
+
+            symbol = item.get('symbol')
+            if not symbol:
+                logger.warning("on_position_item: received item with no symbol.")
+                return
+            pos_idx = int(item.get('positionIdx', 0))
+            action_key = (symbol, pos_idx)
+
+            # --- IDEMPOTENCY CHECK ---
+            async with self._idempotency_lock:
+                last_action_time = self._recent_actions.get(action_key, 0)
+                if time.time() - last_action_time < self._idempotency_window_sec:
+                    logger.warning(f"IDEMPOTENCY_SKIP: Action for {action_key} skipped, already processed within last {self._idempotency_window_sec}s.")
+                    return
+                # Mark that we are processing this action now, to prevent re-entry
+                self._recent_actions[action_key] = time.time()
+
+            # 1. Парсинг согласно новому контракту
+            side = (item.get('side') or "").strip()
+            size = float(item.get('size', 0) or 0)
+            entry_price = float(item.get('entryPrice', 0) or 0)
             
+            logger.info(f"COPY_HANDLER_IN: symbol={symbol} side='{side}' size={size} entry={entry_price} idx={pos_idx}")
+
+            # 2. Получаем текущую позицию на TARGET аккаунте
+            target_positions = await self.main_client.get_positions()
+            target_pos = next((p for p in target_positions if p.get('symbol') == symbol and int(p.get('positionIdx', 0)) == pos_idx), None)
+            target_size = safe_float(target_pos.get('size')) if target_pos else 0.0
+            target_side = (target_pos.get('side') or "").strip() if target_pos else ""
+
+            # 3. Определяем действие
+            if size > 0 and side in ('Buy', 'Sell'):
+                # Действие: OPEN или MODIFY
+                if target_size == 0:
+                    # --- OPEN ---
+                    reason = "ws_open"
+                    logger.info(f"COPY ACTION: {reason.upper()} for {symbol} | DONOR size={size} -> TARGET size=0. Placing market order.")
+                    # TODO: Добавить расчет коэффициента иKelly
+                    copy_qty = size
+                    order = CopyOrder(source_signal=None, target_symbol=symbol, target_side=side, target_quantity=copy_qty, target_price=entry_price, order_strategy=OrderStrategy.MARKET, kelly_fraction=1.0, priority=1, metadata={'reason': reason})
+                    await self.order_manager.place_adaptive_order(order)
+                else:
+                    # --- MODIFY ---
+                    if side != target_side:
+                        # Разворот: закрыть старую, открыть новую
+                        close_reason = "ws_modify_flip_close"
+                        logger.info(f"COPY ACTION: {close_reason.upper()} for {symbol} | DONOR side={side}, TARGET side={target_side}. Closing target position.")
+                        close_order = CopyOrder(source_signal=None, target_symbol=symbol, target_side='Sell' if target_side == 'Buy' else 'Buy', target_quantity=target_size, target_price=entry_price, order_strategy=OrderStrategy.MARKET, kelly_fraction=0, priority=0, metadata={'reason': close_reason, 'reduceOnly': True})
+                        await self.order_manager.place_adaptive_order(close_order)
+
+                        open_reason = "ws_modify_flip_open"
+                        logger.info(f"COPY ACTION: {open_reason.upper()} for {symbol} | Opening new position with side {side}.")
+                        # TODO: Расчет Kelly/коэффициента
+                        copy_qty = size
+                        open_order = CopyOrder(source_signal=None, target_symbol=symbol, target_side=side, target_quantity=copy_qty, target_price=entry_price, order_strategy=OrderStrategy.MARKET, kelly_fraction=1.0, priority=1, metadata={'reason': open_reason})
+                        await self.order_manager.place_adaptive_order(open_order)
+                    else:
+                        # Изменение размера
+                        size_delta = size - target_size
+                        if abs(size_delta) > 0:
+                            modify_reason = "ws_modify_size"
+                            logger.info(f"COPY ACTION: {modify_reason.upper()} for {symbol} | DONOR size={size}, TARGET size={target_size}. Adjusting by {size_delta}.")
+                            modify_side = side if size_delta > 0 else ('Sell' if side == 'Buy' else 'Buy')
+                            order = CopyOrder(source_signal=None, target_symbol=symbol, target_side=modify_side, target_quantity=abs(size_delta), target_price=entry_price, order_strategy=OrderStrategy.MARKET, kelly_fraction=0, priority=1, metadata={'reason': modify_reason})
+                            await self.order_manager.place_adaptive_order(order)
+
+            elif size == 0 and target_size > 0:
+                # --- CLOSE ---
+                reason = "ws_close"
+                logger.info(f"COPY ACTION: {reason.upper()} for {symbol} | DONOR size=0, TARGET size={target_size}. Closing target position.")
+                close_side = 'Sell' if target_side == 'Buy' else 'Buy'
+                order = CopyOrder(source_signal=None, target_symbol=symbol, target_side=close_side, target_quantity=target_size, target_price=entry_price, order_strategy=OrderStrategy.MARKET, kelly_fraction=0, priority=0, metadata={'reason': reason, 'reduceOnly': True})
+                await self.order_manager.place_adaptive_order(order)
+
         except Exception as e:
-            logger.error(f"handle_position_update wrapper error: {e}")
+            logger.error(f"on_position_item failed: {e}", exc_info=True)
+
+
+    async def process_copy_signal(self, signal: TradingSignal):
+
 
     async def process_copy_signal(self, signal: TradingSignal):
         """

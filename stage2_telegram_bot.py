@@ -517,6 +517,14 @@ class Stage2TelegramBot:
             application.add_handler(CommandHandler("ws_diag", self.ws_diag_command))
             application.add_handler(CommandHandler("reconcile_now", self.reconcile_now_command))
 
+            # --- КОМАНДЫ УПРАВЛЕНИЯ КОПИРОВАНИЕМ ---
+            application.add_handler(CommandHandler("status", self.status_command))
+            application.add_handler(CommandHandler("copy_on", self.copy_on_command))
+            application.add_handler(CommandHandler("copy_off", self.copy_off_command))
+            application.add_handler(CommandHandler("scale", self.scale_command))
+            application.add_handler(CommandHandler("panic_close", self.panic_close_command))
+            application.add_handler(CallbackQueryHandler(self.panic_close_callback, pattern="^panic_close_confirm"))
+
             # Защита от повторной регистрации
             self._commands_registered = True
 
@@ -3357,6 +3365,216 @@ class Stage2TelegramBot:
             logger.error(f"Reconcile Now command error: {e}", exc_info=True)
             await update.message.reply_text(f"❌ Ошибка запуска сверки: {e}")
 
+    async def status_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Enhanced /status command for a comprehensive system overview."""
+        sys_logger.log_telegram_command("/status", update.effective_user.id)
+        if not self.check_authorization(update.effective_user.id):
+            await update.message.reply_text("❌ Доступ запрещен")
+            return
+
+        if not self.copy_system or not hasattr(self.copy_system, 'base_monitor'):
+            await update.message.reply_text("❌ Система не инициализирована.")
+            return
+
+        try:
+            msg = await update.message.reply_text("🔄 Собираю полную сводку по системе...")
+
+            # 1. System Status & Uptime
+            system_active = getattr(self.copy_system, 'active', False)
+            copy_enabled = getattr(self.copy_system, 'copy_enabled', False)
+            start_time = getattr(self.copy_system, 'start_time', time.time())
+            uptime_seconds = time.time() - start_time
+            uptime_str = str(timedelta(seconds=int(uptime_seconds)))
+            scale_factor = getattr(self.copy_system.copy_manager, 'position_scaling', 1.0) if hasattr(self.copy_system, 'copy_manager') else 'N/A'
+
+
+            # 2. Balances
+            source_summary = await self.get_account_summary(self.copy_system.base_monitor.source_client)
+            main_summary = await self.get_account_summary(self.copy_system.base_monitor.main_client)
+
+            # 3. WS Diagnostics
+            ws_manager = self.copy_system.base_monitor.websocket_manager
+            ws_diag_info = (
+                f"Connected: {'✅' if ws_manager.ws and not ws_manager.closed else '❌'}\n"
+                f"   Authenticated: {'✅' if ws_manager.status == ConnectionStatus.AUTHENTICATED else '❌'}\n"
+                f"   Messages (R/P): {ws_manager.stats.get('messages_received', 0)}/{ws_manager.stats.get('messages_processed', 0)}"
+            )
+
+            # 4. Reconciliation Status
+            last_reconcile = getattr(self.copy_system.base_monitor, 'last_reconciliation_time', 0)
+            reconcile_ago = "Никогда"
+            if last_reconcile:
+                reconcile_ago_secs = time.time() - last_reconcile
+                reconcile_ago = f"{int(reconcile_ago_secs)}с назад"
+
+            # 5. Risk Status
+            risk_info = "Недоступно"
+            if hasattr(self.copy_system, 'drawdown_controller'):
+                controller = self.copy_system.drawdown_controller
+                risk_stats = controller.get_risk_stats() if hasattr(controller, 'get_risk_stats') else {}
+                current_dd = risk_stats.get("current_drawdown", 0) * 100
+                risk_info = f"Просадка: {current_dd:.2f}%"
+
+            # 6. Assemble message
+            report = (
+                f"📊 *ПОЛНЫЙ СТАТУС СИСТЕМЫ*\n"
+                f"_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_\n"
+                "━━━━━━━━━━━━━━━━━━\n"
+                f"*Состояние:*\n"
+                f"  Система: {'🟢 Активна' if system_active else '🔴 Стоп'}\n"
+                f"  Копирование: {'✅ Включено' if copy_enabled else '❌ Выключено'}\n"
+                f"  Множитель: `{scale_factor}`\n"
+                f"  Время работы: {uptime_str}\n\n"
+
+                f"*Финансы (Донор / Основной):*\n"
+                f"  Баланс: `${source_summary['balance']:.2f}` / `${main_summary['balance']:.2f}`\n"
+                f"  P&L: `${source_summary['total_unrealized_pnl']:+.2f}` / `${main_summary['total_unrealized_pnl']:+.2f}`\n\n"
+
+                f"*Позиции (Донор / Основной):*\n"
+                f"  Кол-во: {source_summary['positions_count']} / {main_summary['positions_count']}\n"
+                f"  Сверка: {reconcile_ago}\n\n"
+
+                f"*Подключения:*\n"
+                f"  {ws_diag_info}\n\n"
+
+                f"*Риски:*\n"
+                f"  {risk_info}\n"
+            )
+
+            await msg.edit_text(report, parse_mode=ParseMode.MARKDOWN)
+
+        except Exception as e:
+            logger.error(f"Enhanced Status command error: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка получения статуса: {e}")
+
+    async def copy_on_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Command to enable copy trading."""
+        sys_logger.log_telegram_command("/copy_on", update.effective_user.id)
+        if not self.check_authorization(update.effective_user.id):
+            await update.message.reply_text("❌ Доступ запрещен")
+            return
+        if not self.copy_system:
+            await update.message.reply_text("❌ Система не инициализирована")
+            return
+
+        self.copy_system.copy_enabled = True
+        if hasattr(self.copy_system, 'copy_manager'):
+            await self.copy_system.copy_manager.start_copying()
+
+        await update.message.reply_text("✅ Копирование включено.")
+        await send_telegram_alert("✅ Копирование было ВКЛЮЧЕНО через /copy_on")
+
+    async def copy_off_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Command to disable copy trading."""
+        sys_logger.log_telegram_command("/copy_off", update.effective_user.id)
+        if not self.check_authorization(update.effective_user.id):
+            await update.message.reply_text("❌ Доступ запрещен")
+            return
+        if not self.copy_system:
+            await update.message.reply_text("❌ Система не инициализирована")
+            return
+
+        self.copy_system.copy_enabled = False
+        if hasattr(self.copy_system, 'copy_manager'):
+            await self.copy_system.copy_manager.stop_copying()
+
+        await update.message.reply_text("❌ Копирование выключено.")
+        await send_telegram_alert("🛑 Копирование было ВЫКЛЮЧЕНО через /copy_off")
+
+    async def scale_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Command to set the position scaling factor."""
+        sys_logger.log_telegram_command("/scale", update.effective_user.id)
+        if not self.check_authorization(update.effective_user.id):
+            await update.message.reply_text("❌ Доступ запрещен")
+            return
+        if not self.copy_system or not hasattr(self.copy_system, 'copy_manager'):
+            await update.message.reply_text("❌ Copy Manager не инициализирован.")
+            return
+
+        args = context.args
+        if not args:
+            current_scale = getattr(self.copy_system.copy_manager, 'position_scaling', 1.0)
+            await update.message.reply_text(
+                f"Текущий множитель размера позиции: `{current_scale}`\n"
+                f"Используйте: `/scale <множитель>` (например, `/scale 1.5`)",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            return
+
+        try:
+            scale_factor = float(args[0])
+            if not (0.1 <= scale_factor <= 10.0):
+                await update.message.reply_text("❌ Множитель должен быть в диапазоне от 0.1 до 10.0")
+                return
+
+            self.copy_system.copy_manager.position_scaling = scale_factor
+            await update.message.reply_text(f"✅ Новый множитель размера позиции установлен: `{scale_factor}`")
+            await send_telegram_alert(f"⚠️ Множитель размера позиции изменен на `{scale_factor}` через /scale")
+
+        except ValueError:
+            await update.message.reply_text("❌ Неверный формат. Укажите число (например, 1.5).")
+        except Exception as e:
+            logger.error(f"Scale command error: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка установки множителя: {e}")
+
+    async def panic_close_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Command for emergency closing of all positions on the main account."""
+        sys_logger.log_telegram_command("/panic_close", update.effective_user.id)
+        if not self.check_authorization(update.effective_user.id):
+            await update.message.reply_text("❌ Доступ запрещен")
+            return
+
+        if not self.copy_system or not hasattr(self.copy_system, 'base_monitor') or not hasattr(self.copy_system.base_monitor, 'main_client'):
+            await update.message.reply_text("❌ Основной API клиент не найден.")
+            return
+
+        try:
+            keyboard = [[InlineKeyboardButton("🚨 ДА, ЗАКРЫТЬ ВСЕ ПОЗИЦИИ", callback_data="panic_close_confirm")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await update.message.reply_text(
+                "⚠️ *ВНИМАНИЕ!* Вы уверены, что хотите экстренно закрыть *ВСЕ* позиции на основном аккаунте по рынку?\n\n"
+                "Это действие необратимо.",
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.MARKDOWN
+            )
+        except Exception as e:
+            logger.error(f"Panic Close command error: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Критическая ошибка при паническом закрытии: {e}")
+
+    async def panic_close_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Callback handler for /panic_close confirmation."""
+        query = update.callback_query
+        await query.answer()
+
+        if query.data != "panic_close_confirm":
+            return
+
+        user_id = query.from_user.id
+        if not self.check_authorization(user_id):
+            await query.edit_message_text("❌ Доступ запрещен")
+            return
+
+        await query.edit_message_text("🚨 Закрываю все позиции...")
+
+        if not self.copy_system or not hasattr(self.copy_system, 'base_monitor') or not hasattr(self.copy_system.base_monitor, 'main_client'):
+            await query.edit_message_text("❌ Основной API клиент не найден.")
+            return
+
+        try:
+            main_client = self.copy_system.base_monitor.main_client
+            closed_count, errors_count = await main_client.close_all_positions_by_market()
+
+            report = (
+                f"🚨 **ЭКСТРЕННОЕ ЗАКРЫТИЕ ЗАВЕРШЕНО**\n"
+                f"✅ Успешно закрыто: {closed_count}\n"
+                f"❌ Ошибок: {errors_count}"
+            )
+            await query.edit_message_text(report, parse_mode=ParseMode.MARKDOWN)
+            await send_telegram_alert(report)
+
+        except Exception as e:
+            logger.error(f"Panic Close callback error: {e}", exc_info=True)
+            await query.edit_message_text(f"❌ Критическая ошибка при закрытии позиций: {e}")
 
         # ================================
         # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ

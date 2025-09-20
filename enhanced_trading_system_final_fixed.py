@@ -3122,6 +3122,86 @@ class EnhancedBybitClient:
         except Exception as e:
             logger.error(f"{self.name} - Recent trades error: {e}")
             return []
+
+    async def place_order(self, category: str, symbol: str, side: str, orderType: str, qty: str, reduceOnly: bool = False, **kwargs) -> Optional[dict]:
+        """Place an order."""
+        try:
+            data = {
+                "category": category,
+                "symbol": symbol,
+                "side": side,
+                "orderType": orderType,
+                "qty": str(qty),
+                "reduceOnly": reduceOnly,
+            }
+            data.update(kwargs)
+
+            logger.info(f"{self.name} - Placing order: {symbol} {side} {qty} {orderType}")
+            result = await self._make_request_with_retry("POST", "order/create", data=data)
+
+            if result and result.get('retCode') == 0:
+                logger.info(f"{self.name} - Order placed successfully: {result.get('result')}")
+                return result.get('result')
+            else:
+                error_msg = result.get('retMsg', 'Unknown error') if result else 'No response'
+                logger.error(f"{self.name} - Failed to place order: {error_msg}")
+                return None
+
+        except Exception as e:
+            logger.error(f"{self.name} - Order placement error: {e}", exc_info=True)
+            return None
+
+    async def close_all_positions_by_market(self) -> Tuple[int, int]:
+        """Closes all open linear positions by market order."""
+        closed_count = 0
+        errors_count = 0
+        logger.warning(f"{self.name} - Initiating PANIC CLOSE of all positions.")
+
+        try:
+            positions = await self.get_positions()
+            if not positions:
+                logger.info(f"{self.name} - No open positions to close.")
+                return 0, 0
+
+            for pos in positions:
+                symbol = pos.get('symbol')
+                size = pos.get('size')
+                side = pos.get('side')
+
+                if not symbol or not size or not side:
+                    logger.warning(f"{self.name} - Skipping invalid position: {pos}")
+                    continue
+
+                close_side = "Sell" if side == "Buy" else "Buy"
+
+                try:
+                    result = await self.place_order(
+                        category='linear',
+                        symbol=symbol,
+                        side=close_side,
+                        orderType='Market',
+                        qty=str(size),
+                        reduceOnly=True
+                    )
+                    if result and result.get('orderId'):
+                        logger.info(f"{self.name} - Successfully placed closing order for {symbol}. Order ID: {result.get('orderId')}")
+                        closed_count += 1
+                    else:
+                        logger.error(f"{self.name} - Failed to place closing order for {symbol}. Result: {result}")
+                        errors_count += 1
+
+                    await asyncio.sleep(0.2)
+
+                except Exception as e:
+                    logger.error(f"{self.name} - Error closing position for {symbol}: {e}", exc_info=True)
+                    errors_count += 1
+
+        except Exception as e:
+            logger.error(f"{self.name} - Critical error during close_all_positions_by_market: {e}", exc_info=True)
+            errors_count += len(positions) - closed_count
+
+        logger.warning(f"{self.name} - Panic close summary: Closed={closed_count}, Errors={errors_count}")
+        return closed_count, errors_count
     
     def get_stats(self) -> dict:
         """Получить статистику клиента (корректный success_rate 0..100%)"""
@@ -4179,154 +4259,6 @@ class FinalFixedWebSocketManager:
         finally:
             logger.info("DB worker %s stopped", worker_id)
 
-    async def reconcile_positions_from_rest(self, interval_sec: float | None = None):
-        """
-        🌐 Улучшенный REST-reconcile: держит задачу живой, ждёт появления клиента,
-        опционально прокидывает позиции в очередь записи и всегда делает batch-reconcile
-        через positions_writer (без зависимости от очереди).
-        Управляется:
-        - RECONCILE_ENABLE (1/0) — включить/выключить задачу,
-        - RECONCILE_INTERVAL_SEC — интервал опроса (сек),
-        - RECONCILE_ENQUEUE (1/0) — дублировать ли события в внутреннюю очередь.
-        """
-        import os, asyncio, time, random
-
-        # 0) выключатель
-        if os.getenv("RECONCILE_ENABLE", "1") != "1":
-            logger.info("REST reconcile disabled via RECONCILE_ENABLE")
-            # не завершаемся, чтобы оркестратор не перезапускал задачу
-            while not getattr(self, "should_stop", False):
-                await asyncio.sleep(60)
-            return
-
-        # 1) интервал
-        try:
-            default_interval = float(os.getenv("RECONCILE_INTERVAL_SEC", "30"))
-        except Exception:
-            default_interval = 30.0
-        try:
-            interval = float(interval_sec) if interval_sec is not None else default_interval
-        except Exception:
-            interval = default_interval
-
-        # 2) ленивый импорт writer
-        try:
-            try:
-                from app.positions_db_writer import positions_writer
-            except ImportError:
-                from positions_db_writer import positions_writer
-        except Exception as e:
-            logger.error("REST reconcile: cannot import positions_writer: %s", e)
-            while not getattr(self, "should_stop", False):
-                await asyncio.sleep(10)
-            return
-
-        enqueue_from_rest = os.getenv("RECONCILE_ENQUEUE", "0") == "1"
-        logger.info("REST reconcile task started (interval=%.1fs, enqueue=%s)", interval, enqueue_from_rest)
-
-        last_wait_log = 0.0
-
-        while not getattr(self, "should_stop", False):
-            try:
-                # 3) ждём клиента (и по необходимости — очередь)
-                client = (
-                    getattr(self, "main_client", None)
-                    or getattr(self, "source_client", None)
-                    or getattr(self, "api_client", None)
-                )
-                # TARGET_ACCOUNT_ID должен быть в модуле/классе; если нет — дефолт 1
-                account_id = int(getattr(self, "account_id", globals().get("TARGET_ACCOUNT_ID", 1)))
-
-                q: asyncio.Queue | None = getattr(self, "_positions_db_queue", None)
-                need_queue = enqueue_from_rest
-
-                if client is None or (need_queue and q is None):
-                    now = time.time()
-                    if now - last_wait_log > 10:
-                        if client is None:
-                            logger.warning("REST reconcile: waiting for API client to initialize...")
-                        if need_queue and q is None:
-                            logger.warning("REST reconcile: waiting for _positions_db_queue to appear...")
-                        last_wait_log = now
-                    await asyncio.sleep(2)
-                    continue
-
-                # 4) интервал с лёгким джиттером
-                await asyncio.sleep(max(5.0, interval + random.uniform(-5.0, 5.0)))
-
-                # 5) снимок позиций с биржи (REST)
-                try:
-                    positions = await client.get_positions()
-                except asyncio.CancelledError:
-                    break
-                except Exception as e:
-                    logger.error("REST reconcile: fetch positions error: %s", e)
-                    continue
-
-                positions = positions or []
-
-                # 6) опционально продублировать события в очередь
-                enqueued = 0
-                if enqueue_from_rest and q is not None:
-                    for pos in positions:
-                        # нормализуем ключевые поля, чтобы downstream не ломался
-                        # qty/size
-                        qty_raw = pos.get("qty", pos.get("size", 0))
-                        try:
-                            pos["qty"] = float(qty_raw)
-                        except Exception:
-                            pos["qty"] = 0.0
-
-                        # position_idx/positionIdx
-                        try:
-                            pos["position_idx"] = int(pos.get("position_idx", pos.get("positionIdx", 0)))
-                        except Exception:
-                            pos["position_idx"] = 0
-
-                        # symbol в верхний регистр
-                        if "symbol" in pos and isinstance(pos["symbol"], str):
-                            pos["symbol"] = pos["symbol"].upper()
-
-                        # попытка положить в очередь (с вытеснением при переполнении)
-                        try:
-                            q.put_nowait((account_id, pos))
-                            enqueued += 1
-                        except asyncio.QueueFull:
-                            try:
-                                _ = q.get_nowait()
-                                q.task_done()
-                            except Exception:
-                                pass
-                            try:
-                                q.put_nowait((account_id, pos))
-                                enqueued += 1
-                            except Exception:
-                                pass
-                else:
-                    if q is not None:
-                        logger.debug("REST reconcile: enqueue suppressed (RECONCILE_ENQUEUE!=1)")
-
-                # 7) всегда делаем batch-reconcile через writer
-                #    (writer сам выполнит upsert открытых и закроет отсутствующие)
-                try:
-                    await positions_writer.reconcile_positions(account_id, positions)
-                except Exception as e:
-                    logger.error("REST reconcile: reconcile_positions error: %s", e)
-                    continue
-
-                logger.info("REST reconcile completed: fetched=%s, enqueued=%s", len(positions), enqueued)
-
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error("REST reconcile loop error: %s", e)
-
-        logger.info("REST reconcile stopped")
-
-
-    # Алиас для обратной совместимости со старым именем
-    async def _reconcile_positions_from_rest(self, interval_sec: float | None = None):
-        return await self.reconcile_positions_from_rest(interval_sec)
 
     async def _handle_wallet_update(self, data: dict):
         """Обработка обновлений кошелька"""
@@ -5590,107 +5522,69 @@ class FinalTradingMonitor:
             'position_idx': idx,
         }
 
-    async def reconcile_positions_on_startup(self, enqueue: bool = True):
+    async def run_reconciliation_cycle(self, enqueue: bool = True):
         """
-        Полная сверка позиций между ДОНОРОМ и ОСНОВНЫМ аккаунтом с корректной нормализацией.
-        Генерирует сигналы на открытие/закрытие/изменение для приведения
-        основного аккаунта в соответствие с донором.
+        Выполняет один цикл сверки позиций между ДОНОРОМ и ОСНОВНЫМ аккаунтом.
+        Использует корректную нормализацию и генерирует сигналы на синхронизацию.
         """
-        logger.info("--- Starting REST API Position Reconciliation ---")
-
+        logger.info("--- Running REST API Reconciliation Cycle ---")
         try:
-            # 1. Получаем позиции с обоих аккаунтов
             donor_positions_raw = await self.source_client.get_positions()
             main_positions_raw = await self.main_client.get_positions()
 
             if donor_positions_raw is None or main_positions_raw is None:
-                logger.error("RECONCILE: Failed to fetch positions from one or both accounts. Aborting.")
+                logger.error("RECONCILE: Failed to fetch positions. Aborting cycle.")
                 return
 
-            # 2. Нормализуем и индексируем позиции, используя _normalize_rest_position
-            donor_positions = {
-                norm_p['key']: norm_p for p in donor_positions_raw
-                if (norm_p := self._normalize_rest_position(p)) is not None
-            }
-            main_positions = {
-                norm_p['key']: norm_p for p in main_positions_raw
-                if (norm_p := self._normalize_rest_position(p)) is not None
-            }
+            donor_positions = {p['key']: p for p in (self._normalize_rest_position(pos) for pos in donor_positions_raw) if p}
+            main_positions = {p['key']: p for p in (self._normalize_rest_position(pos) for pos in main_positions_raw) if p}
 
-            enqueued_signals = 0
-            logger.info(f"RECONCILE: fetched donor={len(donor_positions)}, main={len(main_positions)}")
-
-            # 3. Собираем все уникальные ключи позиций
+            enqueued_signals, to_open, to_close, to_modify = 0, 0, 0, 0
             all_keys = set(donor_positions.keys()) | set(main_positions.keys())
 
-            to_open_count = 0
-            to_close_count = 0
-            to_modify_count = 0
-
-            # 4. Проходим по всем позициям и генерируем сигналы
             for key in all_keys:
-                donor_pos = donor_positions.get(key)
-                main_pos = main_positions.get(key)
-
+                donor_pos, main_pos = donor_positions.get(key), main_positions.get(key)
                 signal_to_add = None
-
                 if donor_pos and not main_pos:
-                    # Сценарий 1: Открыть позицию на основном аккаунте
-                    to_open_count += 1
-                    logger.info(f"RECONCILE: ENQUEUE OPEN {key} size={donor_pos['size']} side={donor_pos['side']} meta={{'source':'reconcile'}}")
-                    signal_to_add = TradingSignal(
-                        signal_type=SignalType.POSITION_OPEN,
-                        symbol=donor_pos['symbol'],
-                        side=donor_pos['side'],
-                        size=donor_pos['size'],
-                        price=donor_pos['price'],
-                        timestamp=time.time(),
-                        metadata={'source': 'reconcile', 'position_idx': donor_pos['position_idx'], 'leverage': donor_pos['leverage']},
-                        priority=1 # High priority for reconciliation
-                    )
-
+                    to_open += 1
+                    signal_to_add = TradingSignal(signal_type=SignalType.POSITION_OPEN, symbol=donor_pos['symbol'], side=donor_pos['side'], size=donor_pos['size'], price=donor_pos['price'], timestamp=time.time(), metadata={'source': 'reconcile', 'position_idx': donor_pos['position_idx'], 'leverage': donor_pos['leverage']}, priority=1)
                 elif not donor_pos and main_pos:
-                    # Сценарий 2: Закрыть позицию на основном аккаунте
-                    to_close_count += 1
-                    logger.info(f"RECONCILE: ENQUEUE CLOSE {key} size={main_pos['size']} side={main_pos['side']} meta={{'source':'reconcile'}}")
-                    signal_to_add = TradingSignal(
-                        signal_type=SignalType.POSITION_CLOSE,
-                        symbol=main_pos['symbol'],
-                        side=main_pos['side'],
-                        size=main_pos['size'],
-                        price=main_pos['price'],
-                        timestamp=time.time(),
-                        metadata={'source': 'reconcile', 'position_idx': main_pos['position_idx']},
-                        priority=1
-                    )
-
+                    to_close += 1
+                    signal_to_add = TradingSignal(signal_type=SignalType.POSITION_CLOSE, symbol=main_pos['symbol'], side=main_pos['side'], size=main_pos['size'], price=main_pos['price'], timestamp=time.time(), metadata={'source': 'reconcile', 'position_idx': main_pos['position_idx']}, priority=1)
                 elif donor_pos and main_pos and (abs(donor_pos['size'] - main_pos['size']) > 1e-9 or donor_pos['side'] != main_pos['side']):
-                    # Сценарий 3: Изменить размер или сторону позиции
-                    to_modify_count +=1
-                    logger.info(f"RECONCILE: ENQUEUE MODIFY {key} size={donor_pos['size']} side={donor_pos['side']} meta={{'source':'reconcile'}}")
-                    signal_to_add = TradingSignal(
-                        signal_type=SignalType.POSITION_MODIFY,
-                        symbol=donor_pos['symbol'],
-                        side=donor_pos['side'],
-                        size=donor_pos['size'], # Целевой размер
-                        price=donor_pos['price'],
-                        timestamp=time.time(),
-                        metadata={'source': 'reconcile', 'position_idx': donor_pos['position_idx'], 'leverage': donor_pos['leverage'], 'prev_size_main': main_pos['size']},
-                        priority=1
-                    )
+                    to_modify += 1
+                    signal_to_add = TradingSignal(signal_type=SignalType.POSITION_MODIFY, symbol=donor_pos['symbol'], side=donor_pos['side'], size=donor_pos['size'], price=donor_pos['price'], timestamp=time.time(), metadata={'source': 'reconcile', 'position_idx': donor_pos['position_idx'], 'leverage': donor_pos['leverage'], 'prev_size_main': main_pos['size']}, priority=1)
 
                 if signal_to_add and enqueue:
+                    logger.info(f"RECONCILE: ENQUEUE {signal_to_add.signal_type.name} {key} size={signal_to_add.size} side={signal_to_add.side}")
                     await self.signal_processor.add_signal(signal_to_add)
                     enqueued_signals += 1
 
-            logger.info(f"RECONCILE: to_open={to_open_count}, to_close={to_close_count}, to_modify={to_modify_count}")
-            logger.info(f"--- REST API Position Reconciliation Finished ---")
+            summary_log = f"RECONCILE: fetched donor={len(donor_positions)}, main={len(main_positions)} | to_open={to_open}, to_close={to_close}, to_modify={to_modify}"
+            logger.info(summary_log)
             logger.info(f"RECONCILE SUMMARY: enqueued={enqueued_signals}")
-            await send_telegram_alert(f"✅ Reconciliation complete: Found {len(donor_positions)} donor positions, {len(main_positions)} main positions. Enqueued {enqueued_signals} signals for alignment.")
+            if to_open or to_close or to_modify:
+                 await send_telegram_alert(f"✅ Reconciliation Run: {summary_log}. Enqueued {enqueued_signals} signals.")
 
         except Exception as e:
-            logger.error(f"RECONCILE: Critical error during position reconciliation: {e}", exc_info=True)
+            logger.error(f"RECONCILE: Critical error during reconciliation cycle: {e}", exc_info=True)
             await send_telegram_alert(f"🔥 RECONCILE FAILED: {e}")
+
+    async def _periodic_reconciliation_loop(self, interval_sec: int = 60):
+        """Бесконечный цикл, который периодически запускает сверку позиций."""
+        logger.info(f"Starting periodic reconciliation loop with interval {interval_sec}s.")
+        while self.running and not self.should_stop:
+            try:
+                await asyncio.sleep(interval_sec)
+                logger.info("Triggering periodic reconciliation...")
+                await self.run_reconciliation_cycle()
+            except asyncio.CancelledError:
+                logger.info("Periodic reconciliation loop cancelled.")
+                break
+            except Exception as e:
+                logger.error(f"Error in periodic reconciliation loop: {e}", exc_info=True)
+                # В случае ошибки ждем дольше, чтобы избежать спама
+                await asyncio.sleep(interval_sec * 2)
 
     def _ensure_creds(self):
         from config import get_api_credentials, TARGET_ACCOUNT_ID
@@ -5756,8 +5650,11 @@ class FinalTradingMonitor:
             asyncio.create_task(self.websocket_manager._recv_loop(), name="WS_RecvLoop")
             logger.info("WebSocket _recv_loop task started.")
 
-            # Запускаем сверку позиций сразу после подключения
-            asyncio.create_task(self.reconcile_positions_on_startup())
+            # Запускаем начальную сверку позиций
+            asyncio.create_task(self.run_reconciliation_cycle(), name="InitialReconcile")
+
+            # Запускаем периодическую сверку в фоне
+            asyncio.create_task(self._periodic_reconciliation_loop(), name="PeriodicReconcile")
 
             await send_telegram_alert("✅ Final Trading Monitor System started with WebSocket fixes!")
 
