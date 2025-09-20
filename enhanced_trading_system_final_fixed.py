@@ -70,7 +70,8 @@ if not getattr(system_logger, "_configured", False):
 
 # Локальный логгер текущего файла переиспользует тот же хендлер и тоже не пропагирует
 logger = logging.getLogger("enhanced_trading_system_final_fixed")
-logger.setLevel(logging.INFO)
+# КРИТИЧНО: Устанавливаем DEBUG для детальной диагностики API и WS
+logger.setLevel(logging.DEBUG)
 logger.propagate = False
 if not logger.handlers:
     for h in system_logger.handlers:
@@ -2562,13 +2563,15 @@ class EnhancedBybitClient:
 
     async def _make_single_request(self, method: str, endpoint: str, params: dict = None, data: dict = None) -> Optional[dict]:
         """
-        CRITICAL FIX: Unified single request with enterprise connection management
-        ЗАМЕНЯЕТ ОБА СТАРЫХ ПОДХОДА на один оптимизированный
+        CRITICAL FIX: Unified single request with enterprise connection management and detailed diagnostics.
+        ЗАМЕНЯЕТ ОБА СТАРЫХ ПОДХОДА на один оптимизированный.
         """
-    
         start_time = time.time()
-        operation_name = f"api_{method.lower()}_{endpoint.replace('/', '_')}"
         result = None
+        response_data = None
+        url = f"{self.api_url}/v5/{endpoint}" # Определяем url в начале для логирования ошибок
+        safe_headers_for_log = {}
+        body = ""
 
         try:
             # Rate limiting
@@ -2584,31 +2587,22 @@ class EnhancedBybitClient:
             timestamp = str(self.time_sync.get_server_time())
             recv_window = str(BYBIT_RECV_WINDOW)
 
-            url = f"{self.api_url}/v5/{endpoint}"
             query_string = ""
-            body = ""
 
-            # DIAGNOSTIC: Log market/tickers requests with category
-            if endpoint == "market/tickers" and params:
-                logger.info(f"{self.name} - Requesting market/tickers with category: {params.get('category', 'MISSING')} for symbol: {params.get('symbol', 'N/A')}")
-            # Prevent double v5 prefix
             if endpoint.startswith("v5/"):
-                endpoint = endpoint[3:]  # Remove v5/ prefix if already present
+                endpoint = endpoint[3:]
 
             if method == "GET" and params:
-                # Сортируем параметры для консистентности подписи
                 sorted_params = dict(sorted(params.items()))
                 query_string = urlencode(sorted_params)
                 url += f"?{query_string}"
             elif method == "POST" and data:
-                # Сортируем данные для консистентности подписи
                 sorted_data = dict(sorted(data.items()))
                 body = json.dumps(sorted_data, separators=(',', ':'))
 
             # Генерация подписи
             signature = self._generate_signature(timestamp, recv_window, query_string, body)
 
-            # Заголовки
             headers = {
                 "X-BAPI-API-KEY": self.api_key,
                 "X-BAPI-TIMESTAMP": timestamp,
@@ -2617,23 +2611,44 @@ class EnhancedBybitClient:
                 "Content-Type": "application/json"
             }
 
+            # --- DIAGNOSTICS: Логируем запрос ПЕРЕД отправкой ---
+            safe_headers_for_log = headers.copy()
+            safe_headers_for_log["X-BAPI-API-KEY"] = f"***{self.api_key[-4:]}"
+            safe_headers_for_log["X-BAPI-SIGN"] = "***"
+            logger.debug(f"[{self.name}] API REQ -> {method} {url}")
+            logger.debug(f"[{self.name}] API REQ HEADERS: {safe_headers_for_log}")
+            if body:
+                logger.debug(f"[{self.name}] API REQ BODY: {body}")
+
             # CRITICAL FIX: Execute request with proper session reuse
             self.request_stats['total_requests'] += 1
-
+            response = None
             if method == "GET":
-                async with session.get(url, headers=headers) as response:
+                async with session.get(url, headers=headers) as resp:
+                    response = resp
                     response_data = await response.json()
             else:
-                async with session.post(url, headers=headers, data=body) as response:
+                async with session.post(url, headers=headers, data=body) as resp:
+                    response = resp
                     response_data = await response.json()
+
+            # --- DIAGNOSTICS: Логируем ответ ПОСЛЕ получения ---
+            ret_code = response_data.get('retCode')
+            ret_msg = response_data.get('retMsg')
+            result_list = (response_data.get('result') or {}).get('list', [])
+
+            logger.debug(f"[{self.name}] API RSP <- Status: {response.status}, retCode: {ret_code}, retMsg: '{ret_msg}'")
+            if result_list:
+                 logger.debug(f"[{self.name}] API RSP PAYLOAD (first 2): {json.dumps(result_list[:2], indent=2)}")
+            else:
+                 logger.debug(f"[{self.name}] API RSP FULL: {json.dumps(response_data, indent=2)}")
+
 
             # CRITICAL FIX: Process response headers for rate limiting
             if hasattr(self.rate_limiter, 'update_from_response_headers') and response.headers:
                 try:
                     self.rate_limiter.update_from_response_headers(
-                        dict(response.headers), 
-                        endpoint
-                    )
+                        dict(response.headers), endpoint)
                 except Exception as e:
                     logger.debug(f"{self.name} - Error processing response headers: {e}")
 
@@ -2643,31 +2658,32 @@ class EnhancedBybitClient:
 
             # Обработка ответа
             if response.status == 200:
-                if response_data.get('retCode') == 0:
+                if ret_code == 0:
                     logger.debug(f"{self.name} - Request successful: {endpoint}")
                     result = response_data
                     self.request_stats['successful_requests'] += 1
                     return result
                 else:
-                    error_code = response_data.get('retCode')
-                    error_msg = response_data.get('retMsg', 'Unknown error')
-        
                     # Специальная обработка критических ошибок
-                    if error_code == 10003:  # Invalid signature
+                    if ret_code == 10003:  # Invalid signature
                         logger.critical(f"{self.name} - Invalid signature error!")
-                        raise Exception(f"Signature error: {error_msg}")
-                    elif error_code == 10006:  # Rate limit exceeded
+                        raise Exception(f"Signature error: {ret_msg}")
+                    elif ret_code == 10006:  # Rate limit exceeded
                         logger.warning(f"{self.name} - Rate limit exceeded")
-                        raise Exception(f"Rate limit: {error_msg}")
+                        raise Exception(f"Rate limit: {ret_msg}")
                     else:
-                        raise Exception(f"API error {error_code}: {error_msg}")
+                        raise Exception(f"API error {ret_code}: {ret_msg}")
             else:
                 raise Exception(f"HTTP {response.status}: {response_data}")
 
         except Exception as e:
             self.request_stats['failed_requests'] += 1
             self.request_stats['last_error'] = str(e)
-            logger.error(f"{self.name} - Request failed for {endpoint}: {e}")
+            # Логируем ошибку с максимальной информацией
+            logger.error(f"[{self.name}] API Request failed for {endpoint}: {e}")
+            logger.debug(f"[{self.name}] Failed request details: URL={url}, Headers={safe_headers_for_log}, Body={body}")
+            if response_data:
+                logger.error(f"[{self.name}] Failed response data: {response_data}")
             raise
 
         return result
@@ -3563,6 +3579,10 @@ class FinalFixedWebSocketManager:
         success = False
 
         try:
+            # Логируем ВЕСЬ входящий трафик для полной диагностики
+            logger.info(f"[{self.name}] RAW WS MSG: {message}")
+            self.stats['raw_message_count'] = self.stats.get('raw_message_count', 0) + 1
+
             data = json.loads(message)
 
             # Буферизируем сообщение
@@ -3573,57 +3593,35 @@ class FinalFixedWebSocketManager:
                 success = True
                 return  # это pong
 
-            # --- TEMP TRACE (снять после подтверждения) ---
-            try:
-                if isinstance(data, dict):
-                    t = data.get('topic')
-                    if t and isinstance(t, str):
-                        if t.startswith('position'):
-                            logger.info("%s - [WS RAW POSITION] %s", self.name, json.dumps(data)[:800])
-                        elif t.startswith(('execution', 'order')):
-                            logger.debug("%s - [WS RAW %s] %s", self.name, t.upper(), json.dumps(data)[:400])
-                        elif t == 'wallet':
-                            logger.debug("%s - [WS RAW WALLET] %s", self.name, json.dumps(data)[:400])
-            except Exception:
-                pass
-            # --- END TEMP TRACE ---
-
             # === Главная логика ===
             if 'topic' in data:
                 topic = data['topic']
 
-                # Безопасное превью входящего WS (для быстрой диагностики структуры)
-                if isinstance(topic, str) and (
-                    topic.startswith('position') or topic.startswith('execution') or topic.startswith('order')
-                ):
-                    raw = data.get('data', data.get('result'))
-                    if isinstance(raw, list):
-                        preview = raw[:1]
-                    elif isinstance(raw, dict):
-                        preview = [raw]
-                    else:
-                        preview = raw
-                    try:
-                        logger.debug(f"WS_IN: channel={topic}, data={json.dumps(preview)}")
-                    except Exception:
-                        logger.debug(f"WS_IN: channel={topic}, data_preview={str(preview)[:200]}")
+                # --- ИСПРАВЛЕННЫЙ РОУТИНГ V5 PRIVATE ---
+                # Для приватных топиков (position, execution, order, wallet) требуется СТРОГОЕ РАВЕНСТВО, а не startswith.
+                # startswith('position') будет ложно срабатывать на 'position.snapshot', что не является событием изменения.
 
-                # Роутинг событий (нормализованный префикс-матчинг по V5)
-                if topic.startswith("position"):
-                    # Главный триггер для копирования позиций
+                logger.info(f"[{self.name}] Received message for topic: '{topic}'")
+
+                # Игнорируем служебные топики
+                if any(suffix in topic for suffix in ['.snapshot', '.query', '.periodic']):
+                    logger.debug(f"[{self.name}] Ignoring service topic: '{topic}'")
+                    return
+
+                if topic == "position":
+                    logger.info(f"[{self.name}] Routing to position handler for exact topic match.")
                     await self._handle_position_update(data)
-
-                elif topic.startswith("execution"):
+                elif topic == "execution":
+                    logger.info(f"[{self.name}] Routing to execution handler for exact topic match.")
                     await self._handle_execution_update(data)
-
-                elif topic.startswith("order"):
+                elif topic == "order":
+                    logger.info(f"[{self.name}] Routing to order handler for exact topic match.")
                     await self._handle_order_update(data)
-
                 elif topic == "wallet":
+                    logger.info(f"[{self.name}] Routing to wallet handler for exact topic match.")
                     await self._handle_wallet_update(data)
-
                 else:
-                    logger.debug(f"{self.name} - Unknown topic: {topic}")
+                    logger.debug(f"[{self.name}] Unknown or unhandled topic: '{topic}'")
 
             # Обработка системных сообщений
             elif data.get('op') == 'subscribe':
@@ -4822,13 +4820,45 @@ class FinalFixedWebSocketManager:
             'last_pong': self.last_pong,
             'ping_pong_delay': ping_pong_delay,
             'ping_pong_success_rate': (
-                (stats['ping_pong_success'] / max(1, stats['ping_pong_success'] + stats['ping_pong_failures'])) * 100
+                (stats.get('ping_pong_success', 0) / max(1, stats.get('ping_pong_success', 0) + stats.get('ping_pong_failures', 0))) * 100
             ),
             'websocket_auto_ping_disabled': True,  # ✅ показываем что автопинг отключен
             'bybit_custom_ping_enabled': True,     # ✅ показываем что используем Bybit ping
             'websocket_fixes_applied': True        # ✅ НОВОЕ: показываем что фиксы применены
         })
         return stats
+
+    async def get_diagnostic_report(self) -> str:
+        """Генерирует текстовый отчет о состоянии WebSocket для Telegram."""
+        try:
+            stats = self.get_stats()
+            is_open = stats.get('websocket_open', False)
+            status = stats.get('status', 'UNKNOWN')
+
+            report_lines = [
+                f"**WebSocket Diagnostics ({self.name})**",
+                f"---------------------------------",
+                f"**Status:** `{status}` {'✅' if is_open else '❌'}",
+                f"**Connection Open:** `{is_open}`",
+                f"**Websockets Lib Version:** `{stats.get('websockets_version', 'N/A')}`",
+                f"**Subscriptions:** `{', '.join(self.subscriptions) if self.subscriptions else 'None'}`",
+                f"**Uptime:** `{int(stats.get('uptime_seconds', 0))} seconds`",
+                f"**Last Message:** `{time.time() - stats.get('last_message_time', 0):.1f}s ago`" if stats.get('last_message_time') else "`Never`",
+                f"**Messages Received:** `{stats.get('messages_received', 0)}`",
+                f"**Messages Processed:** `{stats.get('messages_processed', 0)}`",
+                f"**Queue Size:** `{stats.get('queue_size', 0)}`",
+                f"**Connection Drops:** `{stats.get('connection_drops', 0)}`",
+                "",
+                "**Ping/Pong (Bybit Custom):**",
+                f"  **Last Ping:** `{datetime.fromtimestamp(self.last_ping).strftime('%H:%M:%S') if self.last_ping else 'N/A'}`",
+                f"  **Last Pong:** `{datetime.fromtimestamp(self.last_pong).strftime('%H:%M:%S') if self.last_pong else 'N/A'}`",
+                f"  **Latency:** `{'%.3f' % stats.get('ping_pong_delay') if stats.get('ping_pong_delay') is not None else 'N/A'}s`",
+                f"  **Success Rate:** `{stats.get('ping_pong_success_rate', 0):.1f}%`",
+            ]
+            return "\n".join(report_lines)
+        except Exception as e:
+            logger.error(f"Failed to generate WS diagnostic report: {e}")
+            return f"Error generating report: {e}"
 
     def _get_queue_size_safe(self) -> int:
         """Безопасное получение размера очереди"""
@@ -4902,7 +4932,7 @@ class ProductionSignalProcessor:
                 pass
         
         logger.info("Signal processing system stopped")
-    
+
     def register_copy_system_callback(self, callback_func):
         """
         НОВЫЙ МЕТОД: Регистрация callback функции для системы копирования
@@ -4926,38 +4956,49 @@ class ProductionSignalProcessor:
             if not isinstance(position_data, dict):
                 return
 
-            # ---- НОРМАЛИЗАЦИЯ КЛЮЧЕВЫХ ПОЛЕЙ (B) ----
-            symbol = (position_data.get('symbol') or '').upper()
-            if not symbol: return
+            # ---- НОРМАЛИЗАЦИЯ КЛЮЧЕВЫХ ПОЛЕЙ ----
+            symbol_raw = position_data.get('symbol')
+            if not symbol_raw:
+                return
+            symbol = str(symbol_raw).upper()
 
-            current_size = safe_float(position_data.get('size', position_data.get('qty', 0.0)))
+            # поддерживаем оба поля размера
+            current_size = safe_float(
+                position_data.get('size', position_data.get('qty', 0.0))
+            ) or 0.0
+
+            # ВАЖНО: в UTA при нулевой позиции side = "" (пустая строка) — это валидно
             side = (position_data.get('side') or "").strip()
 
+            # ВАЖНО: hedge mode — учитываем positionIdx
             try:
-                position_idx = int(position_data.get('positionIdx', position_data.get('position_idx', 0)))
-            except (TypeError, ValueError):
+                position_idx = int(position_data.get('position_idx', position_data.get('positionIdx', 0)))
+            except Exception:
                 position_idx = 0
-
-            price = safe_float(
-                position_data.get('entryPrice') or
-                position_data.get('sessionAvgPrice') or
-                position_data.get('markPrice') or 0
-            )
-
-            logger.info(f"SIGNAL_PROCESSOR: Processing update for {symbol}#{position_idx}, size={current_size}, side='{side}'")
 
             # ключ состояния: SYMBOL#IDX (чтобы long/short не мешали друг другу)
             state_key = f"{symbol}#{position_idx}"
 
             # ---- СРАВНЕНИЕ С ПРЕДЫДУЩИМ СОСТОЯНИЕМ ----
-            prev_size = safe_float(self.known_positions.get(state_key, {}).get('size', 0.0))
+            prev_size = 0.0
             is_known = state_key in self.known_positions
-            size_delta = current_size - prev_size
+            if is_known:
+                prev_position = self.known_positions[state_key]
+                prev_size = safe_float(prev_position.get('size', 0.0)) or 0.0
 
-            logger.debug(f"State check: key={state_key}, prev_size={prev_size}, new_size={current_size}, delta={size_delta}")
+            size_delta = current_size - prev_size
 
             # ---- ГЕНЕРАЦИЯ СИГНАЛОВ ----
             if abs(size_delta) > 0.001:  # Минимальное значимое изменение
+
+                # Цена входа по V5: entryPrice; запасные варианты — sessionAvgPrice/markPrice
+                entry_price = safe_float(
+                    position_data.get('entryPrice')
+                    or position_data.get('sessionAvgPrice')
+                    or position_data.get('markPrice')
+                    or 0
+                ) or 0.0
+
                 if not is_known and current_size > 0:
                     signal_type = SignalType.POSITION_OPEN
                     eff_size = current_size
@@ -4977,7 +5018,7 @@ class ProductionSignalProcessor:
                     symbol=symbol,
                     side=side,
                     size=eff_size,
-                    price=price,
+                    price=entry_price,
                     timestamp=time.time(),
                     metadata={
                         'prev_size': prev_size,
@@ -5503,14 +5544,121 @@ class FinalTradingMonitor:
         """Обработчик системных сигналов"""
         logger.info(f"Received signal {signum}, initiating graceful shutdown...")
         self.should_stop = True
-        
+
     def _register_websocket_handlers(self):
         """Регистрация обработчиков WebSocket событий"""
         self.websocket_manager.register_handler(
-            'position_update', 
+            'position_update',
             self.signal_processor.process_position_update
         )
-    
+
+    async def reconcile_positions_on_startup(self, enqueue: bool = True):
+        """
+        Полная сверка позиций между ДОНОРОМ и ОСНОВНЫМ аккаунтом.
+        Генерирует сигналы на открытие/закрытие/изменение для приведения
+        основного аккаунта в соответствие с донором.
+        """
+        logger.info("--- Starting REST API Position Reconciliation ---")
+
+        try:
+            # 1. Получаем позиции с обоих аккаунтов
+            donor_positions_raw = await self.source_client.get_positions()
+            main_positions_raw = await self.main_client.get_positions()
+
+            if donor_positions_raw is None or main_positions_raw is None:
+                logger.error("RECONCILE: Failed to fetch positions from one or both accounts. Aborting.")
+                return
+
+            # 2. Нормализуем и индексируем позиции по ключу "symbol#positionIdx"
+            donor_positions = {
+                f"{p['symbol']}#{p.get('positionIdx', 0)}": {
+                    'size': safe_float(p.get('size')),
+                    'side': p.get('side'),
+                    'price': safe_float(p.get('avgPrice')),
+                    'leverage': safe_float(p.get('leverage', 1)),
+                    'position_idx': int(p.get('positionIdx', 0)),
+                    'symbol': p.get('symbol')
+                } for p in donor_positions_raw if safe_float(p.get('size')) > 0
+            }
+
+            main_positions = {
+                f"{p['symbol']}#{p.get('positionIdx', 0)}": {
+                    'size': safe_float(p.get('size')),
+                    'side': p.get('side'),
+                    'price': safe_float(p.get('avgPrice')),
+                    'position_idx': int(p.get('positionIdx', 0)),
+                    'symbol': p.get('symbol')
+                } for p in main_positions_raw if safe_float(p.get('size')) > 0
+            }
+
+            enqueued_signals = 0
+
+            logger.info(f"RECONCILE: Found {len(donor_positions)} active positions on DONOR, {len(main_positions)} on MAIN.")
+
+            # 3. Собираем все уникальные ключи позиций
+            all_keys = set(donor_positions.keys()) | set(main_positions.keys())
+
+            # 4. Проходим по всем позициям и генерируем сигналы
+            for key in all_keys:
+                donor_pos = donor_positions.get(key)
+                main_pos = main_positions.get(key)
+
+                signal_to_add = None
+
+                if donor_pos and not main_pos:
+                    # Сценарий 1: Открыть позицию на основном аккаунте
+                    logger.info(f"RECONCILE: OPEN signal for {key}. Donor has {donor_pos['size']}, Main has none.")
+                    signal_to_add = TradingSignal(
+                        signal_type=SignalType.POSITION_OPEN,
+                        symbol=donor_pos['symbol'],
+                        side=donor_pos['side'],
+                        size=donor_pos['size'],
+                        price=donor_pos['price'],
+                        timestamp=time.time(),
+                        metadata={'source': 'reconcile', 'position_idx': donor_pos['position_idx'], 'leverage': donor_pos['leverage']},
+                        priority=1 # High priority for reconciliation
+                    )
+
+                elif not donor_pos and main_pos:
+                    # Сценарий 2: Закрыть позицию на основном аккаунте
+                    logger.info(f"RECONCILE: CLOSE signal for {key}. Main has {main_pos['size']}, Donor has none.")
+                    signal_to_add = TradingSignal(
+                        signal_type=SignalType.POSITION_CLOSE,
+                        symbol=main_pos['symbol'],
+                        side=main_pos['side'],
+                        size=main_pos['size'],
+                        price=main_pos['price'],
+                        timestamp=time.time(),
+                        metadata={'source': 'reconcile', 'position_idx': main_pos['position_idx']},
+                        priority=1
+                    )
+
+                elif donor_pos and main_pos and abs(donor_pos['size'] - main_pos['size']) > 1e-9:
+                    # Сценарий 3: Изменить размер позиции
+                    logger.info(f"RECONCILE: MODIFY signal for {key}. Donor size: {donor_pos['size']}, Main size: {main_pos['size']}.")
+                    signal_to_add = TradingSignal(
+                        signal_type=SignalType.POSITION_MODIFY,
+                        symbol=donor_pos['symbol'],
+                        side=donor_pos['side'],
+                        size=donor_pos['size'], # Целевой размер
+                        price=donor_pos['price'],
+                        timestamp=time.time(),
+                        metadata={'source': 'reconcile', 'position_idx': donor_pos['position_idx'], 'leverage': donor_pos['leverage'], 'prev_size_main': main_pos['size']},
+                        priority=1
+                    )
+
+                if signal_to_add and enqueue:
+                    await self.signal_processor.add_signal(signal_to_add)
+                    enqueued_signals += 1
+
+            logger.info(f"--- REST API Position Reconciliation Finished ---")
+            logger.info(f"RECONCILE SUMMARY: donor_pos={len(donor_positions)}, main_pos={len(main_positions)}, enqueued_signals={enqueued_signals}")
+            await send_telegram_alert(f"✅ Reconciliation complete: Found {len(donor_positions)} donor positions, {len(main_positions)} main positions. Enqueued {enqueued_signals} signals for alignment.")
+
+        except Exception as e:
+            logger.error(f"RECONCILE: Critical error during position reconciliation: {e}", exc_info=True)
+            await send_telegram_alert(f"🔥 RECONCILE FAILED: {e}")
+
     def _ensure_creds(self):
         from config import get_api_credentials, TARGET_ACCOUNT_ID
         creds = get_api_credentials(TARGET_ACCOUNT_ID)
@@ -5568,11 +5716,11 @@ class FinalTradingMonitor:
 
             await self.signal_processor.start_processing()
 
-            # Запускаем одноразовую сверку перед подключением к WS
-            await self.reconcile_positions_on_startup()
-
             logger.info("Connecting to WebSocket with integrated fixes...")
             await self.websocket_manager.connect()
+
+            # Запускаем сверку позиций сразу после подключения
+            asyncio.create_task(self.reconcile_positions_on_startup())
 
             await send_telegram_alert("✅ Final Trading Monitor System started with WebSocket fixes!")
 
@@ -5581,6 +5729,11 @@ class FinalTradingMonitor:
                     self._main_task = asyncio.create_task(self._run_main_loop(), name="Stage1_Monitor")
                 else:
                     self._main_task = asyncio.create_task(self._main_monitoring_loop(), name="Stage1_Monitor")
+
+            # Запускаем обработчик команд Telegram
+            if not getattr(self, "_telegram_command_task", None) or self._telegram_command_task.done():
+                self._telegram_command_task = asyncio.create_task(self._telegram_command_loop(), name="TelegramCommandHandler")
+                self.active_tasks.add(self._telegram_command_task)
 
             return
 
@@ -6038,6 +6191,67 @@ class FinalTradingMonitor:
             task.cancel()
 
 
+    async def _telegram_command_loop(self):
+        """Основной цикл для получения и обработки команд от Telegram."""
+        if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+            logger.warning("Telegram bot disabled: TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not set.")
+            return
+
+        logger.info("🤖 Telegram command handler started.")
+        update_offset = 0
+
+        while self.running and not self.should_stop:
+            try:
+                session = await get_telegram_enterprise_session()
+                url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
+                params = {'offset': update_offset, 'timeout': 10}
+
+                async with session.get(url, params=params) as response:
+                    if response.status != 200:
+                        logger.warning(f"Telegram getUpdates failed: HTTP {response.status}")
+                        await asyncio.sleep(30) # Wait before retrying on failure
+                        continue
+
+                    data = await response.json()
+                    if not data.get("ok"):
+                        logger.error(f"Telegram API error: {data.get('description')}")
+                        await asyncio.sleep(30)
+                        continue
+
+                    for update in data.get("result", []):
+                        update_offset = update["update_id"] + 1
+
+                        message = update.get("message")
+                        if not message or not message.get("text"):
+                            continue
+
+                        chat_id = message["chat"]["id"]
+                        # For security, only respond to the configured chat ID
+                        if str(chat_id) != str(TELEGRAM_CHAT_ID):
+                            logger.warning(f"Ignoring message from unauthorized chat_id: {chat_id}")
+                            continue
+
+                        command_text = message["text"].strip()
+
+                        if command_text == "/reconcile_now":
+                            logger.info("Received /reconcile_now command from Telegram.")
+                            await send_telegram_alert("⏳ Starting manual position reconciliation...")
+                            # Run reconciliation in a separate task to not block the command loop
+                            asyncio.create_task(self.reconcile_positions_on_startup())
+
+                        elif command_text == "/ws_diag":
+                            logger.info("Received /ws_diag command from Telegram.")
+                            await send_telegram_alert("🔍 Generating WebSocket diagnostics...")
+                            report = await self.websocket_manager.get_diagnostic_report()
+                            await send_telegram_alert(report)
+
+            except asyncio.CancelledError:
+                logger.info("Telegram command loop cancelled.")
+                break
+            except Exception as e:
+                logger.error(f"Error in Telegram command loop: {e}", exc_info=True)
+                await asyncio.sleep(20) # Wait longer after an unexpected error
+
     async def _shutdown(self):
         """✅ Корректное и безопасное завершение работы Stage-1 (c учётом супервизора)"""
         try:
@@ -6125,50 +6339,6 @@ class FinalTradingMonitor:
             logger.error(f"Shutdown error: {e}")
             logger.error(f"Full traceback: {traceback.format_exc()}")
 
-    async def reconcile_positions_on_startup(self):
-        """
-        Выполняет одноразовую сверку позиций при запуске для синхронизации состояния.
-        """
-        try:
-            logger.info("STARTUP_RECONCILE: Running initial position reconciliation...")
-
-            source_positions_raw = await self.source_client.get_positions()
-            main_positions_raw = await self.main_client.get_positions()
-
-            if source_positions_raw is None:
-                logger.error("STARTUP_RECONCILE: Could not fetch source positions. Aborting.")
-                return
-            if main_positions_raw is None:
-                logger.warning("STARTUP_RECONCILE: Could not fetch main positions. Assuming empty.")
-                main_positions_raw = []
-
-            source_positions = {f"{p['symbol']}#{p.get('positionIdx', 0)}": p for p in source_positions_raw}
-            main_positions = {f"{p['symbol']}#{p.get('positionIdx', 0)}": p for p in main_positions_raw}
-
-            all_keys = source_positions.keys() | main_positions.keys()
-
-            for key in all_keys:
-                source_pos = source_positions.get(key)
-                main_pos = main_positions.get(key)
-
-                # Создаем "синтетическое" событие, как будто оно пришло от WS
-                # Если позиции на доноре нет, передаем синтетическое событие о закрытии
-                if not source_pos and main_pos:
-                     logger.info(f"STARTUP_RECONCILE: Position {key} exists on MAIN but not on SOURCE. Generating CLOSE signal.")
-                     close_event = main_pos.copy()
-                     close_event['size'] = '0'
-                     await self.signal_processor.process_position_update(close_event)
-                # Если позиция на доноре есть, передаем ее. Обработчик сравнит с локальным состоянием.
-                elif source_pos:
-                    logger.info(f"STARTUP_RECONCILE: Processing position {key} from source for potential sync.")
-                    await self.signal_processor.process_position_update(source_pos)
-
-            logger.info("STARTUP_RECONCILE: Initial position reconciliation finished.")
-
-        except Exception as e:
-            logger.error(f"STARTUP_RECONCILE: Failed during initial reconciliation: {e}")
-            logger.error(traceback.format_exc())
-
 
 # ================================
 # ✅ АЛИАСЫ ДЛЯ СОВМЕСТИМОСТИ С ТЕСТАМИ
@@ -6190,27 +6360,22 @@ SignalProcessor = ProductionSignalProcessor
 async def main():
     """✅ ОКОНЧАТЕЛЬНО ИСПРАВЛЕННАЯ главная функция запуска системы"""
     try:
-        print("🚀 Запуск ИНТЕГРИРОВАННОЙ СИСТЕМЫ КОПИРОВАНИЯ v5.6")
+        print("🚀 Запуск Final Trading Monitor System v5.0")
+        print("=" * 80)
+        print("✅ ОКОНЧАТЕЛЬНО ИСПРАВЛЕННАЯ ФИНАЛЬНАЯ ВЕРСИЯ")
+        print("ИНТЕГРИРОВАННЫЕ ИСПРАВЛЕНИЯ WEBSOCKET:")
+        print("✅ ИНТЕГРИРОВАНЫ исправления из websocket_fixed_functions.py")
+        print("✅ ЗАМЕНЕНА функция is_websocket_open() на основе результатов тестов")
+        print("✅ ЗАМЕНЕНА функция close_websocket_safely() на основе результатов тестов")
+        print("✅ ИСПРАВЛЕНО свойство closed в FinalFixedWebSocketManager")
+        print("✅ ДОБАВЛЕНА диагностическая функция diagnose_websocket_issue()")
+        print("✅ ws.state.name = 'OPEN' - РАБОЧИЙ МЕТОД для websockets 15.0.1")
+        print("✅ ws.closed НЕ СУЩЕСТВУЕТ в websockets 15.0.1 - ИСПРАВЛЕНО")
+        print("✅ РЕЗУЛЬТАТ: Полная совместимость с websockets 15.0.1!")
         print("=" * 80)
         
-        # 1. Создаем систему мониторинга (Этап 1), которая содержит signal_processor
+        # Создаем и запускаем систему мониторинга
         monitor = FinalTradingMonitor()
-
-        # 2. Создаем систему копирования (Этап 2)
-        if Stage2CopyTradingSystem:
-            # Stage2 получает signal_processor от Stage1 для единой точки входа сигналов
-            copy_system = Stage2CopyTradingSystem(base_monitor=monitor)
-
-            # Регистрируем обработчик из Stage2 в SignalProcessor'е из Stage1
-            # Это ключевая связка: все сигналы из Stage1 теперь пойдут в Stage2
-            monitor.signal_processor.register_copy_system_callback(copy_system.process_copy_signal)
-
-            logger.info("✅ Stage 1 and Stage 2 systems created and linked via SignalProcessor.")
-        else:
-            logger.error("Stage 2 could not be started. Check imports. Running in monitor-only mode.")
-
-        # 3. Запускаем систему мониторинга, которая теперь управляет всем
-        # Внутри start() будет вызвана одноразовая сверка, а затем запущены все циклы
         await monitor.start()
 
     except KeyboardInterrupt:
