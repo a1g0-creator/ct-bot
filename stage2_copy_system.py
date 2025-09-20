@@ -3246,9 +3246,35 @@ class Stage2CopyTradingSystem:
 
 
     async def process_copy_signal(self, signal: TradingSignal):
+        """
+        Compatibility wrapper: старый pipeline -> новый on_position_item().
+        Не удаляем метод, чтобы сохранить обратную совместимость.
+        """
+        try:
+            handler = getattr(self, "on_position_item", None)
+            if handler is None:
+                logger.warning("process_copy_signal: on_position_item() is missing; signal ignored: %s", signal)
+                return
+
+            # Нормализация: собрать минимальный item, который ожидает on_position_item(...)
+            side = getattr(signal, "side", "Buy")
+            side = side.name if hasattr(side, "name") else str(side)
+
+            item = {
+                "symbol": getattr(signal, "symbol", "") or "",
+                "side": side or "",
+                "size": str(getattr(signal, "size", 0) or 0),
+                "entryPrice": str(getattr(signal, "price", 0) or 0),
+            "positionIdx": int(signal.metadata.get("position_idx", 0) if hasattr(signal, 'metadata') and signal.metadata else 0),
+            }
+
+            return await handler(item)
+
+        except Exception as e:
+            logger.error("process_copy_signal failed: %s", e, exc_info=True)
 
 
-    async def process_copy_signal(self, signal: TradingSignal):
+    async def process_copy_signal_legacy(self, signal: TradingSignal):
         """
         Обработчик сигналов копирования для Stage2CopyTradingSystem.
         Добавлен реальный bypass для /force_copy (metadata.force_copy=True),

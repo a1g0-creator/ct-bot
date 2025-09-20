@@ -1,0 +1,8 @@
+2025-09-20 15:40:05,289 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-20 15:40:05,675 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-20 15:40:05,689 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-20 15:40:05,690 [    INFO] bybit_trading_system:3100 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-20 15:41:04,517 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-20 15:41:04,944 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-20 15:41:04,957 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-20 15:41:04,958 [    INFO] bybit_trading_system:3100 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
