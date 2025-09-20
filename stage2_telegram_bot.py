@@ -513,6 +513,10 @@ class Stage2TelegramBot:
             # --- ГЛОБАЛЬНЫЙ ERROR‑HANDLER (PTB) ---
             application.add_error_handler(_on_error)
 
+            # --- НОВЫЕ КОМАНДЫ ДИАГНОСТИКИ ---
+            application.add_handler(CommandHandler("ws_diag", self.ws_diag_command))
+            application.add_handler(CommandHandler("reconcile_now", self.reconcile_now_command))
+
             # Защита от повторной регистрации
             self._commands_registered = True
 
@@ -3311,6 +3315,47 @@ class Stage2TelegramBot:
             logger.error(f"Emergency command error: {e}")
             logger.error(traceback.format_exc())
             await update.message.reply_text(f"❌ Ошибка выполнения экстренной команды: {e}")
+
+    async def ws_diag_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /ws_diag - диагностика WebSocket."""
+        if not self.check_authorization(update.effective_user.id):
+            await update.message.reply_text("❌ Доступ запрещен")
+            return
+
+        logger.info("Received /ws_diag command from Telegram.")
+
+        if not self.copy_system or not hasattr(self.copy_system, 'base_monitor') or not hasattr(self.copy_system.base_monitor, 'websocket_manager'):
+            await update.message.reply_text("❌ WebSocket manager не найден.")
+            return
+
+        try:
+            await update.message.reply_text("🔍 Generating WebSocket diagnostics...")
+            report = await self.copy_system.base_monitor.websocket_manager.get_diagnostic_report()
+            await update.message.reply_text(report, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error(f"WS Diag command error: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка диагностики: {e}")
+
+    async def reconcile_now_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Команда /reconcile_now - ручная сверка позиций."""
+        if not self.check_authorization(update.effective_user.id):
+            await update.message.reply_text("❌ Доступ запрещен")
+            return
+
+        logger.info("Received /reconcile_now command from Telegram.")
+
+        if not self.copy_system or not hasattr(self.copy_system, 'base_monitor'):
+            await update.message.reply_text("❌ Trading monitor не найден.")
+            return
+
+        try:
+            await update.message.reply_text("⏳ Запускаю ручную сверку позиций...")
+            # Запускаем в отдельной задаче, чтобы не блокировать бота
+            asyncio.create_task(self.copy_system.base_monitor.reconcile_positions_on_startup())
+            # Сообщение об успешном запуске будет отправлено из самого метода reconcile
+        except Exception as e:
+            logger.error(f"Reconcile Now command error: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка запуска сверки: {e}")
 
 
         # ================================

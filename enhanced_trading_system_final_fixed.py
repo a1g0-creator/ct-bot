@@ -127,12 +127,32 @@ else:
     SOURCE_API_SECRET = None
 
 # 5) Адреса/эндпойнты — можно переопределить через .env, но дефолты те же, что были
-SOURCE_API_URL = os.getenv("SOURCE_API_URL", "https://api.bybit.com")          # донор (mainnet, read-only)
-MAIN_API_URL   = os.getenv("MAIN_API_URL",   "https://api-demo.bybit.com")     # основной (demo по умолчанию)
+ENVIRONMENT = os.getenv("ENVIRONMENT", "dev").lower()
+IS_PROD = (ENVIRONMENT == "prod")
 
-# WebSocket URLs (Bybit v5) — тоже допускаем override через .env
-SOURCE_WS_URL  = os.getenv("SOURCE_WS_URL",  "wss://stream.bybit.com/v5/private")
-PUBLIC_WS_URL  = os.getenv("PUBLIC_WS_URL",  "wss://stream.bybit.com/v5/public/linear")
+# Основной URL для API
+if IS_PROD:
+    # В проде всегда используем основной API
+    MAIN_API_URL = os.getenv("MAIN_API_URL", "https://api.bybit.com")
+    SOURCE_API_URL = os.getenv("SOURCE_API_URL", "https://api.bybit.com")
+    logger.info("ENVIRONMENT=prod. Using PRODUCTION API endpoints: %s", MAIN_API_URL)
+else:
+    # В dev/test используем демо по умолчанию
+    MAIN_API_URL = os.getenv("MAIN_API_URL", "https://api-demo.bybit.com")
+    SOURCE_API_URL = os.getenv("SOURCE_API_URL", "https://api.bybit.com") # донор может оставаться на проде
+    logger.info("ENVIRONMENT=%s. Using DEMO API endpoint: %s", ENVIRONMENT, MAIN_API_URL)
+
+
+# WebSocket URLs (Bybit v5)
+if IS_PROD:
+    SOURCE_WS_URL = os.getenv("SOURCE_WS_URL", "wss://stream.bybit.com/v5/private")
+    PUBLIC_WS_URL = os.getenv("PUBLIC_WS_URL", "wss://stream.bybit.com/v5/public/linear")
+    logger.info("ENVIRONMENT=prod. Using PRODUCTION WebSocket endpoints.")
+else:
+    # Для разработки можно использовать демо-WS, если они есть
+    SOURCE_WS_URL = os.getenv("SOURCE_WS_URL", "wss://stream-demo.bybit.com/v5/private")
+    PUBLIC_WS_URL = os.getenv("PUBLIC_WS_URL", "wss://stream-demo.bybit.com/v5/public/linear")
+    logger.info("ENVIRONMENT=%s. Using DEMO WebSocket endpoints.", ENVIRONMENT)
 
 # дальше идёт твой существующий код: RATE_LIMITS, тайминги, константы и т.д.
 
@@ -2202,13 +2222,21 @@ class AWSTimeSyncPro:
         self.sync_interval: int = 300      # 5 минут
         self.sync_accuracy: float = 0.0    # точность последней синхронизации (±мс)
 
-        # Источники времени (оба эндпойнта — market/public, прод/демо)
-        self.time_sources = [
-            "https://api.bybit.com/v5/market/time",
-            "https://api.bybit.com/v5/public/time",
-            "https://api-demo.bybit.com/v5/market/time",
-            "https://api-demo.bybit.com/v5/public/time",
-        ]
+        # Источники времени
+        if IS_PROD:
+            logger.info("AWSTimeSyncPro: Using PRODUCTION time sources.")
+            self.time_sources = [
+                "https://api.bybit.com/v5/market/time",
+                "https://api.bybit.com/v5/public/time",
+            ]
+        else:
+            logger.info("AWSTimeSyncPro: Using DEMO and PRODUCTION time sources for dev.")
+            self.time_sources = [
+                "https://api-demo.bybit.com/v5/market/time",
+                "https://api-demo.bybit.com/v5/public/time",
+                "https://api.bybit.com/v5/market/time", # В dev можно использовать и прод для сравнения
+                "https://api.bybit.com/v5/public/time",
+            ]
 
         # Статистика синхронизации
         self.sync_stats = {
@@ -2636,12 +2664,15 @@ class EnhancedBybitClient:
             ret_code = response_data.get('retCode')
             ret_msg = response_data.get('retMsg')
             result_list = (response_data.get('result') or {}).get('list', [])
+            items_count = len(result_list) if isinstance(result_list, list) else 0
 
-            logger.debug(f"[{self.name}] API RSP <- Status: {response.status}, retCode: {ret_code}, retMsg: '{ret_msg}'")
-            if result_list:
-                 logger.debug(f"[{self.name}] API RSP PAYLOAD (first 2): {json.dumps(result_list[:2], indent=2)}")
-            else:
-                 logger.debug(f"[{self.name}] API RSP FULL: {json.dumps(response_data, indent=2)}")
+            log_preview = ""
+            if items_count > 0:
+                log_preview = f", preview: {json.dumps(result_list[:2])}"
+
+            logger.debug(
+                f"[{self.name}] API RSP <- {method} {url} | retCode: {ret_code}, retMsg: '{ret_msg}', items: {items_count}{log_preview}"
+            )
 
 
             # CRITICAL FIX: Process response headers for rate limiting
@@ -3047,7 +3078,8 @@ class EnhancedBybitClient:
         try:
             params = {
                 "category": "linear",
-                "settleCoin": "USDT"
+                "settleCoin": "USDT",
+                "limit": 50
             }
             
             result = await self._make_request_with_retry("GET", "position/list", params)
@@ -3292,7 +3324,8 @@ class FinalFixedWebSocketManager:
                 
                 if is_authenticated:
                     self.status = ConnectionStatus.AUTHENTICATED
-                    logger.info(f"{self.name} - ✅ WebSocket authenticated successfully")
+                    masked_key = f"{self.api_key[:6]}...{self.api_key[-4:]}" if self.api_key else "N/A"
+                    logger.info(f"{self.name} - ✅ WebSocket authenticated successfully for key {masked_key} (account_id={DONOR_ACCOUNT_ID})")
                 else:
                     raise Exception(f"Authentication failed: {auth_response}")
                     
@@ -3454,78 +3487,43 @@ class FinalFixedWebSocketManager:
         except Exception as e:
             return False, f"❌ Bybit ping/pong test error: {e}"
 
-    async def listen(self):
+    async def _recv_loop(self):
         """
-        УЛУЧШЕННАЯ версия с использованием очереди для асинхронной обработки
+        Основной цикл получения и обработки сообщений WebSocket.
         """
-        try:
-            logger.info(f"{self.name} - Starting WebSocket listener")
-            
-            # Запускаем обработчик очереди если его нет
-            if not hasattr(self, '_message_processor_task') or not self._message_processor_task:
-                self._message_processor_task = asyncio.create_task(self._process_message_queue())
-                self.active_tasks.add(self._message_processor_task)
+        logger.info(f"{self.name} - Starting WebSocket recv loop...")
+        while not self.should_stop and is_websocket_open(self.ws):
+            try:
+                message = await asyncio.wait_for(self.ws.recv(), timeout=WEBSOCKET_TIMEOUT)
+                
+                # Инкремент счетчика полученных сообщений
+                self.stats['messages_received'] = self.stats.get('messages_received', 0) + 1
+                self.stats['last_message_time'] = time.time()
+                
+                # Логирование сырого сообщения
+                logger.debug("RAW_WS_MSG %s", message[:800])
+
+                # Обработка сообщения
+                await self._process_message(message)
+                
+                # Инкремент счетчика обработанных сообщений (если process_message не вызвал исключение)
+                self.stats['messages_processed'] = self.stats.get('messages_processed', 0) + 1
+                
+            except asyncio.TimeoutError:
+                # Тайм-аут - это нормально, просто продолжаем цикл для проверки should_stop
+                continue
+            except websockets.exceptions.ConnectionClosed as e:
+                logger.warning(f"{self.name} - WebSocket connection closed in recv loop: {e}")
+                self.stats['connection_drops'] = self.stats.get('connection_drops', 0) + 1
+                if not self.should_stop:
+                    asyncio.create_task(self._handle_disconnect(f"ConnectionClosed: {e.code}"))
+                break
+            except Exception as e:
+                logger.error(f"{self.name} - Error in recv loop: {e}", exc_info=True)
+                # Небольшая пауза после неизвестной ошибки
+                await asyncio.sleep(1)
         
-            while not self.should_stop and is_websocket_open(self.ws):
-                try:
-                    # Получаем сообщение с timeout
-                    message = await asyncio.wait_for(
-                        self.ws.recv(), 
-                        timeout=WEBSOCKET_TIMEOUT
-                    )
-                
-                    # Обновляем статистику
-                    self.stats['messages_received'] = self.stats.get('messages_received', 0) + 1
-                    self.stats['last_message_time'] = time.time()
-                
-                    # ИЗМЕНЕНИЕ: Кладем в очередь вместо прямой обработки
-                    try:
-                        # Пытаемся положить в очередь с таймаутом
-                        await asyncio.wait_for(
-                            self.message_queue.put(message),
-                            timeout=0.1
-                        )
-                    except asyncio.TimeoutError:
-                        # Очередь переполнена, обрабатываем напрямую
-                        logger.warning(f"{self.name} - Queue full, processing directly")
-                        await self._process_message(message)
-                    except Exception as e:
-                        logger.error(f"{self.name} - Queue put error: {e}")
-                        # Fallback на прямую обработку
-                        await self._process_message(message)
-                
-                except asyncio.TimeoutError:
-                    continue  # Нормально для проверки флагов
-                
-                except websockets.exceptions.ConnectionClosed as e:
-                    logger.warning(f"{self.name} - WebSocket connection closed: {e}")
-                    self.stats['connection_drops'] = self.stats.get('connection_drops', 0) + 1
-                    break
-                
-                except Exception as e:
-                    logger.error(f"{self.name} - Listen error: {e}")
-                    if "JSON" in str(e):
-                        continue
-                    else:
-                        await asyncio.sleep(0.1)
-                
-        except Exception as e:
-            logger.error(f"{self.name} - Critical listen error: {e}")
-        
-        finally:
-            # Останавливаем обработчик очереди
-            if hasattr(self, '_message_processor_task') and self._message_processor_task:
-                self._message_processor_task.cancel()
-                try:
-                    await asyncio.wait_for(self._message_processor_task, timeout=2.0)
-                except (asyncio.CancelledError, asyncio.TimeoutError):
-                    pass
-            
-            self.status = ConnectionStatus.DISCONNECTED
-            logger.info(f"{self.name} - WebSocket listener stopped")
-        
-            if not self.should_stop:
-                await self._handle_disconnect("listener_stopped")
+        logger.info(f"{self.name} - WebSocket recv loop stopped.")
 
     async def _process_message_queue(self):
         """Обработчик очереди сообщений"""
@@ -3998,7 +3996,12 @@ class FinalFixedWebSocketManager:
                     }
 
                 if event_type != 'UNKNOWN':
-                    logger.info(f"📊 Position {event_type}: {symbol} {side} qty={current_qty} idx={position_idx}")
+                    entry_price = safe_float(position_data.get('entryPrice', position_data.get('avgPrice', 0)))
+                    mark_price = safe_float(position_data.get('markPrice', 0))
+
+                    logger.info(
+                        f"WS_IN_POS: {symbol} idx={position_idx} side={side} size={current_qty} entry={entry_price} mark={mark_price}. Event: {event_type}. Triggering signal processor."
+                    )
 
                 # 4) Генерация сигнала копирования (только для донора) — РОБАСТНЫЙ ГЕЙТ
                 # name → lower, алиасы, явный флаг, сравнение account_id с DONOR_ACCOUNT_ID
@@ -5593,10 +5596,14 @@ class FinalTradingMonitor:
 
             enqueued_signals = 0
 
-            logger.info(f"RECONCILE: Found {len(donor_positions)} active positions on DONOR, {len(main_positions)} on MAIN.")
+            logger.info(f"RECONCILE: fetched donor={len(donor_positions)}, main={len(main_positions)}")
 
             # 3. Собираем все уникальные ключи позиций
             all_keys = set(donor_positions.keys()) | set(main_positions.keys())
+
+            to_open_count = 0
+            to_close_count = 0
+            to_modify_count = 0
 
             # 4. Проходим по всем позициям и генерируем сигналы
             for key in all_keys:
@@ -5607,7 +5614,8 @@ class FinalTradingMonitor:
 
                 if donor_pos and not main_pos:
                     # Сценарий 1: Открыть позицию на основном аккаунте
-                    logger.info(f"RECONCILE: OPEN signal for {key}. Donor has {donor_pos['size']}, Main has none.")
+                    to_open_count += 1
+                    logger.info(f"RECONCILE: ENQUEUE OPEN {key} size={donor_pos['size']} side={donor_pos['side']} meta={{'source':'reconcile'}}")
                     signal_to_add = TradingSignal(
                         signal_type=SignalType.POSITION_OPEN,
                         symbol=donor_pos['symbol'],
@@ -5621,7 +5629,8 @@ class FinalTradingMonitor:
 
                 elif not donor_pos and main_pos:
                     # Сценарий 2: Закрыть позицию на основном аккаунте
-                    logger.info(f"RECONCILE: CLOSE signal for {key}. Main has {main_pos['size']}, Donor has none.")
+                    to_close_count += 1
+                    logger.info(f"RECONCILE: ENQUEUE CLOSE {key} size={main_pos['size']} side={main_pos['side']} meta={{'source':'reconcile'}}")
                     signal_to_add = TradingSignal(
                         signal_type=SignalType.POSITION_CLOSE,
                         symbol=main_pos['symbol'],
@@ -5633,9 +5642,10 @@ class FinalTradingMonitor:
                         priority=1
                     )
 
-                elif donor_pos and main_pos and abs(donor_pos['size'] - main_pos['size']) > 1e-9:
-                    # Сценарий 3: Изменить размер позиции
-                    logger.info(f"RECONCILE: MODIFY signal for {key}. Donor size: {donor_pos['size']}, Main size: {main_pos['size']}.")
+                elif donor_pos and main_pos and (abs(donor_pos['size'] - main_pos['size']) > 1e-9 or donor_pos['side'] != main_pos['side']):
+                    # Сценарий 3: Изменить размер или сторону позиции
+                    to_modify_count +=1
+                    logger.info(f"RECONCILE: ENQUEUE MODIFY {key} size={donor_pos['size']} side={donor_pos['side']} meta={{'source':'reconcile'}}")
                     signal_to_add = TradingSignal(
                         signal_type=SignalType.POSITION_MODIFY,
                         symbol=donor_pos['symbol'],
@@ -5651,8 +5661,9 @@ class FinalTradingMonitor:
                     await self.signal_processor.add_signal(signal_to_add)
                     enqueued_signals += 1
 
+            logger.info(f"RECONCILE: to_open={to_open_count}, to_close={to_close_count}, to_modify={to_modify_count}")
             logger.info(f"--- REST API Position Reconciliation Finished ---")
-            logger.info(f"RECONCILE SUMMARY: donor_pos={len(donor_positions)}, main_pos={len(main_positions)}, enqueued_signals={enqueued_signals}")
+            logger.info(f"RECONCILE SUMMARY: enqueued={enqueued_signals}")
             await send_telegram_alert(f"✅ Reconciliation complete: Found {len(donor_positions)} donor positions, {len(main_positions)} main positions. Enqueued {enqueued_signals} signals for alignment.")
 
         except Exception as e:
@@ -5719,6 +5730,10 @@ class FinalTradingMonitor:
             logger.info("Connecting to WebSocket with integrated fixes...")
             await self.websocket_manager.connect()
 
+            # КРИТИЧНО: Запускаем цикл получения сообщений в фоне
+            asyncio.create_task(self.websocket_manager._recv_loop(), name="WS_RecvLoop")
+            logger.info("WebSocket _recv_loop task started.")
+
             # Запускаем сверку позиций сразу после подключения
             asyncio.create_task(self.reconcile_positions_on_startup())
 
@@ -5729,11 +5744,6 @@ class FinalTradingMonitor:
                     self._main_task = asyncio.create_task(self._run_main_loop(), name="Stage1_Monitor")
                 else:
                     self._main_task = asyncio.create_task(self._main_monitoring_loop(), name="Stage1_Monitor")
-
-            # Запускаем обработчик команд Telegram
-            if not getattr(self, "_telegram_command_task", None) or self._telegram_command_task.done():
-                self._telegram_command_task = asyncio.create_task(self._telegram_command_loop(), name="TelegramCommandHandler")
-                self.active_tasks.add(self._telegram_command_task)
 
             return
 
@@ -6191,66 +6201,6 @@ class FinalTradingMonitor:
             task.cancel()
 
 
-    async def _telegram_command_loop(self):
-        """Основной цикл для получения и обработки команд от Telegram."""
-        if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
-            logger.warning("Telegram bot disabled: TELEGRAM_TOKEN or TELEGRAM_CHAT_ID not set.")
-            return
-
-        logger.info("🤖 Telegram command handler started.")
-        update_offset = 0
-
-        while self.running and not self.should_stop:
-            try:
-                session = await get_telegram_enterprise_session()
-                url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/getUpdates"
-                params = {'offset': update_offset, 'timeout': 10}
-
-                async with session.get(url, params=params) as response:
-                    if response.status != 200:
-                        logger.warning(f"Telegram getUpdates failed: HTTP {response.status}")
-                        await asyncio.sleep(30) # Wait before retrying on failure
-                        continue
-
-                    data = await response.json()
-                    if not data.get("ok"):
-                        logger.error(f"Telegram API error: {data.get('description')}")
-                        await asyncio.sleep(30)
-                        continue
-
-                    for update in data.get("result", []):
-                        update_offset = update["update_id"] + 1
-
-                        message = update.get("message")
-                        if not message or not message.get("text"):
-                            continue
-
-                        chat_id = message["chat"]["id"]
-                        # For security, only respond to the configured chat ID
-                        if str(chat_id) != str(TELEGRAM_CHAT_ID):
-                            logger.warning(f"Ignoring message from unauthorized chat_id: {chat_id}")
-                            continue
-
-                        command_text = message["text"].strip()
-
-                        if command_text == "/reconcile_now":
-                            logger.info("Received /reconcile_now command from Telegram.")
-                            await send_telegram_alert("⏳ Starting manual position reconciliation...")
-                            # Run reconciliation in a separate task to not block the command loop
-                            asyncio.create_task(self.reconcile_positions_on_startup())
-
-                        elif command_text == "/ws_diag":
-                            logger.info("Received /ws_diag command from Telegram.")
-                            await send_telegram_alert("🔍 Generating WebSocket diagnostics...")
-                            report = await self.websocket_manager.get_diagnostic_report()
-                            await send_telegram_alert(report)
-
-            except asyncio.CancelledError:
-                logger.info("Telegram command loop cancelled.")
-                break
-            except Exception as e:
-                logger.error(f"Error in Telegram command loop: {e}", exc_info=True)
-                await asyncio.sleep(20) # Wait longer after an unexpected error
 
     async def _shutdown(self):
         """✅ Корректное и безопасное завершение работы Stage-1 (c учётом супервизора)"""
