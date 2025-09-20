@@ -169,13 +169,15 @@ except ImportError:
 # -------------------------
 try:
     print("⏳ Импорт Telegram Bot...")
-    from stage2_telegram_bot import Stage2TelegramBot, run_stage2_telegram_bot  # noqa
+    from stage2_telegram_bot import Stage2TelegramBot, run_stage2_telegram_bot # noqa
+    from telegram.ext import CommandHandler
     print("✅ Telegram Bot: Корректно импортирован")
 except ImportError as e:
     print(f"⚠️ Telegram Bot не найден: {e}")
     print("Система запустится без Telegram интеграции")
     Stage2TelegramBot = None
     run_stage2_telegram_bot = None
+    CommandHandler = None
 
 # -------------------------
 # Network Supervisor (патчи)
@@ -1630,21 +1632,6 @@ class IntegratedTradingSystem:
             await self.stage2_system.initialize()
 
             # ===================================================================
-            # КЛЮЧЕВОЕ ИСПРАВЛЕНИЕ: Соединяем обработчик сигналов (Этап 1)
-            # с системой исполнения (Этап 2).
-            # ===================================================================
-            if self.stage1_monitor and hasattr(self.stage1_monitor, 'signal_processor') and self.stage2_system:
-                if hasattr(self.stage2_system, 'process_copy_signal'):
-                    self.stage1_monitor.signal_processor.register_copy_system_callback(
-                        self.stage2_system.process_copy_signal
-                    )
-                    logger.info("✅ Signal processor connected to Stage 2 copy system.")
-                else:
-                    logger.error("CRITICAL: Stage2 has no process_copy_signal method!")
-            else:
-                logger.error("CRITICAL: Failed to connect Signal Processor to Stage 2: components missing.")
-
-            # ===================================================================
             # КРИТИЧЕСКИ ВАЖНО: Интегрируем Telegram bot с системами
             # ===================================================================
             self.integrate_telegram_bot_with_systems()
@@ -1768,6 +1755,16 @@ class IntegratedTradingSystem:
         logger.info("Telegram bot references refreshed (monitor & stage2)")
 
 
+    async def reconcile_now_command(self, update, context):
+        """Обработчик команды /reconcile_now."""
+        logger.info("Received /reconcile_now command from Telegram.")
+        await update.message.reply_text("Starting manual position reconciliation...")
+        if self.stage1_monitor:
+            await self.stage1_monitor.reconcile_positions_on_startup()
+            await update.message.reply_text("Reconciliation process finished. Check logs for details.")
+        else:
+            await update.message.reply_text("Error: Stage 1 monitor is not available.")
+
     async def _initialize_telegram_bot(self):
         """🔧 ИСПРАВЛЕННАЯ инициализация Telegram Bot + актуализация ссылок на системы"""
         try:
@@ -1789,6 +1786,13 @@ class IntegratedTradingSystem:
             self._refresh_bot_refs()
 
             await self.telegram_bot.start()
+
+            # Добавляем обработчик команды /reconcile_now
+            if CommandHandler:
+                app = getattr(self.telegram_bot, "app", None) or getattr(self.telegram_bot, "application", None)
+                if app:
+                    app.add_handler(CommandHandler("reconcile_now", self.reconcile_now_command))
+                    logger.info("✅ /reconcile_now command handler added.")
 
             # ↓↓↓ ВСТАВКА: защита от двойной регистрации /keys ↓↓↓
             # Не допускаем двойную регистрацию /keys: если уже есть основной хендлер — не трогаем,

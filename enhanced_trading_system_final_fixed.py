@@ -3563,6 +3563,10 @@ class FinalFixedWebSocketManager:
         success = False
 
         try:
+            # Логируем ВЕСЬ входящий трафик для полной диагностики
+            logger.info(f"[{self.name}] RAW WS MSG: {message}")
+            self.stats['raw_message_count'] = self.stats.get('raw_message_count', 0) + 1
+
             data = json.loads(message)
 
             # Буферизируем сообщение
@@ -3573,70 +3577,30 @@ class FinalFixedWebSocketManager:
                 success = True
                 return  # это pong
 
-            # --- TEMP TRACE (снять после подтверждения) ---
-            try:
-                if isinstance(data, dict):
-                    t = data.get('topic')
-                    if t and isinstance(t, str):
-                        if t.startswith('position'):
-                            logger.info("%s - [WS RAW POSITION] %s", self.name, json.dumps(data)[:800])
-                        elif t.startswith(('execution', 'order')):
-                            logger.debug("%s - [WS RAW %s] %s", self.name, t.upper(), json.dumps(data)[:400])
-                        elif t == 'wallet':
-                            logger.debug("%s - [WS RAW WALLET] %s", self.name, json.dumps(data)[:400])
-            except Exception:
-                pass
-            # --- END TEMP TRACE ---
-
             # === Главная логика ===
             if 'topic' in data:
                 topic = data['topic']
 
-                # Безопасное превью входящего WS (для быстрой диагностики структуры)
-                if isinstance(topic, str) and (
-                    topic.startswith('position') or topic.startswith('execution') or topic.startswith('order')
-                ):
-                    raw = data.get('data', data.get('result'))
-                    if isinstance(raw, list):
-                        preview = raw[:1]
-                    elif isinstance(raw, dict):
-                        preview = [raw]
-                    else:
-                        preview = raw
-                    try:
-                        logger.debug(f"WS_IN: channel={topic}, data={json.dumps(preview)}")
-                    except Exception:
-                        logger.debug(f"WS_IN: channel={topic}, data_preview={str(preview)[:200]}")
+                # --- ИСПРАВЛЕННЫЙ РОУТИНГ V5 PRIVATE ---
+                # Для приватных топиков (position, execution, order, wallet) требуется СТРОГОЕ РАВЕНСТВО, а не startswith.
+                # startswith('position') будет ложно срабатывать на 'position.snapshot', что не является событием изменения.
 
-                # Роутинг событий (нормализованный префикс-матчинг по V5)
-                if isinstance(topic, str) and topic.startswith("position"):
-                    # Главный триггер для копирования позиций
+                logger.info(f"[{self.name}] Received message for topic: '{topic}'")
+
+                if topic == "position":
+                    logger.info(f"[{self.name}] Routing to position handler for exact topic match.")
                     await self._handle_position_update(data)
-
-                    # Опциональный расширенный хук
-                    cb = getattr(self, '_on_position_update', None)
-                    if callable(cb):
-                        await cb(data)
-
-                elif isinstance(topic, str) and topic.startswith("execution"):
+                elif topic == "execution":
+                    logger.info(f"[{self.name}] Routing to execution handler for exact topic match.")
                     await self._handle_execution_update(data)
-
-                    cb = getattr(self, '_on_execution', None)
-                    if callable(cb):
-                        await cb(data)
-
-                elif isinstance(topic, str) and topic.startswith("order"):
+                elif topic == "order":
+                    logger.info(f"[{self.name}] Routing to order handler for exact topic match.")
                     await self._handle_order_update(data)
-
-                    cb = getattr(self, '_on_order_update', None)
-                    if callable(cb):
-                        await cb(data)
-
-                elif topic == 'wallet':
+                elif topic == "wallet":
+                    logger.info(f"[{self.name}] Routing to wallet handler for exact topic match.")
                     await self._handle_wallet_update(data)
-
                 else:
-                    logger.debug(f"{self.name} - Unknown topic: {topic}")
+                    logger.debug(f"[{self.name}] Unknown or unhandled topic: '{topic}'")
 
             # Обработка системных сообщений
             elif data.get('op') == 'subscribe':
@@ -5528,97 +5492,108 @@ class FinalTradingMonitor:
         logger.info(f"Received signal {signum}, initiating graceful shutdown...")
         self.should_stop = True
 
-    async def reconcile_positions_on_startup(self):
-        """
-        ✅ ИСПРАВЛЕНО: Сверяет позиции на SOURCE и MAIN аккаунтах при старте и генерирует
-        сигналы для выравнивания состояния. Использует прямое сравнение состояний.
-        """
-        logger.info("🚀 Starting initial position reconciliation...")
-        try:
-            source_positions_raw = await self.source_client.get_positions()
-            main_positions_raw = await self.main_client.get_positions()
-
-            source_positions = {f"{p.get('symbol')}#{p.get('positionIdx', 0)}": p for p in source_positions_raw}
-            main_positions = {f"{p.get('symbol')}#{p.get('positionIdx', 0)}": p for p in main_positions_raw}
-
-            logger.info(f"Found {len(source_positions)} active positions on SOURCE, {len(main_positions)} on MAIN.")
-            enqueued_signals = 0
-
-            # Сценарий 1: Позиция есть на SOURCE, но нет на MAIN -> Открыть
-            for key, source_pos in source_positions.items():
-                if key not in main_positions:
-                    signal = TradingSignal(
-                        signal_type=SignalType.POSITION_OPEN,
-                        symbol=source_pos['symbol'],
-                        side=source_pos['side'],
-                        size=safe_float(source_pos['size']),
-                        price=safe_float(source_pos.get('entryPrice') or source_pos.get('markPrice')),
-                        timestamp=time.time(),
-                        metadata={'reason': 'reconcile_open'}
-                    )
-                    await self.signal_processor.add_signal(signal)
-                    enqueued_signals += 1
-                    logger.info(f"RECONCILE: Enqueued OPEN signal for {key}")
-
-            # Сценарий 2: Позиция есть на MAIN, но нет на SOURCE -> Закрыть
-            for key, main_pos in main_positions.items():
-                if key not in source_positions:
-                    signal = TradingSignal(
-                        signal_type=SignalType.POSITION_CLOSE,
-                        symbol=main_pos['symbol'],
-                        side=main_pos['side'],
-                        size=safe_float(main_pos['size']),
-                        price=safe_float(main_pos.get('markPrice')),
-                        timestamp=time.time(),
-                        metadata={'reason': 'reconcile_close'}
-                    )
-                    await self.signal_processor.add_signal(signal)
-                    enqueued_signals += 1
-                    logger.info(f"RECONCILE: Enqueued CLOSE signal for {key}")
-
-            # Сценарий 3: Позиция есть на обоих, но есть расхождение -> Модифицировать
-            for key, source_pos in source_positions.items():
-                if key in main_positions:
-                    main_pos = main_positions[key]
-                    source_size = safe_float(source_pos.get('size', 0))
-                    main_size = safe_float(main_pos.get('size', 0))
-
-                    if abs(source_size - main_size) > 1e-9:
-                        signal = TradingSignal(
-                            signal_type=SignalType.POSITION_MODIFY,
-                            symbol=source_pos['symbol'],
-                            side=source_pos['side'],
-                            size=source_size,
-                            price=safe_float(source_pos.get('markPrice')),
-                            timestamp=time.time(),
-                            metadata={'reason': 'reconcile_modify', 'prev_size': main_size, 'new_size': source_size}
-                        )
-                        await self.signal_processor.add_signal(signal)
-                        enqueued_signals += 1
-                        logger.info(f"RECONCILE: Enqueued MODIFY signal for {key} (size {main_size} -> {source_size})")
-
-            if enqueued_signals > 0:
-                logger.info(f"✅ REST reconcile completed: enqueued {enqueued_signals} signals for alignment.")
-            else:
-                logger.info("✅ REST reconcile completed: No discrepancies found.")
-
-        except Exception as e:
-            logger.error(f"Critical error during position reconciliation: {e}", exc_info=True)
-            await send_telegram_alert(f"🚨 RECONCILE FAILED: {e}")
-        
     def _register_websocket_handlers(self):
         """Регистрация обработчиков WebSocket событий"""
         self.websocket_manager.register_handler(
-            'position_update', 
+            'position_update',
             self.signal_processor.process_position_update
         )
-    
+
     def _ensure_creds(self):
         from config import get_api_credentials, TARGET_ACCOUNT_ID
         creds = get_api_credentials(TARGET_ACCOUNT_ID)
         if not creds:
             raise RuntimeError("Missing API credentials at runtime (введите ключи через /keys)")
         self.api_key, self.api_secret = creds
+
+    async def reconcile_positions_on_startup(self):
+        """
+        Сверяет позиции между донорским (source) и основным (main) аккаунтами
+        и генерирует сигналы для их синхронизации.
+        """
+        logger.info("🚀 Starting REST API position reconciliation...")
+        try:
+            source_positions_raw = await self.source_client.get_positions()
+            main_positions_raw = await self.main_client.get_positions()
+
+            logger.info(f"Found {len(source_positions_raw)} active positions on SOURCE account.")
+            logger.info(f"Found {len(main_positions_raw)} active positions on MAIN account.")
+
+            # Нормализация позиций в удобный для сравнения формат
+            def normalize_positions(positions_list):
+                pos_map = {}
+                for p in positions_list:
+                    symbol = p.get('symbol')
+                    idx = int(p.get('positionIdx', 0))
+                    key = f"{symbol}#{idx}"
+                    pos_map[key] = {
+                        'side': p.get('side'),
+                        'size': safe_float(p.get('size')),
+                        'price': safe_float(p.get('avgPrice', p.get('entryPrice'))),
+                        'leverage': p.get('leverage')
+                    }
+                return pos_map
+
+            source_positions = normalize_positions(source_positions_raw)
+            main_positions = normalize_positions(main_positions_raw)
+
+            all_keys = set(source_positions.keys()) | set(main_positions.keys())
+            enqueued_signals = 0
+
+            for key in all_keys:
+                source_pos = source_positions.get(key)
+                main_pos = main_positions.get(key)
+                symbol, _, idx_str = key.partition('#')
+                position_idx = int(idx_str)
+
+                signal = None
+
+                if source_pos and not main_pos:
+                    # Позиция есть у донора, но нет на основном -> Открыть
+                    logger.info(f"RECONCILE: Opening position for {key}. Source: {source_pos['size']}, Main: None")
+                    signal = TradingSignal(
+                        signal_type=SignalType.POSITION_OPEN,
+                        symbol=symbol,
+                        side=source_pos['side'],
+                        size=source_pos['size'],
+                        price=source_pos['price'],
+                        timestamp=time.time(),
+                        metadata={'source': 'reconcile', 'position_idx': position_idx, 'leverage': source_pos['leverage']}
+                    )
+                elif not source_pos and main_pos:
+                    # Позиции нет у донора, но есть на основном -> Закрыть
+                    logger.info(f"RECONCILE: Closing position for {key}. Source: None, Main: {main_pos['size']}")
+                    signal = TradingSignal(
+                        signal_type=SignalType.POSITION_CLOSE,
+                        symbol=symbol,
+                        side=main_pos['side'],
+                        size=main_pos['size'],
+                        price=main_pos['price'],
+                        timestamp=time.time(),
+                        metadata={'source': 'reconcile', 'position_idx': position_idx}
+                    )
+                elif source_pos and main_pos:
+                    # Позиции есть на обоих, проверяем расхождения
+                    if source_pos['side'] != main_pos['side'] or abs(source_pos['size'] - main_pos['size']) > 0.00001:
+                        logger.info(f"RECONCILE: Modifying position for {key}. Source: {source_pos['size']} {source_pos['side']}, Main: {main_pos['size']} {main_pos['side']}")
+                        signal = TradingSignal(
+                            signal_type=SignalType.POSITION_MODIFY,
+                            symbol=symbol,
+                            side=source_pos['side'],
+                            size=source_pos['size'], # Целевой размер
+                            price=source_pos['price'],
+                            timestamp=time.time(),
+                            metadata={'source': 'reconcile', 'position_idx': position_idx, 'from_size': main_pos['size'], 'leverage': source_pos['leverage']}
+                        )
+
+                if signal:
+                    await self.signal_processor.add_signal(signal)
+                    enqueued_signals += 1
+
+            logger.info(f"✅ REST reconcile completed: enqueued {enqueued_signals} signals.")
+
+        except Exception as e:
+            logger.error(f"❌ Failed to reconcile positions: {e}", exc_info=True)
 
     async def start(self):
         """✅ ИСПРАВЛЕННЫЙ И ИДЕМПОТЕНТНЫЙ запуск системы мониторинга (Stage-1)"""
@@ -5670,8 +5645,9 @@ class FinalTradingMonitor:
 
             await self.signal_processor.start_processing()
 
-            # ✅ ИСПРАВЛЕНО: Запускаем сверку позиций по REST перед подключением к WS.
+            # --- ЗАПУСК СВЕРКИ ПЕРЕД ПОДКЛЮЧЕНИЕМ К WEBSOCKET ---
             await self.reconcile_positions_on_startup()
+            # --- КОНЕЦ СВЕРКИ ---
 
             logger.info("Connecting to WebSocket with integrated fixes...")
             await self.websocket_manager.connect()
