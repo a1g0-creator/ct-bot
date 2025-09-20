@@ -3506,9 +3506,6 @@ class FinalFixedWebSocketManager:
                 # Обработка сообщения
                 await self._process_message(message)
                 
-                # Инкремент счетчика обработанных сообщений (если process_message не вызвал исключение)
-                self.stats['messages_processed'] = self.stats.get('messages_processed', 0) + 1
-                
             except asyncio.TimeoutError:
                 # Тайм-аут - это нормально, просто продолжаем цикл для проверки should_stop
                 continue
@@ -3594,32 +3591,36 @@ class FinalFixedWebSocketManager:
             # === Главная логика ===
             if 'topic' in data:
                 topic = data['topic']
-
-                # --- ИСПРАВЛЕННЫЙ РОУТИНГ V5 PRIVATE ---
-                # Для приватных топиков (position, execution, order, wallet) требуется СТРОГОЕ РАВЕНСТВО, а не startswith.
-                # startswith('position') будет ложно срабатывать на 'position.snapshot', что не является событием изменения.
-
                 logger.info(f"[{self.name}] Received message for topic: '{topic}'")
 
-                # Игнорируем служебные топики
-                if any(suffix in topic for suffix in ['.snapshot', '.query', '.periodic']):
-                    logger.debug(f"[{self.name}] Ignoring service topic: '{topic}'")
+                # Строгий роутер: Игнорируем служебные топики (snapshot, query, periodic)
+                if '.' in topic:
+                    logger.debug(f"[{self.name}] Ignoring service topic with '.' in name: '{topic}'")
                     return
 
+                handler_called = False
                 if topic == "position":
-                    logger.info(f"[{self.name}] Routing to position handler for exact topic match.")
+                    logger.info(f"[{self.name}] Routing to position handler.")
                     await self._handle_position_update(data)
+                    handler_called = True
                 elif topic == "execution":
-                    logger.info(f"[{self.name}] Routing to execution handler for exact topic match.")
+                    logger.info(f"[{self.name}] Routing to execution handler.")
                     await self._handle_execution_update(data)
+                    handler_called = True
                 elif topic == "order":
-                    logger.info(f"[{self.name}] Routing to order handler for exact topic match.")
+                    logger.info(f"[{self.name}] Routing to order handler.")
                     await self._handle_order_update(data)
+                    handler_called = True
                 elif topic == "wallet":
-                    logger.info(f"[{self.name}] Routing to wallet handler for exact topic match.")
+                    logger.info(f"[{self.name}] Routing to wallet handler.")
                     await self._handle_wallet_update(data)
+                    handler_called = True
                 else:
                     logger.debug(f"[{self.name}] Unknown or unhandled topic: '{topic}'")
+
+                # Инкрементируем счетчик только для успешно обработанных основных топиков
+                if handler_called:
+                    self.stats['messages_processed'] = self.stats.get('messages_processed', 0) + 1
 
             # Обработка системных сообщений
             elif data.get('op') == 'subscribe':
@@ -4042,17 +4043,20 @@ class FinalFixedWebSocketManager:
                 except Exception:
                     pass
 
-            # 7) Кастомные обработчики
+            # 7) Кастомные обработчики - вызываем с каждым элементом позиции, а не со всем сообщением
             handlers = self.message_handlers.get('position_update', [])
-            for handler in handlers:
-                try:
-                    await handler(data)
-                except Exception as e:
-                    logger.error("Position handler error: %s", e)
+            if handlers:
+                for position_item in items:
+                    for handler in handlers:
+                        try:
+                            # Ключевое исправление: передаем сам объект позиции, а не весь `data`
+                            await handler(position_item)
+                        except Exception as e:
+                            logger.error(f"Position handler error for item {position_item.get('symbol')}: {e}", exc_info=True)
 
             # 8) Статистика
             try:
-                self.stats['messages_processed'] = self.stats.get('messages_processed', 0) + 1
+                # Счетчик messages_processed теперь инкрементируется в _process_message
                 self.stats['positions_updated'] = self.stats.get('positions_updated', 0) + len(items)
             except Exception:
                 pass
@@ -5555,9 +5559,40 @@ class FinalTradingMonitor:
             self.signal_processor.process_position_update
         )
 
+    def _normalize_rest_position(self, p: dict) -> Optional[dict]:
+        """Нормализует данные позиции из REST API согласно требованиям."""
+        size = safe_float(p.get('size'))
+        if not (size > 0):
+            return None
+
+        symbol = p.get('symbol')
+        if not symbol:
+            return None
+
+        try:
+            idx = int(p.get('positionIdx', 0))
+        except (ValueError, TypeError):
+            idx = 0
+
+        # Нормализация цены по приоритету: entryPrice -> sessionAvgPrice -> markPrice -> 0
+        price = safe_float(p.get('entryPrice') or p.get('sessionAvgPrice') or p.get('markPrice') or 0)
+
+        # Нормализация стороны
+        side = (p.get('side') or "").strip()
+
+        return {
+            'key': f"{symbol}#{idx}",
+            'symbol': symbol,
+            'size': size,
+            'side': side,
+            'price': price,
+            'leverage': safe_float(p.get('leverage', 1)),
+            'position_idx': idx,
+        }
+
     async def reconcile_positions_on_startup(self, enqueue: bool = True):
         """
-        Полная сверка позиций между ДОНОРОМ и ОСНОВНЫМ аккаунтом.
+        Полная сверка позиций между ДОНОРОМ и ОСНОВНЫМ аккаунтом с корректной нормализацией.
         Генерирует сигналы на открытие/закрытие/изменение для приведения
         основного аккаунта в соответствие с донором.
         """
@@ -5572,30 +5607,17 @@ class FinalTradingMonitor:
                 logger.error("RECONCILE: Failed to fetch positions from one or both accounts. Aborting.")
                 return
 
-            # 2. Нормализуем и индексируем позиции по ключу "symbol#positionIdx"
+            # 2. Нормализуем и индексируем позиции, используя _normalize_rest_position
             donor_positions = {
-                f"{p['symbol']}#{p.get('positionIdx', 0)}": {
-                    'size': safe_float(p.get('size')),
-                    'side': p.get('side'),
-                    'price': safe_float(p.get('avgPrice')),
-                    'leverage': safe_float(p.get('leverage', 1)),
-                    'position_idx': int(p.get('positionIdx', 0)),
-                    'symbol': p.get('symbol')
-                } for p in donor_positions_raw if safe_float(p.get('size')) > 0
+                norm_p['key']: norm_p for p in donor_positions_raw
+                if (norm_p := self._normalize_rest_position(p)) is not None
             }
-
             main_positions = {
-                f"{p['symbol']}#{p.get('positionIdx', 0)}": {
-                    'size': safe_float(p.get('size')),
-                    'side': p.get('side'),
-                    'price': safe_float(p.get('avgPrice')),
-                    'position_idx': int(p.get('positionIdx', 0)),
-                    'symbol': p.get('symbol')
-                } for p in main_positions_raw if safe_float(p.get('size')) > 0
+                norm_p['key']: norm_p for p in main_positions_raw
+                if (norm_p := self._normalize_rest_position(p)) is not None
             }
 
             enqueued_signals = 0
-
             logger.info(f"RECONCILE: fetched donor={len(donor_positions)}, main={len(main_positions)}")
 
             # 3. Собираем все уникальные ключи позиций
