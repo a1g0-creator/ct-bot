@@ -2617,6 +2617,15 @@ class EnhancedBybitClient:
                 "Content-Type": "application/json"
             }
 
+            # Диагностическое логирование запроса
+            safe_headers = headers.copy()
+            safe_headers["X-BAPI-API-KEY"] = f"{safe_headers['X-BAPI-API-KEY'][:5]}..."
+            safe_headers["X-BAPI-SIGN"] = f"{safe_headers['X-BAPI-SIGN'][:5]}..."
+            logger.debug(f"[{self.name}] API Request -> {method} {url}")
+            logger.debug(f"[{self.name}] Headers: {safe_headers}")
+            if body:
+                logger.debug(f"[{self.name}] Body: {body[:250]}...")
+
             # CRITICAL FIX: Execute request with proper session reuse
             self.request_stats['total_requests'] += 1
 
@@ -2640,6 +2649,16 @@ class EnhancedBybitClient:
             # Обновляем статистику времени ответа
             response_time = time.time() - start_time
             self._update_response_time_stats(response_time)
+
+            # Диагностическое логирование ответа
+            ret_code = response_data.get('retCode')
+            ret_msg = response_data.get('retMsg')
+            results_list = (response_data.get('result') or {}).get('list', [])
+            logger.debug(f"[{self.name}] API Response <- Status={response.status} Code={ret_code} Msg='{ret_msg}'")
+            if results_list:
+                logger.debug(f"[{self.name}] Response Results (first 2): {results_list[:2]}")
+            else:
+                logger.debug(f"[{self.name}] Response Result (full): {response_data.get('result')}")
 
             # Обработка ответа
             if response.status == 200:
@@ -3586,6 +3605,11 @@ class FinalFixedWebSocketManager:
                 # startswith('position') будет ложно срабатывать на 'position.snapshot', что не является событием изменения.
 
                 logger.info(f"[{self.name}] Received message for topic: '{topic}'")
+
+                # Игнорируем служебные топики
+                if any(suffix in topic for suffix in ['.snapshot', '.query', '.periodic']):
+                    logger.debug(f"[{self.name}] Ignoring service topic: '{topic}'")
+                    return
 
                 if topic == "position":
                     logger.info(f"[{self.name}] Routing to position handler for exact topic match.")
@@ -5506,95 +5530,6 @@ class FinalTradingMonitor:
             raise RuntimeError("Missing API credentials at runtime (введите ключи через /keys)")
         self.api_key, self.api_secret = creds
 
-    async def reconcile_positions_on_startup(self):
-        """
-        Сверяет позиции между донорским (source) и основным (main) аккаунтами
-        и генерирует сигналы для их синхронизации.
-        """
-        logger.info("🚀 Starting REST API position reconciliation...")
-        try:
-            source_positions_raw = await self.source_client.get_positions()
-            main_positions_raw = await self.main_client.get_positions()
-
-            logger.info(f"Found {len(source_positions_raw)} active positions on SOURCE account.")
-            logger.info(f"Found {len(main_positions_raw)} active positions on MAIN account.")
-
-            # Нормализация позиций в удобный для сравнения формат
-            def normalize_positions(positions_list):
-                pos_map = {}
-                for p in positions_list:
-                    symbol = p.get('symbol')
-                    idx = int(p.get('positionIdx', 0))
-                    key = f"{symbol}#{idx}"
-                    pos_map[key] = {
-                        'side': p.get('side'),
-                        'size': safe_float(p.get('size')),
-                        'price': safe_float(p.get('avgPrice', p.get('entryPrice'))),
-                        'leverage': p.get('leverage')
-                    }
-                return pos_map
-
-            source_positions = normalize_positions(source_positions_raw)
-            main_positions = normalize_positions(main_positions_raw)
-
-            all_keys = set(source_positions.keys()) | set(main_positions.keys())
-            enqueued_signals = 0
-
-            for key in all_keys:
-                source_pos = source_positions.get(key)
-                main_pos = main_positions.get(key)
-                symbol, _, idx_str = key.partition('#')
-                position_idx = int(idx_str)
-
-                signal = None
-
-                if source_pos and not main_pos:
-                    # Позиция есть у донора, но нет на основном -> Открыть
-                    logger.info(f"RECONCILE: Opening position for {key}. Source: {source_pos['size']}, Main: None")
-                    signal = TradingSignal(
-                        signal_type=SignalType.POSITION_OPEN,
-                        symbol=symbol,
-                        side=source_pos['side'],
-                        size=source_pos['size'],
-                        price=source_pos['price'],
-                        timestamp=time.time(),
-                        metadata={'source': 'reconcile', 'position_idx': position_idx, 'leverage': source_pos['leverage']}
-                    )
-                elif not source_pos and main_pos:
-                    # Позиции нет у донора, но есть на основном -> Закрыть
-                    logger.info(f"RECONCILE: Closing position for {key}. Source: None, Main: {main_pos['size']}")
-                    signal = TradingSignal(
-                        signal_type=SignalType.POSITION_CLOSE,
-                        symbol=symbol,
-                        side=main_pos['side'],
-                        size=main_pos['size'],
-                        price=main_pos['price'],
-                        timestamp=time.time(),
-                        metadata={'source': 'reconcile', 'position_idx': position_idx}
-                    )
-                elif source_pos and main_pos:
-                    # Позиции есть на обоих, проверяем расхождения
-                    if source_pos['side'] != main_pos['side'] or abs(source_pos['size'] - main_pos['size']) > 0.00001:
-                        logger.info(f"RECONCILE: Modifying position for {key}. Source: {source_pos['size']} {source_pos['side']}, Main: {main_pos['size']} {main_pos['side']}")
-                        signal = TradingSignal(
-                            signal_type=SignalType.POSITION_MODIFY,
-                            symbol=symbol,
-                            side=source_pos['side'],
-                            size=source_pos['size'], # Целевой размер
-                            price=source_pos['price'],
-                            timestamp=time.time(),
-                            metadata={'source': 'reconcile', 'position_idx': position_idx, 'from_size': main_pos['size'], 'leverage': source_pos['leverage']}
-                        )
-
-                if signal:
-                    await self.signal_processor.add_signal(signal)
-                    enqueued_signals += 1
-
-            logger.info(f"✅ REST reconcile completed: enqueued {enqueued_signals} signals.")
-
-        except Exception as e:
-            logger.error(f"❌ Failed to reconcile positions: {e}", exc_info=True)
-
     async def start(self):
         """✅ ИСПРАВЛЕННЫЙ И ИДЕМПОТЕНТНЫЙ запуск системы мониторинга (Stage-1)"""
         if getattr(self, "_started", False):
@@ -5644,10 +5579,6 @@ class FinalTradingMonitor:
                     logger.debug("Risk context update skipped: %s", _e)
 
             await self.signal_processor.start_processing()
-
-            # --- ЗАПУСК СВЕРКИ ПЕРЕД ПОДКЛЮЧЕНИЕМ К WEBSOCKET ---
-            await self.reconcile_positions_on_startup()
-            # --- КОНЕЦ СВЕРКИ ---
 
             logger.info("Connecting to WebSocket with integrated fixes...")
             await self.websocket_manager.connect()
