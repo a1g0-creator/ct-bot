@@ -1,0 +1,36 @@
+2025-09-22 10:36:20,201 [   ERROR] bybit_trading_system:3339 - on_position_item failed: '<=' not supported between instances of 'AsyncMock' and 'int'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3210, in on_position_item
+    if not all([main_balance, source_balance]) or main_balance <= 0 or source_balance <= 0:
+                                                  ^^^^^^^^^^^^^^^^^
+TypeError: '<=' not supported between instances of 'AsyncMock' and 'int'
+2025-09-22 10:36:20,212 [   ERROR] bybit_trading_system:3339 - on_position_item failed: unsupported operand type(s) for *: 'float' and 'coroutine'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3330, in on_position_item
+    position_value = final_target_size * avg_price
+                     ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+TypeError: unsupported operand type(s) for *: 'float' and 'coroutine'
+2025-09-22 10:40:38,796 [   ERROR] bybit_trading_system:1480 - Market analysis error for BTCUSDT: 'coroutine' object has no attribute 'get'
+2025-09-22 10:40:38,809 [   ERROR] bybit_trading_system:1480 - Market analysis error for BTCUSDT: 'coroutine' object has no attribute 'get'
+2025-09-22 10:44:26,651 [   ERROR] bybit_trading_system:1480 - Market analysis error for BTCUSDT: 'coroutine' object has no attribute 'get'
+2025-09-22 10:44:26,665 [   ERROR] bybit_trading_system:1480 - Market analysis error for BTCUSDT: 'coroutine' object has no attribute 'get'
+2025-09-22 10:49:53,926 [   ERROR] bybit_trading_system:1480 - Market analysis error for BTCUSDT: 'coroutine' object has no attribute 'get'
+2025-09-22 10:49:53,941 [   ERROR] bybit_trading_system:1480 - Market analysis error for BTCUSDT: 'coroutine' object has no attribute 'get'
+2025-09-22 11:09:10,154 [   ERROR] bybit_trading_system:3341 - on_position_item failed: 'Stage2CopyTradingSystem' object has no attribute 'order_manager'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3324, in on_position_item
+    order_result = await self.order_manager.place_adaptive_order(order)
+                         ^^^^^^^^^^^^^^^^^^
+AttributeError: 'Stage2CopyTradingSystem' object has no attribute 'order_manager'
+2025-09-22 11:09:10,169 [   ERROR] bybit_trading_system:3341 - on_position_item failed: 'Stage2CopyTradingSystem' object has no attribute 'order_manager'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3324, in on_position_item
+    order_result = await self.order_manager.place_adaptive_order(order)
+                         ^^^^^^^^^^^^^^^^^^
+AttributeError: 'Stage2CopyTradingSystem' object has no attribute 'order_manager'
+2025-09-22 11:09:10,180 [   ERROR] bybit_trading_system:3341 - on_position_item failed: 'Stage2CopyTradingSystem' object has no attribute 'order_manager'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3324, in on_position_item
+    order_result = await self.order_manager.place_adaptive_order(order)
+                         ^^^^^^^^^^^^^^^^^^
+AttributeError: 'Stage2CopyTradingSystem' object has no attribute 'order_manager'

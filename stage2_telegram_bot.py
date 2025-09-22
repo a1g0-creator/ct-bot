@@ -3338,7 +3338,21 @@ class Stage2TelegramBot:
 
         try:
             await update.message.reply_text("🔍 Generating WebSocket diagnostics...")
-            report = await self.copy_system.base_monitor.websocket_manager.get_diagnostic_report()
+
+            ws_manager = self.copy_system.base_monitor.websocket_manager
+            stats = ws_manager.get_stats()
+
+            report = await ws_manager.get_diagnostic_report() # Basic report
+
+            # Add per-topic stats
+            topic_counts = stats.get('topic_counts')
+            if topic_counts:
+                report += "\n\n**Per-Topic Message Counts:**\n"
+                for topic, counts in sorted(topic_counts.items()):
+                    received = counts.get('received', 0)
+                    processed = counts.get('processed', 0)
+                    report += f"  - `{topic}`: Rcvd {received}, Proc {processed}\n"
+
             await update.message.reply_text(report, parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
             logger.error(f"WS Diag command error: {e}", exc_info=True)

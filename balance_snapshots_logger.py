@@ -7,9 +7,9 @@ from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
 
-from app.db_session import SessionLocal
-from app.db_models import BalanceSnapshots
-from app.sys_events_logger import sys_logger
+from db_session import SessionLocal
+from db_models import BalanceSnapshots
+from sys_events_logger import sys_logger
 
 import logging
 

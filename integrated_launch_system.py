@@ -1620,7 +1620,26 @@ class IntegratedTradingSystem:
             print("-" * 50)
 
             # 1) Создаём Stage2 с корректным аргументом конструктора
-            self.stage2_system = Stage2CopyTradingSystem(base_monitor=self.stage1_monitor)
+            try:
+                from config import MAIN_API_KEY, MAIN_API_SECRET, MAIN_API_URL
+            except ImportError:
+                MAIN_API_KEY, MAIN_API_SECRET, MAIN_API_URL = None, None, None
+
+            try:
+                from stage2_copy_system import COPY_CONFIG, KELLY_CONFIG, TRAILING_CONFIG, RISK_CONFIG
+            except ImportError:
+                COPY_CONFIG, KELLY_CONFIG, TRAILING_CONFIG, RISK_CONFIG = {}, {}, {}, {}
+
+            self.stage2_system = Stage2CopyTradingSystem(
+                base_monitor=self.stage1_monitor,
+                main_api_key=MAIN_API_KEY,
+                main_api_secret=MAIN_API_SECRET,
+                main_api_url=MAIN_API_URL,
+                copy_config=COPY_CONFIG,
+                kelly_config=KELLY_CONFIG,
+                trailing_config=TRAILING_CONFIG,
+                risk_config=RISK_CONFIG,
+            )
 
             # 2) Сразу обновим ссылки у Telegram-бота (кнопки/меню используют stage2)
             if hasattr(self, "_refresh_bot_refs"):

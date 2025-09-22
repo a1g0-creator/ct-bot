@@ -8,9 +8,9 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from enum import Enum
 
-from app.db_session import SessionLocal
-from app.db_models import OrdersLog
-from app.sys_events_logger import sys_logger
+from db_session import SessionLocal
+from db_models import OrdersLog
+from sys_events_logger import sys_logger
 
 import logging
 

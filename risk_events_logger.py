@@ -7,9 +7,9 @@ from datetime import datetime
 from typing import Optional
 from decimal import Decimal
 
-from app.db_session import SessionLocal
-from app.db_models import RiskEvents
-from app.sys_events_logger import sys_logger
+from db_session import SessionLocal
+from db_models import RiskEvents
+from sys_events_logger import sys_logger
 
 import logging
 

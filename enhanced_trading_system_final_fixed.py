@@ -43,9 +43,9 @@ import uuid
 import os, socket
 from decimal import Decimal
 
-from app.sys_events_logger import sys_logger
-from app.signals_logger import signals_logger
-from app.state.positions_store import positions_store
+from sys_events_logger import sys_logger
+from signals_logger import signals_logger
+# from positions_store import positions_store
 
 # Единый системный логгер для всех модулей проекта
 SYSTEM_LOGGER_NAME = "bybit_trading_system"
@@ -3073,14 +3073,16 @@ class EnhancedBybitClient:
             return 0.0
 
     
-    async def get_positions(self) -> List[dict]:
+    async def get_positions(self, category: str = "linear", symbol: str = None, settleCoin: str = "USDT") -> List[dict]:
         """Получить открытые позиции с улучшенной обработкой"""
         try:
             params = {
-                "category": "linear",
-                "settleCoin": "USDT",
+                "category": category,
+                "settleCoin": settleCoin,
                 "limit": 50
             }
+            if symbol:
+                params['symbol'] = symbol
             
             result = await self._make_request_with_retry("GET", "position/list", params)
             
@@ -3307,7 +3309,8 @@ class FinalFixedWebSocketManager:
             'last_message_time': 0,
             'uptime_start': time.time(),
             'ping_pong_success': 0,
-            'ping_pong_failures': 0
+            'ping_pong_failures': 0,
+            'topic_counts': defaultdict(lambda: {'received': 0, 'processed': 0})
         }
         
         # Система обработки сообщений
@@ -3671,6 +3674,7 @@ class FinalFixedWebSocketManager:
             # === Главная логика ===
             if 'topic' in data:
                 topic = data['topic']
+                self.stats['topic_counts'][topic]['received'] += 1
                 logger.info(f"[{self.name}] Received message for topic: '{topic}'")
 
                 # Строгий роутер: Игнорируем служебные топики (snapshot, query, periodic)
@@ -3701,6 +3705,7 @@ class FinalFixedWebSocketManager:
                 # Инкрементируем счетчик только для успешно обработанных основных топиков
                 if handler_called:
                     self.stats['messages_processed'] = self.stats.get('messages_processed', 0) + 1
+                    self.stats['topic_counts'][topic]['processed'] += 1
 
             # Обработка системных сообщений
             elif data.get('op') == 'subscribe':
@@ -3888,67 +3893,6 @@ class FinalFixedWebSocketManager:
             logger.error(f"{self.name} - Error handling Bybit pong: {e}")
             return False
     
-    async def _ingest_position_to_db(self, position_data: dict):
-        """
-        Гарантированная запись позиции в БД через positions_writer.
-        Нормализует ключевые поля: qty/size, position_idx/positionIdx, symbol.
-        """
-        try:
-            try:
-                from app.positions_db_writer import positions_writer
-            except ImportError:
-                from positions_db_writer import positions_writer
-        except Exception as e:
-            logger.error("WS ingest: cannot import positions_writer: %s", e)
-            return
-
-        try:
-            account_id = int(getattr(self, "account_id", globals().get("TARGET_ACCOUNT_ID", 1)))
-        except Exception:
-            account_id = 1
-
-        # копия и нормализация полей
-        pos = dict(position_data) if isinstance(position_data, dict) else {}
-        # qty / size
-        qty_raw = pos.get("qty", pos.get("size", 0))
-        try:
-            pos["qty"] = float(qty_raw)
-        except Exception:
-            pos["qty"] = 0.0
-
-        # position_idx / positionIdx
-        try:
-            pos["position_idx"] = int(pos.get("position_idx", pos.get("positionIdx", 0)))
-        except Exception:
-            pos["position_idx"] = 0
-
-        # SYMBOL UPPER
-        if "symbol" in pos and isinstance(pos["symbol"], str):
-            pos["symbol"] = pos["symbol"].upper()
-
-        # запись напрямую (writer сам решит: qty>0 => upsert, qty==0 => close)
-        try:
-            await positions_writer.update_position({**pos, "account_id": account_id})
-        except Exception as e:
-            logger.error("WS ingest: writer.update_position error: %s", e)
-
-        # необязательно, но можно дублировать в очередь (если она есть)
-        q = getattr(self, "_positions_db_queue", None)
-        if q is not None:
-            try:
-                q.put_nowait((account_id, pos))
-            except Exception:
-                # мягкое вытеснение при переполнении
-                try:
-                    _ = q.get_nowait(); q.task_done()
-                except Exception:
-                    pass
-                try:
-                    q.put_nowait((account_id, pos))
-                except Exception:
-                    pass
-
-
     # ============================================================
     #  WS: ЛЁГКИЙ ХЭНДЛЕР ПОЗИЦИЙ + ФОНОВЫЙ ВОРКЕР ЗАПИСИ В БД
     #  Очередь/воркеры создаются и запускаются в _run_integrated_monitoring_loop
@@ -3961,196 +3905,33 @@ class FinalFixedWebSocketManager:
 
     async def _handle_position_update(self, data: dict):
         """
-        Универсальный обработчик WS-сообщения 'position':
-        - корректно разбирает payload из data/result (list или dict, в т.ч. вложенные list/positions)
-        - определяет тип события (OPENED/CLOSED/INCREASED/REDUCED/UPDATED/LEVERAGE_CHANGED)
-        - генерирует сигналы копирования для донора
-        - гарантированно пишет в БД
-        - вызывает кастомные хендлеры
+        Simple dispatcher for 'position' topic.
+        It extracts position items and calls registered handlers.
         """
-        import os  # локальный импорт на случай отсутствия в модуле
-
         try:
-            # 1) Извлечение payload — расширенная нормализация
-            payload = data
-            if isinstance(data, dict):
-                if isinstance(data.get("data"), (list, dict)):
-                    payload = data["data"]
-                elif isinstance(data.get("result"), (list, dict)):
-                    payload = data["result"]
-
-            # Нормализуем к списку (учитываем вложенные варианты Bybit)
             items = []
+            payload = data.get("data", data.get("result", []))
             if isinstance(payload, list):
                 items = payload
             elif isinstance(payload, dict):
-                # прямой словарь позиции
-                if any(k in payload for k in ("symbol", "size", "qty", "positionIdx", "position_idx")):
-                    items = [payload]
-                # вложенная структура: {"list":[{...},{...}]}
-                elif isinstance(payload.get("list"), list):
-                    items = payload["list"]
-                # альтернативные ключи
-                elif isinstance(payload.get("positions"), list):
-                    items = payload["positions"]
-                else:
-                    # fallback: попробуем извлечь все dict внутри значимых ключей
-                    for k in ("data", "result", "items", "rows"):
-                        v = payload.get(k)
-                        if isinstance(v, list):
-                            items = v
-                            break
-            else:
-                items = []
+                # Bybit can send a single position object instead of a list
+                items = payload.get("list", [payload])
 
-            # 2) Обработка каждой позиции
-            for position_data in items:
-                if not isinstance(position_data, dict):
-                    continue
+            # The key for handlers should be 'position' to match the topic.
+            handlers = self.message_handlers.get('position', [])
 
-                # Нормализация ключевых полей
-                symbol = (position_data.get('symbol') or '').upper()
-                if not symbol:
-                    continue  # без символа состояние не строим
-
-                # Bybit отдаёт size/qty строками — приводим безопасно
-                try:
-                    position_idx = int(position_data.get('positionIdx', position_data.get('position_idx', 0)) or 0)
-                except Exception:
-                    position_idx = 0
-
-                try:
-                    current_qty = float(position_data.get('size', position_data.get('qty', 0)) or 0.0)
-                except Exception:
-                    current_qty = 0.0
-
-                side = (position_data.get('side') or 'Buy')
-
-                # 3) Определение типа события
-                event_type = 'UNKNOWN'
-                state_key = f"{symbol}_{position_idx}_{side}"
-
-                prev_state = self._position_states.get(state_key, {})
-                try:
-                    prev_qty = float(prev_state.get('qty', 0.0) or 0.0)
-                except Exception:
-                    prev_qty = 0.0
-
-                if current_qty == 0 and prev_qty > 0:
-                    event_type = 'CLOSED'
-                    logger.info(f"🔴 Position CLOSED: {symbol} {side} (was {prev_qty})")
-                    self._position_states.pop(state_key, None)
-
-                elif current_qty > 0 and prev_qty == 0:
-                    event_type = 'OPENED'
-                    logger.info(f"🟢 Position OPENED: {symbol} {side} qty={current_qty}")
-                    self._position_states[state_key] = {
-                        'qty': current_qty, 'symbol': symbol, 'side': side, 'data': position_data
-                    }
-
-                elif current_qty > prev_qty:
-                    event_type = 'INCREASED'
-                    logger.info(f"📈 Position INCREASED: {symbol} {side} {prev_qty}→{current_qty}")
-                    self._position_states[state_key] = {
-                        'qty': current_qty, 'symbol': symbol, 'side': side, 'data': position_data
-                    }
-
-                elif 0 < current_qty < prev_qty:
-                    event_type = 'REDUCED'
-                    logger.info(f"📉 Position REDUCED: {symbol} {side} {prev_qty}→{current_qty}")
-                    self._position_states[state_key] = {
-                        'qty': current_qty, 'symbol': symbol, 'side': side, 'data': position_data
-                    }
-
-                elif current_qty == prev_qty and current_qty > 0:
-                    prev_leverage = (prev_state.get('data') or {}).get('leverage')
-                    current_leverage = position_data.get('leverage')
-                    if prev_leverage != current_leverage:
-                        event_type = 'LEVERAGE_CHANGED'
-                        logger.info(f"🔧 Leverage changed: {symbol} {prev_leverage}→{current_leverage}")
-                    else:
-                        event_type = 'UPDATED'
-                        logger.debug(f"🔄 Position UPDATED: {symbol} {side} qty={current_qty}")
-
-                    self._position_states[state_key] = {
-                        'qty': current_qty, 'symbol': symbol, 'side': side, 'data': position_data
-                    }
-
-                if event_type != 'UNKNOWN':
-                    entry_price = safe_float(position_data.get('entryPrice', position_data.get('avgPrice', 0)))
-                    mark_price = safe_float(position_data.get('markPrice', 0))
-
-                    logger.info(
-                        f"WS_IN_POS: {symbol} idx={position_idx} side={side} size={current_qty} entry={entry_price} mark={mark_price}. Event: {event_type}. Triggering signal processor."
-                    )
-
-                # 4) Генерация сигнала копирования (только для донора) — РОБАСТНЫЙ ГЕЙТ
-                # name → lower, алиасы, явный флаг, сравнение account_id с DONOR_ACCOUNT_ID
-                ws_name = str(getattr(self, "name", "") or "").lower()
-                donor_aliases = {"donor_ws", "source_ws", "donor", "source"}
-
-                try:
-                    donor_id = int(os.getenv("DONOR_ACCOUNT_ID") or globals().get("DONOR_ACCOUNT_ID", 2))
-                except (ValueError, TypeError):
-                    donor_id = 2
-
-                acct_id = int(getattr(self, "account_id", 0) or 0)
-                is_donor_flag = bool(getattr(self, "is_donor", False))
-
-                is_donor = (ws_name in donor_aliases) or is_donor_flag or (acct_id == donor_id and acct_id > 0)
-
-                logger.debug(
-                    "Donor gate: name='%s'→'%s', in_aliases=%s, acct_id=%d donor_id=%d flag=%s → is_donor=%s (event=%s, qty=%s)",
-                    getattr(self, "name", "?"), ws_name, (ws_name in donor_aliases),
-                    acct_id, donor_id, is_donor_flag, is_donor, event_type, current_qty
-                )
-
-                # не шлём на UPDATED/LEVERAGE_CHANGED/UNKNOWN — только реальные изменения позы
-                if is_donor and event_type not in ('UNKNOWN', 'UPDATED', 'LEVERAGE_CHANGED'):
-                    await self._generate_copy_signal(position_data, event_type, prev_qty)
-
-                # 5) Гарантированная запись в БД
-                await self._ingest_position_to_db(position_data)
-
-                # 6) Буферизация события (не критично при переполнении)
-                try:
-                    await self.message_queue.put({
-                        'type': 'position_update',
-                        'event': event_type,
-                        'data': position_data,
-                        'timestamp': time.time()
-                    })
-                except Exception:
-                    pass
-
-            # 7) Кастомные обработчики - вызываем с каждым элементом позиции, а не со всем сообщением
-            handlers = self.message_handlers.get('position_update', [])
             if handlers:
                 for position_item in items:
                     for handler in handlers:
                         try:
-                            # Ключевое исправление: передаем сам объект позиции, а не весь `data`
                             await handler(position_item)
                         except Exception as e:
                             logger.error(f"Position handler error for item {position_item.get('symbol')}: {e}", exc_info=True)
-
-            # 8) Статистика
-            try:
-                # Счетчик messages_processed теперь инкрементируется в _process_message
-                self.stats['positions_updated'] = self.stats.get('positions_updated', 0) + len(items)
-            except Exception:
-                pass
+            else:
+                logger.debug(f"[{self.name}] No handler for position topic.")
 
         except Exception as e:
-            logger.error("%s - Position update handling error: %s",
-                         getattr(self, 'name', 'WS'), e)
-            logger.error("Full traceback: %s", traceback.format_exc())
-            if 'prod_logger' in globals():
-                prod_logger.log_error(e, {
-                    'component': 'position_update_handler',
-                    'websocket_name': getattr(self, 'name', 'unknown'),
-                    'data': str(data)[:500]
-                }, send_alert=True)
+            logger.error("%s - Position update handling error: %s", getattr(self, 'name', 'WS'), e, exc_info=True)
 
 
     async def _generate_copy_signal(self, position_data: dict, event_type: str, prev_qty: float = 0):
@@ -4270,8 +4051,9 @@ class FinalFixedWebSocketManager:
 
                 logger.info(f"{self.name} - Wallet update: {coin} balance={balance}")
 
-                if 'wallet_update' in self.message_handlers:
-                    await self.message_handlers['wallet_update'](wallet)
+                if 'wallet' in self.message_handlers:
+                    for handler in self.message_handlers['wallet']:
+                        await handler(wallet)
 
         except Exception as e:
             logger.error(f"{self.name} - Wallet update handling error: {e}")
@@ -4288,8 +4070,9 @@ class FinalFixedWebSocketManager:
                 
                 logger.info(f"{self.name} - Execution: {symbol} {side} {exec_qty}@{exec_price}")
                 
-                if 'execution_update' in self.message_handlers:
-                    await self.message_handlers['execution_update'](execution)
+                if 'execution' in self.message_handlers:
+                    for handler in self.message_handlers['execution']:
+                        await handler(execution)
                     
         except Exception as e:
             logger.error(f"{self.name} - Execution update handling error: {e}")
@@ -4305,8 +4088,9 @@ class FinalFixedWebSocketManager:
                 
                 logger.info(f"{self.name} - Order update: {symbol} {order_type} {order_status}")
                 
-                if 'order_update' in self.message_handlers:
-                    await self.message_handlers['order_update'](order)
+                if 'order' in self.message_handlers:
+                    for handler in self.message_handlers['order']:
+                        await handler(order)
                     
         except Exception as e:
             logger.error(f"{self.name} - Order update handling error: {e}")
@@ -4815,8 +4599,9 @@ class FinalFixedWebSocketManager:
 class ProductionSignalProcessor:
     """Промышленная система обработки торговых сигналов"""
     
-    def __init__(self):
+    def __init__(self, account_id: int):
         # Состояние позиций
+        self.account_id = account_id
         self.known_positions = {}
         self.position_history = deque(maxlen=1000)
         
@@ -4847,6 +4632,62 @@ class ProductionSignalProcessor:
         self.processing_active = False
         self._processor_task = None
         self.should_stop = False
+
+    async def _ingest_position_to_db(self, position_data: dict):
+        """
+        Гарантированная запись позиции в БД через positions_writer.
+        Нормализует ключевые поля: qty/size, position_idx/positionIdx, symbol.
+        """
+        try:
+            from positions_db_writer import positions_writer
+        except ImportError:
+            from app.positions_db_writer import positions_writer
+        except Exception as e:
+            logger.error("WS ingest: cannot import positions_writer: %s", e)
+            return
+
+        account_id = self.account_id
+
+        # копия и нормализация полей
+        pos = dict(position_data) if isinstance(position_data, dict) else {}
+        # qty / size
+        qty_raw = pos.get("qty", pos.get("size", 0))
+        try:
+            pos["qty"] = float(qty_raw)
+        except Exception:
+            pos["qty"] = 0.0
+
+        # position_idx / positionIdx
+        try:
+            pos["position_idx"] = int(pos.get("position_idx", pos.get("positionIdx", 0)))
+        except Exception:
+            pos["position_idx"] = 0
+
+        # SYMBOL UPPER
+        if "symbol" in pos and isinstance(pos["symbol"], str):
+            pos["symbol"] = pos["symbol"].upper()
+
+        # запись напрямую (writer сам решит: qty>0 => upsert, qty==0 => close)
+        try:
+            await positions_writer.update_position({**pos, "account_id": account_id})
+        except Exception as e:
+            logger.error("WS ingest: writer.update_position error: %s", e)
+
+        # необязательно, но можно дублировать в очередь (если она есть)
+        q = getattr(self, "_positions_db_queue", None)
+        if q is not None:
+            try:
+                q.put_nowait((account_id, pos))
+            except Exception:
+                # мягкое вытеснение при переполнении
+                try:
+                    _ = q.get_nowait(); q.task_done()
+                except Exception:
+                    pass
+                try:
+                    q.put_nowait((account_id, pos))
+                except Exception:
+                    pass
         
     async def start_processing(self):
         """Запуск системы обработки сигналов"""
@@ -4996,7 +4837,10 @@ class ProductionSignalProcessor:
             # ---- СТРАХОВОЧНАЯ ЗАПИСЬ В БД (гарантированно) ----
             try:
                 # _ingest_position_to_db нормализует qty/idx/symbol и вызовет writer
-                await self._ingest_position_to_db({**position_data, 'symbol': symbol, 'position_idx': position_idx})
+                ingest_data = position_data.copy()
+                ingest_data['symbol'] = symbol
+                ingest_data['position_idx'] = position_idx
+                await self._ingest_position_to_db(ingest_data)
             except Exception as e:
                 logger.error("process_position_update -> ingest error: %s", e)
 
@@ -5345,7 +5189,7 @@ class FinalTradingMonitor:
             SOURCE_API_KEY, SOURCE_API_SECRET, "SOURCE_WS"
         )
         
-        self.signal_processor = ProductionSignalProcessor()
+        self.signal_processor = ProductionSignalProcessor(account_id=DONOR_ACCOUNT_ID)
         
         # Состояние системы
         self.running = False
@@ -5487,7 +5331,7 @@ class FinalTradingMonitor:
     def _register_websocket_handlers(self):
         """Регистрация обработчиков WebSocket событий"""
         self.websocket_manager.register_handler(
-            'position_update',
+            'position',
             self.signal_processor.process_position_update
         )
 
@@ -5529,6 +5373,10 @@ class FinalTradingMonitor:
         """
         logger.info("--- Running REST API Reconciliation Cycle ---")
         try:
+            # Ensure time is synchronized before making API calls
+            await self.source_client.time_sync.ensure_time_sync(self.source_client.api_url)
+            await self.main_client.time_sync.ensure_time_sync(self.main_client.api_url)
+
             donor_positions_raw = await self.source_client.get_positions()
             main_positions_raw = await self.main_client.get_positions()
 

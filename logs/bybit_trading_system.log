@@ -6,3 +6,243 @@
 2025-09-20 15:41:04,944 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
 2025-09-20 15:41:04,957 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
 2025-09-20 15:41:04,958 [    INFO] bybit_trading_system:3100 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:36:20,105 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-22 10:36:20,167 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:36:20,168 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:36:20,169 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.0 entry=50000.0 idx=0
+2025-09-22 10:36:20,170 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_CLOSE for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 10:36:20,198 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:36:20,199 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:36:20,199 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 10:36:20,201 [   ERROR] bybit_trading_system:3339 - on_position_item failed: '<=' not supported between instances of 'AsyncMock' and 'int'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3210, in on_position_item
+    if not all([main_balance, source_balance]) or main_balance <= 0 or source_balance <= 0:
+                                                  ^^^^^^^^^^^^^^^^^
+TypeError: '<=' not supported between instances of 'AsyncMock' and 'int'
+2025-09-22 10:36:20,208 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:36:20,208 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:36:20,210 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 10:36:20,210 [    INFO] bybit_trading_system:3240 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.0100 -> Final Target=0.0100
+2025-09-22 10:36:20,210 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_MODIFY for BTCUSDT | Delta: -0.1900 | Qty: 0.1900 | Side: Sell
+2025-09-22 10:36:20,212 [   ERROR] bybit_trading_system:3339 - on_position_item failed: unsupported operand type(s) for *: 'float' and 'coroutine'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3330, in on_position_item
+    position_value = final_target_size * avg_price
+                     ~~~~~~~~~~~~~~~~~~^~~~~~~~~~~
+TypeError: unsupported operand type(s) for *: 'float' and 'coroutine'
+2025-09-22 10:37:55,860 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-22 10:40:38,764 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-22 10:40:38,782 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:40:38,782 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:40:38,785 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.0 entry=50000.0 idx=0
+2025-09-22 10:40:38,785 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_CLOSE for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 10:40:38,790 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:40:38,791 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:40:38,793 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 10:40:38,795 [    INFO] bybit_trading_system:3240 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 10:40:38,795 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_OPEN for BTCUSDT | Delta: 0.1000 | Qty: 0.1000 | Side: Buy
+2025-09-22 10:40:38,796 [   ERROR] bybit_trading_system:1480 - Market analysis error for BTCUSDT: 'coroutine' object has no attribute 'get'
+2025-09-22 10:40:38,800 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 10:40:38,800 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$501.00 (1.0%), stop=$49599.00, current=$50100.00
+2025-09-22 10:40:38,805 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:40:38,805 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:40:38,807 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 10:40:38,808 [    INFO] bybit_trading_system:3240 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 10:40:38,808 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_MODIFY for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 10:40:38,809 [   ERROR] bybit_trading_system:1480 - Market analysis error for BTCUSDT: 'coroutine' object has no attribute 'get'
+2025-09-22 10:40:38,809 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 10:40:38,809 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$501.00 (1.0%), stop=$49599.00, current=$50100.00
+2025-09-22 10:44:26,621 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-22 10:44:26,638 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:44:26,638 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:44:26,641 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.0 entry=50000.0 idx=0
+2025-09-22 10:44:26,641 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_CLOSE for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 10:44:26,646 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:44:26,646 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:44:26,649 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 10:44:26,649 [    INFO] bybit_trading_system:3240 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 10:44:26,649 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_OPEN for BTCUSDT | Delta: 0.1000 | Qty: 0.1000 | Side: Buy
+2025-09-22 10:44:26,651 [   ERROR] bybit_trading_system:1480 - Market analysis error for BTCUSDT: 'coroutine' object has no attribute 'get'
+2025-09-22 10:44:26,656 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 10:44:26,656 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$501.00 (1.0%), stop=$49599.00, current=$50100.00
+2025-09-22 10:44:26,661 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:44:26,661 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:44:26,663 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 10:44:26,664 [    INFO] bybit_trading_system:3240 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 10:44:26,664 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_MODIFY for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 10:44:26,665 [   ERROR] bybit_trading_system:1480 - Market analysis error for BTCUSDT: 'coroutine' object has no attribute 'get'
+2025-09-22 10:44:26,666 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 10:44:26,666 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$501.00 (1.0%), stop=$49599.00, current=$50100.00
+2025-09-22 10:49:53,897 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-22 10:49:53,913 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:49:53,913 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:49:53,916 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.0 entry=50000.0 idx=0
+2025-09-22 10:49:53,917 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_CLOSE for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 10:49:53,922 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:49:53,922 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:49:53,924 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 10:49:53,925 [    INFO] bybit_trading_system:3240 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 10:49:53,925 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_OPEN for BTCUSDT | Delta: 0.1000 | Qty: 0.1000 | Side: Buy
+2025-09-22 10:49:53,926 [   ERROR] bybit_trading_system:1480 - Market analysis error for BTCUSDT: 'coroutine' object has no attribute 'get'
+2025-09-22 10:49:53,932 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 10:49:53,932 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$501.00 (1.0%), stop=$49599.00, current=$50100.00
+2025-09-22 10:49:53,936 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:49:53,936 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:49:53,939 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 10:49:53,939 [    INFO] bybit_trading_system:3240 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 10:49:53,939 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_MODIFY for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 10:49:53,941 [   ERROR] bybit_trading_system:1480 - Market analysis error for BTCUSDT: 'coroutine' object has no attribute 'get'
+2025-09-22 10:49:53,941 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 10:49:53,941 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$501.00 (1.0%), stop=$49599.00, current=$50100.00
+2025-09-22 10:54:39,060 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-22 10:54:39,080 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:54:39,080 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:54:39,083 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.0 entry=50000.0 idx=0
+2025-09-22 10:54:39,083 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_CLOSE for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 10:54:39,089 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:54:39,089 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:54:39,093 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 10:54:39,093 [    INFO] bybit_trading_system:3240 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 10:54:39,094 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_OPEN for BTCUSDT | Delta: 0.1000 | Qty: 0.1000 | Side: Buy
+2025-09-22 10:54:39,094 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 10:54:39,094 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$501.00 (1.0%), stop=$49599.00, current=$50100.00
+2025-09-22 10:54:39,099 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:54:39,099 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:54:39,101 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 10:54:39,101 [    INFO] bybit_trading_system:3240 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 10:54:39,102 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_MODIFY for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 10:54:39,102 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 10:54:39,102 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$501.00 (1.0%), stop=$49599.00, current=$50100.00
+2025-09-22 10:57:01,576 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-22 10:57:01,594 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:57:01,594 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:57:01,597 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.0 entry=50000.0 idx=0
+2025-09-22 10:57:01,598 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_CLOSE for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 10:57:01,603 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:57:01,603 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:57:01,606 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 10:57:01,606 [    INFO] bybit_trading_system:3240 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 10:57:01,606 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_OPEN for BTCUSDT | Delta: 0.1000 | Qty: 0.1000 | Side: Buy
+2025-09-22 10:57:01,607 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 10:57:01,607 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$501.00 (1.0%), stop=$49599.00, current=$50100.00
+2025-09-22 10:57:01,614 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 10:57:01,614 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 10:57:01,616 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 10:57:01,616 [    INFO] bybit_trading_system:3240 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 10:57:01,617 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_MODIFY for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 10:57:01,617 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 10:57:01,617 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$501.00 (1.0%), stop=$49599.00, current=$50100.00
+2025-09-22 11:03:14,064 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-22 11:03:14,086 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 11:03:14,086 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 11:03:14,089 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.0 entry=50000.0 idx=0
+2025-09-22 11:03:14,089 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_CLOSE for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 11:03:14,095 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 11:03:14,095 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 11:03:14,099 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 11:03:14,099 [    INFO] bybit_trading_system:3240 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 11:03:14,099 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_OPEN for BTCUSDT | Delta: 0.1000 | Qty: 0.1000 | Side: Buy
+2025-09-22 11:03:14,100 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 11:03:14,100 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$501.00 (1.0%), stop=$49599.00, current=$50100.00
+2025-09-22 11:03:14,104 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 11:03:14,105 [    INFO] bybit_trading_system:3114 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 11:03:14,107 [    INFO] bybit_trading_system:3204 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 11:03:14,107 [    INFO] bybit_trading_system:3240 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 11:03:14,107 [    INFO] bybit_trading_system:3308 - COPY_ACTION: WS_MODIFY for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 11:03:14,108 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 11:03:14,108 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$501.00 (1.0%), stop=$49599.00, current=$50100.00
+2025-09-22 11:09:10,135 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-22 11:09:10,151 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 11:09:10,151 [    INFO] bybit_trading_system:3116 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 11:09:10,153 [    INFO] bybit_trading_system:3206 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.0 entry=50000.0 idx=0
+2025-09-22 11:09:10,154 [    INFO] bybit_trading_system:3310 - COPY_ACTION: WS_CLOSE for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 11:09:10,154 [   ERROR] bybit_trading_system:3341 - on_position_item failed: 'Stage2CopyTradingSystem' object has no attribute 'order_manager'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3324, in on_position_item
+    order_result = await self.order_manager.place_adaptive_order(order)
+                         ^^^^^^^^^^^^^^^^^^
+AttributeError: 'Stage2CopyTradingSystem' object has no attribute 'order_manager'
+2025-09-22 11:09:10,165 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 11:09:10,165 [    INFO] bybit_trading_system:3116 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 11:09:10,169 [    INFO] bybit_trading_system:3206 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 11:09:10,169 [    INFO] bybit_trading_system:3242 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 11:09:10,169 [    INFO] bybit_trading_system:3310 - COPY_ACTION: WS_OPEN for BTCUSDT | Delta: 0.1000 | Qty: 0.1000 | Side: Buy
+2025-09-22 11:09:10,169 [   ERROR] bybit_trading_system:3341 - on_position_item failed: 'Stage2CopyTradingSystem' object has no attribute 'order_manager'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3324, in on_position_item
+    order_result = await self.order_manager.place_adaptive_order(order)
+                         ^^^^^^^^^^^^^^^^^^
+AttributeError: 'Stage2CopyTradingSystem' object has no attribute 'order_manager'
+2025-09-22 11:09:10,178 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 11:09:10,178 [    INFO] bybit_trading_system:3116 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 11:09:10,179 [    INFO] bybit_trading_system:3206 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 11:09:10,180 [    INFO] bybit_trading_system:3242 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 11:09:10,180 [    INFO] bybit_trading_system:3310 - COPY_ACTION: WS_MODIFY for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 11:09:10,180 [   ERROR] bybit_trading_system:3341 - on_position_item failed: 'Stage2CopyTradingSystem' object has no attribute 'order_manager'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3324, in on_position_item
+    order_result = await self.order_manager.place_adaptive_order(order)
+                         ^^^^^^^^^^^^^^^^^^
+AttributeError: 'Stage2CopyTradingSystem' object has no attribute 'order_manager'
+2025-09-22 11:11:40,173 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-22 11:11:40,189 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 11:11:40,190 [    INFO] bybit_trading_system:3116 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 11:11:40,192 [    INFO] bybit_trading_system:3206 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.0 entry=50000.0 idx=0
+2025-09-22 11:11:40,193 [    INFO] bybit_trading_system:3310 - COPY_ACTION: WS_CLOSE for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 11:11:40,200 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 11:11:40,200 [    INFO] bybit_trading_system:3116 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 11:11:40,202 [    INFO] bybit_trading_system:3206 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 11:11:40,202 [    INFO] bybit_trading_system:3242 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 11:11:40,203 [    INFO] bybit_trading_system:3310 - COPY_ACTION: WS_OPEN for BTCUSDT | Delta: 0.1000 | Qty: 0.1000 | Side: Buy
+2025-09-22 11:11:40,204 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 11:11:40,204 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$500.00 (1.0%), stop=$49500.00, current=$50000.00
+2025-09-22 11:11:40,210 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 11:11:40,210 [    INFO] bybit_trading_system:3116 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 11:11:40,212 [    INFO] bybit_trading_system:3206 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 11:11:40,212 [    INFO] bybit_trading_system:3242 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 11:11:40,212 [    INFO] bybit_trading_system:3310 - COPY_ACTION: WS_MODIFY for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 11:11:40,213 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 11:11:40,214 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$500.00 (1.0%), stop=$49500.00, current=$50000.00
+2025-09-22 11:13:25,913 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-22 11:13:25,928 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 11:13:25,928 [    INFO] bybit_trading_system:3115 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 11:13:25,930 [    INFO] bybit_trading_system:3205 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.0 entry=50000.0 idx=0
+2025-09-22 11:13:25,931 [    INFO] bybit_trading_system:3309 - COPY_ACTION: WS_CLOSE for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 11:13:25,938 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 11:13:25,939 [    INFO] bybit_trading_system:3115 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 11:13:25,940 [    INFO] bybit_trading_system:3205 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 11:13:25,940 [    INFO] bybit_trading_system:3241 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 11:13:25,941 [    INFO] bybit_trading_system:3309 - COPY_ACTION: WS_OPEN for BTCUSDT | Delta: 0.1000 | Qty: 0.1000 | Side: Buy
+2025-09-22 11:13:25,942 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 11:13:25,942 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$500.00 (1.0%), stop=$49500.00, current=$50000.00
+2025-09-22 11:13:25,946 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 11:13:25,947 [    INFO] bybit_trading_system:3115 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 11:13:25,948 [    INFO] bybit_trading_system:3205 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 11:13:25,949 [    INFO] bybit_trading_system:3241 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 11:13:25,949 [    INFO] bybit_trading_system:3309 - COPY_ACTION: WS_MODIFY for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 11:13:25,950 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 11:13:25,950 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$500.00 (1.0%), stop=$49500.00, current=$50000.00
+2025-09-22 11:16:11,286 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-22 11:16:11,301 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 11:16:11,302 [    INFO] bybit_trading_system:3115 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 11:16:11,304 [    INFO] bybit_trading_system:3205 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.0 entry=50000.0 idx=0
+2025-09-22 11:16:11,304 [    INFO] bybit_trading_system:3309 - COPY_ACTION: WS_CLOSE for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 11:16:11,312 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 11:16:11,312 [    INFO] bybit_trading_system:3115 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 11:16:11,314 [    INFO] bybit_trading_system:3205 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 11:16:11,314 [    INFO] bybit_trading_system:3241 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 11:16:11,314 [    INFO] bybit_trading_system:3309 - COPY_ACTION: WS_OPEN for BTCUSDT | Delta: 0.1000 | Qty: 0.1000 | Side: Buy
+2025-09-22 11:16:11,316 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 11:16:11,316 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$500.00 (1.0%), stop=$49500.00, current=$50000.00
+2025-09-22 11:16:11,320 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 11:16:11,321 [    INFO] bybit_trading_system:3115 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-22 11:16:11,322 [    INFO] bybit_trading_system:3205 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=0.1 entry=50000.0 idx=0
+2025-09-22 11:16:11,323 [    INFO] bybit_trading_system:3241 - TARGET_CALC: Donor Size=0.1000 -> Proportional=0.1000 -> Kelly Rec=0.1000 -> Final Target=0.1000
+2025-09-22 11:16:11,323 [    INFO] bybit_trading_system:3309 - COPY_ACTION: WS_MODIFY for BTCUSDT | Delta: -0.1000 | Qty: 0.1000 | Side: Sell
+2025-09-22 11:16:11,324 [ WARNING] bybit_trading_system:1064 - ATR too small for BTCUSDT (0.010000), using percentage-based distance
+2025-09-22 11:16:11,324 [    INFO] bybit_trading_system:1113 - Created trailing stop for BTCUSDT Buy: style=moderate, distance=$500.00 (1.0%), stop=$49500.00, current=$50000.00
+2025-09-22 11:16:37,865 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-22 11:16:38,786 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-22 11:16:38,803 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
+2025-09-22 11:16:38,804 [    INFO] bybit_trading_system:3115 - Stage 2 Copy Trading System initialized (monitor=MagicMock)

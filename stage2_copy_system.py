@@ -38,10 +38,10 @@ import uuid
 from decimal import Decimal
 import aiohttp
 
-from app.sys_events_logger import sys_logger
-from app.orders_logger import orders_logger, OrderStatus
-from app.risk_events_logger import risk_events_logger, RiskEventType
-from app.balance_snapshots_logger import balance_logger
+from sys_events_logger import sys_logger
+from orders_logger import orders_logger, OrderStatus
+from risk_events_logger import risk_events_logger, RiskEventType
+from balance_snapshots_logger import balance_logger
 
 logger = logging.getLogger(__name__)
 
@@ -1650,6 +1650,7 @@ class AdaptiveOrderManager:
                 "timeInForce": "IOC",
                 "orderLinkId": link_id
             }
+            order_data['reduceOnly'] = copy_order.metadata.get('reduceOnly', False)
 
             self.logger.info(
                 f"Placing MARKET: {copy_order.target_symbol} {copy_order.target_side} "
@@ -3045,6 +3046,13 @@ class Stage2CopyTradingSystem:
         source_client=None,
         main_client=None,
         base_monitor: Optional[FinalTradingMonitor] = None,
+        main_api_key: Optional[str] = None,
+        main_api_secret: Optional[str] = None,
+        main_api_url: Optional[str] = None,
+        copy_config: Optional[dict] = None,
+        kelly_config: Optional[dict] = None,
+        trailing_config: Optional[dict] = None,
+        risk_config: Optional[dict] = None,
     ):
         # 1) Используем внешний монитор, если он передан
         self.base_monitor = base_monitor or FinalTradingMonitor(
@@ -3060,7 +3068,14 @@ class Stage2CopyTradingSystem:
         self._started = False
         self._handlers_registered = False
 
-        # 4) Основные компоненты Этапа 2
+        # 4) Конфигурации
+        self.copy_config = copy_config or COPY_CONFIG
+        self.kelly_config = kelly_config or KELLY_CONFIG
+        self.trailing_config = trailing_config or TRAILING_CONFIG
+        self.risk_config = risk_config or RISK_CONFIG
+
+
+        # 5) Основные компоненты Этапа 2
         self.copy_manager = PositionCopyManager(
             self.source_client,
             self.main_client,
@@ -3160,10 +3175,11 @@ class Stage2CopyTradingSystem:
 
     async def on_position_item(self, item: dict):
         """
-        Новый обработчик, который получает ОДИН нормализованный объект позиции (item)
-        и запускает логику копирования.
+        Refactored handler for all position updates (OPEN, MODIFY, CLOSE).
+        Calculates the final target size based on all rules and then executes the required delta.
         """
         try:
+            # 1. NORMALIZE & VALIDATE INPUT
             if not isinstance(item, dict):
                 logger.warning(f"on_position_item received non-dict data: {type(item)}")
                 return
@@ -3172,74 +3188,153 @@ class Stage2CopyTradingSystem:
             if not symbol:
                 logger.warning("on_position_item: received item with no symbol.")
                 return
-            pos_idx = int(item.get('positionIdx', 0))
-            action_key = (symbol, pos_idx)
 
-            # --- IDEMPOTENCY CHECK ---
+            pos_idx = int(item.get('positionIdx', 0))
+            donor_side = (item.get('side') or "").strip()
+            donor_size = float(item.get('size', 0) or 0)
+            entry_price = float(item.get('entryPrice') or item.get('markPrice') or 0)
+
+            # Idempotency check
+            action_key = (symbol, pos_idx)
             async with self._idempotency_lock:
-                last_action_time = self._recent_actions.get(action_key, 0)
-                if time.time() - last_action_time < self._idempotency_window_sec:
-                    logger.warning(f"IDEMPOTENCY_SKIP: Action for {action_key} skipped, already processed within last {self._idempotency_window_sec}s.")
+                if time.time() - self._recent_actions.get(action_key, 0) < self._idempotency_window_sec:
+                    logger.debug(f"IDEMPOTENCY_SKIP: Action for {action_key} recently processed.")
                     return
-                # Mark that we are processing this action now, to prevent re-entry
                 self._recent_actions[action_key] = time.time()
 
-            # 1. Парсинг согласно новому контракту
-            side = (item.get('side') or "").strip()
-            size = float(item.get('size', 0) or 0)
-            entry_price = float(item.get('entryPrice', 0) or 0)
-            
-            logger.info(f"COPY_HANDLER_IN: symbol={symbol} side='{side}' size={size} entry={entry_price} idx={pos_idx}")
+            logger.info(f"COPY_HANDLER_IN: symbol={symbol} side='{donor_side}' size={donor_size} entry={entry_price} idx={pos_idx}")
 
-            # 2. Получаем текущую позицию на TARGET аккаунте
-            target_positions = await self.main_client.get_positions()
+            # 2. FETCH CURRENT STATE (BALANCES & TARGET POSITION)
+            main_balance = await self.main_client.get_balance()
+            source_balance = await self.source_client.get_balance()
+
+            if not all([main_balance, source_balance]) or main_balance <= 0 or source_balance <= 0:
+                logger.error(f"Invalid balances for calculation: MAIN={main_balance}, SOURCE={source_balance}. Skipping.")
+                return
+
+            target_positions = await self.main_client.get_positions(category="linear", symbol=symbol)
             target_pos = next((p for p in target_positions if p.get('symbol') == symbol and int(p.get('positionIdx', 0)) == pos_idx), None)
-            target_size = safe_float(target_pos.get('size')) if target_pos else 0.0
-            target_side = (target_pos.get('side') or "").strip() if target_pos else ""
+            current_target_size = safe_float(target_pos.get('size')) if target_pos else 0.0
+            current_target_side = (target_pos.get('side') or "").strip() if target_pos else ""
 
-            # 3. Определяем действие
-            if size > 0 and side in ('Buy', 'Sell'):
-                # Действие: OPEN или MODIFY
-                if target_size == 0:
-                    # --- OPEN ---
-                    reason = "ws_open"
-                    logger.info(f"COPY ACTION: {reason.upper()} for {symbol} | DONOR size={size} -> TARGET size=0. Placing market order.")
-                    # TODO: Добавить расчет коэффициента иKelly
-                    copy_qty = size
-                    order = CopyOrder(source_signal=None, target_symbol=symbol, target_side=side, target_quantity=copy_qty, target_price=entry_price, order_strategy=OrderStrategy.MARKET, kelly_fraction=1.0, priority=1, metadata={'reason': reason})
-                    await self.order_manager.place_adaptive_order(order)
-                else:
-                    # --- MODIFY ---
-                    if side != target_side:
-                        # Разворот: закрыть старую, открыть новую
-                        close_reason = "ws_modify_flip_close"
-                        logger.info(f"COPY ACTION: {close_reason.upper()} for {symbol} | DONOR side={side}, TARGET side={target_side}. Closing target position.")
-                        close_order = CopyOrder(source_signal=None, target_symbol=symbol, target_side='Sell' if target_side == 'Buy' else 'Buy', target_quantity=target_size, target_price=entry_price, order_strategy=OrderStrategy.MARKET, kelly_fraction=0, priority=0, metadata={'reason': close_reason, 'reduceOnly': True})
-                        await self.order_manager.place_adaptive_order(close_order)
+            # 3. CALCULATE FINAL TARGET SIZE (The core logic)
+            final_target_size = 0
+            kelly_fraction = 0.0
 
-                        open_reason = "ws_modify_flip_open"
-                        logger.info(f"COPY ACTION: {open_reason.upper()} for {symbol} | Opening new position with side {side}.")
-                        # TODO: Расчет Kelly/коэффициента
-                        copy_qty = size
-                        open_order = CopyOrder(source_signal=None, target_symbol=symbol, target_side=side, target_quantity=copy_qty, target_price=entry_price, order_strategy=OrderStrategy.MARKET, kelly_fraction=1.0, priority=1, metadata={'reason': open_reason})
-                        await self.order_manager.place_adaptive_order(open_order)
-                    else:
-                        # Изменение размера
-                        size_delta = size - target_size
-                        if abs(size_delta) > 0:
-                            modify_reason = "ws_modify_size"
-                            logger.info(f"COPY ACTION: {modify_reason.upper()} for {symbol} | DONOR size={size}, TARGET size={target_size}. Adjusting by {size_delta}.")
-                            modify_side = side if size_delta > 0 else ('Sell' if side == 'Buy' else 'Buy')
-                            order = CopyOrder(source_signal=None, target_symbol=symbol, target_side=modify_side, target_quantity=abs(size_delta), target_price=entry_price, order_strategy=OrderStrategy.MARKET, kelly_fraction=0, priority=1, metadata={'reason': modify_reason})
-                            await self.order_manager.place_adaptive_order(order)
+            if donor_size > 0 and donor_side:
+                # a. Proportional size based on balance ratio
+                proportional_size = donor_size * (main_balance / source_balance)
 
-            elif size == 0 and target_size > 0:
-                # --- CLOSE ---
-                reason = "ws_close"
-                logger.info(f"COPY ACTION: {reason.upper()} for {symbol} | DONOR size=0, TARGET size={target_size}. Closing target position.")
-                close_side = 'Sell' if target_side == 'Buy' else 'Buy'
-                order = CopyOrder(source_signal=None, target_symbol=symbol, target_side=close_side, target_quantity=target_size, target_price=entry_price, order_strategy=OrderStrategy.MARKET, kelly_fraction=0, priority=0, metadata={'reason': reason, 'reduceOnly': True})
-                await self.order_manager.place_adaptive_order(order)
+                # b. Kelly Criterion adjustment
+                kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(
+                    symbol=symbol, current_size=proportional_size, price=entry_price,
+                    balance=main_balance, source_balance=source_balance
+                )
+                kelly_recommended_size = kelly_result.get('recommended_size', proportional_size)
+                kelly_fraction = kelly_result.get('kelly_fraction', 0.0)
+
+                # c. Apply master copy_config limits
+                final_target_size = kelly_recommended_size * COPY_CONFIG['default_copy_ratio']
+                final_target_size = max(COPY_CONFIG['min_copy_size'], final_target_size)
+                final_target_size = min(COPY_CONFIG['max_copy_size'], final_target_size)
+
+                logger.info(
+                    f"TARGET_CALC: Donor Size={donor_size:.4f} -> Proportional={proportional_size:.4f} "
+                    f"-> Kelly Rec={kelly_recommended_size:.4f} -> Final Target={final_target_size:.4f}"
+                )
+
+            # 4. CALCULATE DELTA AND EXECUTE
+            is_flip = current_target_side and donor_side and current_target_side != donor_side
+
+            if is_flip:
+                logger.info(f"FLIP DETECTED: {symbol} from {current_target_side} to {donor_side}")
+
+                # Step 1: Close existing position
+                close_side = 'Sell' if current_target_side == 'Buy' else 'Buy'
+                logger.info(f"FLIP_CLOSE: Closing {current_target_size} of {symbol} with a {close_side} order.")
+                close_order = CopyOrder(
+                    source_signal=None,
+                    target_symbol=symbol,
+                    target_side=close_side,
+                    target_quantity=current_target_size,
+                    target_price=entry_price,
+                    order_strategy=OrderStrategy.MARKET,
+                    kelly_fraction=0, # Not applicable for closing
+                    priority=0,
+                    metadata={'reason': 'ws_flip_close', 'reduceOnly': True}
+                )
+                close_result = await self.copy_manager.order_manager.place_adaptive_order(close_order)
+
+                if not close_result.get('success'):
+                    logger.error(f"FLIP_CLOSE FAILED for {symbol}. Aborting flip.")
+                    return
+
+                logger.info(f"FLIP_CLOSE for {symbol} successful.")
+                await asyncio.sleep(1) # Small delay to allow position to update
+
+                # Step 2: Open new position
+                logger.info(f"FLIP_OPEN: Opening {final_target_size} of {symbol} with a {donor_side} order.")
+                open_order = CopyOrder(
+                    source_signal=None,
+                    target_symbol=symbol,
+                    target_side=donor_side,
+                    target_quantity=final_target_size,
+                    target_price=entry_price,
+                    order_strategy=OrderStrategy.MARKET,
+                    kelly_fraction=kelly_fraction,
+                    priority=1,
+                    metadata={'reason': 'ws_flip_open', 'reduceOnly': False}
+                )
+                order_result = await self.copy_manager.order_manager.place_adaptive_order(open_order)
+
+            else:
+                # Original delta logic for non-flip scenarios
+                size_delta = final_target_size - current_target_size
+
+                min_tradeable_qty = float((await self.main_client.get_symbol_filters(symbol, "linear")).get("min_qty", 0.001))
+
+                if abs(size_delta) < min_tradeable_qty:
+                    logger.info(f"Delta {size_delta:.6f} is too small for {symbol} (min_qty: {min_tradeable_qty}). No action needed.")
+                    return
+
+                order_side = 'Buy' if size_delta > 0 else 'Sell'
+                order_qty = abs(size_delta)
+
+                is_opening = current_target_size == 0 and final_target_size > 0
+                is_closing = final_target_size == 0 and current_target_size > 0
+                is_modifying = not is_opening and not is_closing
+
+                reason = "ws_open" if is_opening else "ws_close" if is_closing else "ws_modify"
+
+                logger.info(f"COPY_ACTION: {reason.upper()} for {symbol} | Delta: {size_delta:.4f} | Qty: {order_qty:.4f} | Side: {order_side}")
+
+                order = CopyOrder(
+                    source_signal=None,
+                    target_symbol=symbol,
+                    target_side=order_side,
+                    target_quantity=order_qty,
+                    target_price=entry_price,
+                    order_strategy=OrderStrategy.MARKET,
+                    kelly_fraction=kelly_fraction,
+                    priority=1 if is_opening or is_closing else 0,
+                    metadata={'reason': reason, 'reduceOnly': size_delta < 0}
+                )
+
+                order_result = await self.copy_manager.order_manager.place_adaptive_order(order)
+
+            # 5. POST-ORDER ACTIONS (Trailing Stops)
+            if order_result and order_result.get('success'):
+                if is_opening or is_modifying:
+                    market_conditions = await self.copy_manager.order_manager.get_market_analysis(symbol)
+                    avg_price = order_result.get('avg_price', entry_price)
+                    # For modifications, the position value is based on the new total size
+                    position_value = final_target_size * avg_price
+                    self.copy_manager.trailing_manager.create_trailing_stop(
+                        symbol=symbol, side=donor_side, current_price=avg_price,
+                        position_size=position_value, market_conditions=market_conditions
+                    )
+                elif is_closing:
+                    self.copy_manager.trailing_manager.remove_trailing_stop(symbol)
 
         except Exception as e:
             logger.error(f"on_position_item failed: {e}", exc_info=True)
