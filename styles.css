@@ -1,0 +1,166 @@
+:root {
+  --bg: #0f1216;
+  --panel: #11151b;
+  --panel-2: #0e1116;
+  --text: #e8edf2;
+  --text-dim: #aeb8c5;
+  --accent: #3aa6ff;
+  --ok: #3ccb7f;
+  --bad: #e06b6b;
+
+  /* Адаптивная высота графика */
+  --chart-h: clamp(220px, 35vh, 380px);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  background: var(--bg);
+  color: var(--text);
+  margin: 0;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+.app {
+  padding: max(12px, env(safe-area-inset-top)) max(12px, env(safe-area-inset-right))
+           max(12px, env(safe-area-inset-bottom)) max(12px, env(safe-area-inset-left));
+  max-width: 1400px;
+  margin: 0 auto;
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.title {
+  font-weight: 700;
+  font-size: clamp(20px, 3.2vw, 28px);
+  letter-spacing: .2px;
+}
+
+.controls {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.btn {
+  background: #1a2330;
+  border: 1px solid #222a36;
+  color: var(--text);
+  border-radius: 10px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+.btn:hover { border-color: #2b3546; }
+
+.badge {
+  color: var(--text-dim);
+  font-size: 12px;
+}
+
+/* KPI */
+.kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0,1fr));
+  gap: 12px;
+  margin-bottom: 16px;
+}
+@media (min-width: 720px) {
+  .kpi-grid { grid-template-columns: repeat(3, minmax(0,1fr)); }
+}
+@media (min-width: 1024px) {
+  .kpi-grid { grid-template-columns: repeat(4, minmax(0,1fr)); }
+}
+
+.kpi {
+  background: var(--panel);
+  border: 1px solid #1a2230;
+  border-radius: 14px;
+  padding: 14px 16px;
+  min-height: 92px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+.kpi-title {
+  color: var(--text-dim);
+  font-size: 12px;
+  margin-bottom: 6px;
+}
+.kpi-value {
+  font-weight: 800;
+  /* не даём значениям налезать: */
+  font-size: clamp(22px, 6.2vw, 32px);
+  line-height: 1.05;
+  letter-spacing: .3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* График */
+.panel {
+  background: var(--panel-2);
+  border: 1px solid #1a2230;
+  border-radius: 14px;
+  padding: 14px;
+}
+.chart-wrap {
+  height: var(--chart-h);
+  width: 100%;
+}
+
+/* Таблица */
+.table-wrap {
+  margin-top: 16px;
+  background: var(--panel);
+  border: 1px solid #1a2230;
+  border-radius: 14px;
+  overflow: hidden;
+}
+.table-scroll {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 860px; /* на мобиле уйдет в горизонтальный скролл */
+}
+thead th {
+  background: #111722;
+  color: var(--text-dim);
+  font-weight: 600;
+  font-size: 12px;
+  padding: 10px 12px;
+  text-align: left;
+  position: sticky;
+  top: 0;
+}
+tbody td {
+  border-top: 1px solid #1a2230;
+  padding: 10px 12px;
+  font-size: 13px;
+  color: var(--text);
+}
+tbody tr:hover { background: #101622; }
+
+/* Прячем «второстепенные» поля на  < 420px */
+@media (max-width: 420px) {
+  .col-attempt, .col-latency, .col-reason { display: none; }
+}
+
+/* footer */
+.footer {
+  margin: 10px 2px 0;
+  color: var(--text-dim);
+  font-size: 12px;
+}
