@@ -92,18 +92,6 @@ KELLY_CONFIG = {
     'rebalance_threshold': 0.1              # Порог для ребалансировки (10%)
 }
 
-# Trailing Stop-Loss настройки
-TRAILING_CONFIG = {
-    'atr_period': 14,
-    'atr_multiplier_conservative': 2.0,
-    'atr_multiplier_moderate': 1.5,
-    'atr_multiplier_aggressive': 1.0,
-    'min_trail_distance': 0.005,
-    'max_trail_distance': 0.05,
-    'update_threshold': 0.001,
-    'min_abs_move': 0.10,    # ✔ новый параметр: минимальный абсолютный сдвиг цены (в $) для апдейта
-}
-
 # Контроль рисков
 RISK_CONFIG = {
     'max_daily_loss': 0.05,                # Максимальная дневная просадка (5%)
@@ -112,6 +100,25 @@ RISK_CONFIG = {
     'max_exposure_per_symbol': 0.2,        # Максимальная экспозиция на символ (20%)
     'emergency_stop_threshold': 0.1,       # Порог экстренной остановки (10%)
     'recovery_mode_threshold': 0.08        # Порог режима восстановления (8%)
+}
+
+# Trailing Stop-Loss настройки
+TRAILING_CONFIG = {
+    'enabled': True,
+    'rearm_on_modify': True,
+    'update_on_add': True,
+    'only_on_open': False,
+    'min_notional_for_ts': 100.0,
+    'mode': 'atr',
+    'atr': {
+        'period': 14,
+        'multiplier': 2.5,
+    },
+    'fixed_pct': {
+        'distance_pct': 0.015,
+    },
+    'max_ts_pct_of_price': 0.10,
+    'max_ts_distance_usd': 500.0,
 }
 
 async def format_quantity_for_symbol_live(bybit_client, symbol: str, quantity: float, price: float = None) -> str:
@@ -876,7 +883,8 @@ class DynamicTrailingStopManager:
     - Множественные стили трейлинга
     """
     
-    def __init__(self):
+    def __init__(self, main_client: EnhancedBybitClient):
+        self.main_client = main_client
         self.active_stops = {}  # symbol -> TrailingStop
         self.price_history = defaultdict(lambda: deque(maxlen=50))
         self.atr_cache = {}
@@ -948,22 +956,28 @@ class DynamicTrailingStopManager:
             logger.error(f"Failed to reload trailing config: {e}")
             raise
 
-    def calculate_atr(self, symbol: str, price_data: List[Dict[str, float]], period: int = None) -> float:
+    async def calculate_atr(self, symbol: str, period: int = 14) -> float:
         """
-        Расчет Average True Range (ATR)
-        
-        ATR = SMA(TR, period)
-        где TR = max(H-L, |H-C_prev|, |L-C_prev|)
+        Расчет Average True Range (ATR) с использованием get_kline.
         """
         try:
-            if period is None:
-                period = TRAILING_CONFIG['atr_period']
-                
-            if len(price_data) < period:
-                return 0.01  # Дефолтное значение
-            
+            # Use cache if available and not stale
+            if symbol in self.atr_cache and time.time() - self.atr_cache[symbol]['timestamp'] < 300:
+                return self.atr_cache[symbol]['value']
+
+            # Fetch kline data - assuming 15min interval for ATR
+            klines = await self.main_client.get_kline("linear", symbol, "15", period + 1)
+            if not klines or len(klines) < period + 1:
+                logger.warning(f"Not enough kline data for {symbol} to calculate ATR ({len(klines)} candles).")
+                return 0.01  # Default value if not enough data
+
+            # Bybit kline format: [timestamp, open, high, low, close, volume, turnover]
+            price_data = [
+                {'high': float(k[2]), 'low': float(k[3]), 'close': float(k[4])}
+                for k in reversed(klines)  # Bybit returns newest first, so reverse for chronological order
+            ]
+
             true_ranges = []
-            
             for i in range(1, len(price_data)):
                 high = price_data[i]['high']
                 low = price_data[i]['low']
@@ -979,18 +993,14 @@ class DynamicTrailingStopManager:
             if len(true_ranges) >= period:
                 atr = np.mean(true_ranges[-period:])
                 
-                # Кэшируем результат
-                self.atr_cache[symbol] = {
-                    'value': atr,
-                    'timestamp': time.time()
-                }
-                
+                self.atr_cache[symbol] = {'value': atr, 'timestamp': time.time()}
+                logger.info(f"Calculated ATR for {symbol} ({period}): {atr:.6f}")
                 return atr
             
             return 0.01
             
         except Exception as e:
-            logger.error(f"ATR calculation error for {symbol}: {e}")
+            logger.error(f"ATR calculation error for {symbol}: {e}", exc_info=True)
             return 0.01
     
     def determine_trailing_style(self, market_conditions: MarketConditions) -> TrailingStyle:
@@ -1403,6 +1413,95 @@ class AdaptiveOrderManager:
         self.pending_orders = {}
         self.order_history = deque(maxlen=1000)
         self.execution_stats = defaultdict(lambda: {'success': 0, 'failed': 0, 'avg_time': 0})
+
+    async def get_min_order_qty(self, symbol: str, price: float) -> float:
+        """
+        Возвращает минимально возможное количество для ордера по символу
+        с учётом фильтров min_qty и min_notional.
+        """
+        try:
+            filters = await self.main_client.get_symbol_filters(symbol, category="linear")
+            min_qty = float(filters.get("min_qty") or 0.001)
+            min_notional = float(filters.get("min_notional") or 5.0)
+
+            if price and price > 0:
+                min_qty_by_value = min_notional / price
+                effective_min = max(min_qty, min_qty_by_value)
+
+                # We also need to consider the qty_step
+                qty_step = float(filters.get("qty_step") or 0.001)
+
+                # Round up to the nearest step
+                if qty_step > 0:
+                    steps = effective_min / qty_step
+                    rounded_qty = math.ceil(steps) * qty_step
+                else:
+                    rounded_qty = effective_min
+
+                # Ensure it's not less than the absolute min_qty
+                final_min_qty = max(rounded_qty, min_qty)
+
+                self.logger.info(
+                    f"[get_min_qty] {symbol}: min_qty={min_qty}, min_notional={min_notional}, price={price} -> effective_min={final_min_qty}"
+                )
+                return final_min_qty
+
+            return min_qty
+        except Exception as e:
+            self.logger.error(f"Failed to get min order qty for {symbol}: {e}", exc_info=True)
+            # Fallback
+            if price and price > 0:
+                # A safe fallback value, assuming min notional is $5
+                return 5.0 / price
+            return 0.001
+
+    async def place_trailing_stop(self, symbol: str, side: str, qty: str, trail_distance: str, active_price: str = None) -> Dict[str, Any]:
+        """Places a trailing stop order."""
+        try:
+            # For a long position (side='Buy'), the trailing stop is a 'Sell' order.
+            # For a short position (side='Sell'), the trailing stop is a 'Buy' order.
+            stop_side = "Sell" if side == "Buy" else "Buy"
+            link_id = f"ts_{symbol}_{int(time.time()*1000)}"
+
+            order_data = {
+                "category": "linear",
+                "symbol": symbol,
+                "side": stop_side,
+                "orderType": "Market", # The order executed when triggered
+                "qty": qty,
+                "trailingStop": trail_distance,
+                "reduceOnly": True,
+                "orderLinkId": link_id
+            }
+            # activePrice is the price that triggers the trailing stop to start trailing.
+            # If not provided, it trails immediately based on the last traded price.
+            if active_price:
+                order_data["activePrice"] = active_price
+
+            self.logger.info(f"Placing TRAILING_STOP: {symbol} {order_data['side']} qty={qty} trail_dist={trail_distance}")
+
+            orders_logger.log_order(
+                account_id=2, symbol=symbol, side=order_data['side'], qty=qty,
+                price=None, status=OrderStatus.PENDING.value, order_type='TRAILING_STOP',
+                reason='ts_create', ext_id=link_id
+            )
+
+            result = await self.main_client.place_order(**order_data)
+
+            if result and result.get('orderId'):
+                order_id = result['orderId']
+                self.logger.info(f"Trailing Stop order placed successfully: {order_id}")
+                orders_logger.update_order_status_by_ext_id(link_id, OrderStatus.PLACED.value, exchange_order_id=order_id)
+                return {"success": True, "order_id": order_id}
+            else:
+                error_msg = result.get('retMsg', 'Unknown error') if result else "No response"
+                self.logger.error(f"Failed to place trailing stop order: {error_msg}")
+                orders_logger.update_order_status_by_ext_id(link_id, OrderStatus.FAILED.value, reason=error_msg)
+                return {"success": False, "error": error_msg}
+
+        except Exception as e:
+            self.logger.error(f"Trailing stop placement error: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
 
         
     async def get_market_analysis(self, symbol: str) -> MarketConditions:
@@ -1937,7 +2036,7 @@ class PositionCopyManager:
         # Основные компоненты
         self.kelly_calculator = AdvancedKellyCalculator()
         self.order_manager = AdaptiveOrderManager(main_client)
-        self.trailing_manager = DynamicTrailingStopManager()
+        self.trailing_manager = DynamicTrailingStopManager(self.main_client)
         
         # Состояние системы
         self.copy_mode = CopyMode.KELLY_OPTIMAL
@@ -3051,8 +3150,7 @@ class Stage2CopyTradingSystem:
         main_api_url: Optional[str] = None,
         copy_config: Optional[dict] = None,
         kelly_config: Optional[dict] = None,
-        trailing_config: Optional[dict] = None,
-        risk_config: Optional[dict] = None,
+        risk_config: Optional[dict] = None
     ):
         # 1) Используем внешний монитор, если он передан
         self.base_monitor = base_monitor or FinalTradingMonitor(
@@ -3071,8 +3169,8 @@ class Stage2CopyTradingSystem:
         # 4) Конфигурации
         self.copy_config = copy_config or COPY_CONFIG
         self.kelly_config = kelly_config or KELLY_CONFIG
-        self.trailing_config = trailing_config or TRAILING_CONFIG
         self.risk_config = risk_config or RISK_CONFIG
+        self.trailing_config = TRAILING_CONFIG
 
 
         # 5) Основные компоненты Этапа 2
@@ -3217,84 +3315,69 @@ class Stage2CopyTradingSystem:
             current_target_size = safe_float(target_pos.get('size')) if target_pos else 0.0
             current_target_side = (target_pos.get('side') or "").strip() if target_pos else ""
 
-            # 3. CALCULATE FINAL TARGET SIZE (The core logic)
+            min_qty = await self.copy_manager.order_manager.get_min_order_qty(symbol, price=entry_price)
+
+            # 3. CALCULATE FINAL TARGET SIZE
             final_target_size = 0
             kelly_fraction = 0.0
-
             if donor_size > 0 and donor_side:
-                # a. Proportional size based on balance ratio
                 proportional_size = donor_size * (main_balance / source_balance)
-
-                # b. Kelly Criterion adjustment
                 kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(
                     symbol=symbol, current_size=proportional_size, price=entry_price,
                     balance=main_balance, source_balance=source_balance
                 )
                 kelly_recommended_size = kelly_result.get('recommended_size', proportional_size)
                 kelly_fraction = kelly_result.get('kelly_fraction', 0.0)
-
-                # c. Apply master copy_config limits
                 final_target_size = kelly_recommended_size * COPY_CONFIG['default_copy_ratio']
                 final_target_size = max(COPY_CONFIG['min_copy_size'], final_target_size)
                 final_target_size = min(COPY_CONFIG['max_copy_size'], final_target_size)
 
                 logger.info(
-                    f"TARGET_CALC: Donor Size={donor_size:.4f} -> Proportional={proportional_size:.4f} "
-                    f"-> Kelly Rec={kelly_recommended_size:.4f} -> Final Target={final_target_size:.4f}"
+                    f"TARGET_CALC: Donor={donor_size:.4f} -> Proportional={proportional_size:.4f} -> KellyRec={kelly_recommended_size:.4f} -> PrePin={final_target_size:.4f}"
                 )
+                if 0 < final_target_size < min_qty:
+                    logger.info(f"PIN_TO_MIN: target {final_target_size:.4f} < min_qty {min_qty} for {symbol} -> use min_qty")
+                    final_target_size = min_qty
 
             # 4. CALCULATE DELTA AND EXECUTE
             is_flip = current_target_side and donor_side and current_target_side != donor_side
+            order_result = None
 
             if is_flip:
                 logger.info(f"FLIP DETECTED: {symbol} from {current_target_side} to {donor_side}")
+                logger.info(f"TS_CANCEL_BEFORE_FLIP: Cancelling existing orders for {symbol}.")
+                await self.copy_manager.order_manager.cancel_all_orders_for_symbol(symbol, reason='ts_flip_cancel')
 
-                # Step 1: Close existing position
-                close_side = 'Sell' if current_target_side == 'Buy' else 'Buy'
-                logger.info(f"FLIP_CLOSE: Closing {current_target_size} of {symbol} with a {close_side} order.")
+                logger.info(f"FLIP_CLOSE: Closing {current_target_size} of {symbol} with a reduceOnly order.")
                 close_order = CopyOrder(
-                    source_signal=None,
-                    target_symbol=symbol,
-                    target_side=close_side,
-                    target_quantity=current_target_size,
-                    target_price=entry_price,
-                    order_strategy=OrderStrategy.MARKET,
-                    kelly_fraction=0, # Not applicable for closing
-                    priority=0,
+                    source_signal=None, target_symbol=symbol,
+                    target_side='Sell' if current_target_side == 'Buy' else 'Buy',
+                    target_quantity=current_target_size, target_price=entry_price,
+                    order_strategy=OrderStrategy.MARKET, kelly_fraction=0, priority=0,
                     metadata={'reason': 'ws_flip_close', 'reduceOnly': True}
                 )
                 close_result = await self.copy_manager.order_manager.place_adaptive_order(close_order)
-
                 if not close_result.get('success'):
                     logger.error(f"FLIP_CLOSE FAILED for {symbol}. Aborting flip.")
                     return
 
-                logger.info(f"FLIP_CLOSE for {symbol} successful.")
-                await asyncio.sleep(1) # Small delay to allow position to update
+                logger.info(f"FLIP_CLOSE for {symbol} successful. Waiting before opening new side.")
+                await asyncio.sleep(1.5)
 
-                # Step 2: Open new position
-                logger.info(f"FLIP_OPEN: Opening {final_target_size} of {symbol} with a {donor_side} order.")
+                logger.info(f"FLIP_OPEN: Opening {final_target_size} of {symbol} on side {donor_side}.")
                 open_order = CopyOrder(
-                    source_signal=None,
-                    target_symbol=symbol,
-                    target_side=donor_side,
-                    target_quantity=final_target_size,
-                    target_price=entry_price,
-                    order_strategy=OrderStrategy.MARKET,
-                    kelly_fraction=kelly_fraction,
-                    priority=1,
+                    source_signal=None, target_symbol=symbol,
+                    target_side=donor_side, target_quantity=final_target_size,
+                    target_price=entry_price, order_strategy=OrderStrategy.MARKET,
+                    kelly_fraction=kelly_fraction, priority=1,
                     metadata={'reason': 'ws_flip_open', 'reduceOnly': False}
                 )
                 order_result = await self.copy_manager.order_manager.place_adaptive_order(open_order)
 
-            else:
-                # Original delta logic for non-flip scenarios
+            else: # Not a flip, just a regular delta change
                 size_delta = final_target_size - current_target_size
-
-                min_tradeable_qty = float((await self.main_client.get_symbol_filters(symbol, "linear")).get("min_qty", 0.001))
-
-                if abs(size_delta) < min_tradeable_qty:
-                    logger.info(f"Delta {size_delta:.6f} is too small for {symbol} (min_qty: {min_tradeable_qty}). No action needed.")
+                if abs(size_delta) < min_qty:
+                    logger.info(f"HYSTERESIS_SKIP: Delta {size_delta:.4f} is smaller than min_qty {min_qty}. No action.")
                     return
 
                 order_side = 'Buy' if size_delta > 0 else 'Sell'
@@ -3302,40 +3385,79 @@ class Stage2CopyTradingSystem:
 
                 is_opening = current_target_size == 0 and final_target_size > 0
                 is_closing = final_target_size == 0 and current_target_size > 0
-                is_modifying = not is_opening and not is_closing
+
+                if is_closing and self.trailing_config.get('enabled'):
+                    logger.info(f"TS_CANCEL: Cancelling orders for {symbol} due to position close.")
+                    await self.copy_manager.order_manager.cancel_all_orders_for_symbol(symbol, reason='ts_close')
 
                 reason = "ws_open" if is_opening else "ws_close" if is_closing else "ws_modify"
-
                 logger.info(f"COPY_ACTION: {reason.upper()} for {symbol} | Delta: {size_delta:.4f} | Qty: {order_qty:.4f} | Side: {order_side}")
 
                 order = CopyOrder(
-                    source_signal=None,
-                    target_symbol=symbol,
-                    target_side=order_side,
-                    target_quantity=order_qty,
-                    target_price=entry_price,
-                    order_strategy=OrderStrategy.MARKET,
-                    kelly_fraction=kelly_fraction,
+                    source_signal=None, target_symbol=symbol, target_side=order_side,
+                    target_quantity=order_qty, target_price=entry_price,
+                    order_strategy=OrderStrategy.MARKET, kelly_fraction=kelly_fraction,
                     priority=1 if is_opening or is_closing else 0,
                     metadata={'reason': reason, 'reduceOnly': size_delta < 0}
                 )
-
                 order_result = await self.copy_manager.order_manager.place_adaptive_order(order)
 
             # 5. POST-ORDER ACTIONS (Trailing Stops)
             if order_result and order_result.get('success'):
-                if is_opening or is_modifying:
-                    market_conditions = await self.copy_manager.order_manager.get_market_analysis(symbol)
-                    avg_price = order_result.get('avg_price', entry_price)
-                    # For modifications, the position value is based on the new total size
-                    position_value = final_target_size * avg_price
-                    self.copy_manager.trailing_manager.create_trailing_stop(
-                        symbol=symbol, side=donor_side, current_price=avg_price,
-                        position_size=position_value, market_conditions=market_conditions
-                    )
-                elif is_closing:
-                    self.copy_manager.trailing_manager.remove_trailing_stop(symbol)
+                is_opening = (current_target_size == 0 and final_target_size > 0) or is_flip
+                is_modifying_increase = final_target_size > current_target_size and current_target_size > 0
+                is_modifying_decrease = final_target_size < current_target_size and final_target_size > 0
 
+                should_set_ts = (
+                    self.trailing_config.get('enabled') and
+                    (is_opening or
+                    (is_modifying_increase and self.trailing_config.get('update_on_add')) or
+                    (is_modifying_decrease and self.trailing_config.get('rearm_on_modify')))
+                )
+
+                if should_set_ts:
+                    if is_modifying_increase and self.trailing_config.get('only_on_open'):
+                        logger.info(f"TS_SKIP: `only_on_open` is true, skipping TS update for {symbol}.")
+                    else:
+                        position_value = final_target_size * entry_price
+                        if position_value >= self.trailing_config.get('min_notional_for_ts', 0):
+
+                            # Cancel existing TS before creating a new one
+                            await self.copy_manager.order_manager.cancel_all_orders_for_symbol(symbol, reason='ts_rearm')
+
+                            trail_dist_val = 0
+                            mode = self.trailing_config.get('mode', 'fixed_pct')
+                            if mode == 'atr':
+                                atr_cfg = self.trailing_config.get('atr', {})
+                                atr_value = await self.copy_manager.trailing_manager.calculate_atr(symbol, period=atr_cfg.get('period', 14))
+                                if atr_value > 0:
+                                    trail_dist_val = atr_value * atr_cfg.get('multiplier', 2.5)
+                                else:
+                                    logger.warning(f"ATR for {symbol} is 0, falling back to fixed_pct for TS.")
+                                    mode = 'fixed_pct'
+
+                            if mode == 'fixed_pct':
+                                pct_cfg = self.trailing_config.get('fixed_pct', {})
+                                trail_dist_val = entry_price * pct_cfg.get('distance_pct', 0.015)
+
+                            max_dist_by_pct = entry_price * self.trailing_config.get('max_ts_pct_of_price', 0.10)
+                            max_dist_by_usd = self.trailing_config.get('max_ts_distance_usd', 500)
+                            trail_dist_val = min(trail_dist_val, max_dist_by_pct, max_dist_by_usd)
+
+                            tick_size = float((await self.main_client.get_symbol_filters(symbol)).get('tick_size', 0.01))
+                            trail_dist_str = str(round(trail_dist_val / tick_size) * tick_size) if tick_size > 0 else f"{trail_dist_val:.4f}"
+                            formatted_qty = await self.copy_manager.order_manager._format_qty_live(symbol, final_target_size, entry_price)
+
+                            ts_result = await self.copy_manager.order_manager.place_trailing_stop(
+                                symbol=symbol, side=donor_side, qty=formatted_qty, trail_distance=trail_dist_str
+                            )
+
+                            if ts_result.get('success'):
+                                logger.info(f"TS_CREATE: style={mode} use_atr={mode=='atr'} dist={trail_dist_str} symbol={symbol} qty={formatted_qty}")
+                            else:
+                                logger.error(f"TS_CREATE FAILED for {symbol}: {ts_result.get('error')}")
+                        else:
+                            logger.info(f"TS_SKIP: Position value {position_value:.2f} is below min_notional_for_ts {self.trailing_config.get('min_notional_for_ts', 0)}.")
         except Exception as e:
             logger.error(f"on_position_item failed: {e}", exc_info=True)
 
