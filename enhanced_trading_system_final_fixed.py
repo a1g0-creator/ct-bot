@@ -3125,21 +3125,6 @@ class EnhancedBybitClient:
             logger.error(f"{self.name} - Recent trades error: {e}")
             return []
 
-    async def get_kline(self, category: str, symbol: str, interval: str, limit: int = 200) -> List[dict]:
-        """Get kline data."""
-        params = {
-            "category": category,
-            "symbol": symbol,
-            "interval": interval,
-            "limit": limit
-        }
-        result = await self._make_request_with_retry("GET", "market/kline", params)
-        if result and result.get('retCode') == 0:
-            # Bybit returns klines in reverse chronological order
-            kline_list = result.get('result', {}).get('list', [])
-            return kline_list
-        return []
-
     async def place_order(self, category: str, symbol: str, side: str, orderType: str, qty: str, reduceOnly: bool = False, **kwargs) -> Optional[dict]:
         """Place an order."""
         try:

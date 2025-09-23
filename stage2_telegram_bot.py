@@ -1318,71 +1318,87 @@ class Stage2TelegramBot:
             logger.error(traceback.format_exc())
             await update.message.reply_text(f"❌ Ошибка настроек просадки: {e}")
     
-    async def show_trailing_settings_text(self, update):
-        """🆕 Настройки trailing stops"""
+async def show_trailing_settings_text(self, update):
+    """🆕 Настройки trailing stops (совместимо с новым DynamicTrailingStopManager)"""
+    from datetime import datetime
+    from telegram.constants import ParseMode
+
+    def _pct(v, fmt="{:.1%}"):
         try:
-            current_settings = self.system_settings['trailing']
-            
-            # Получаем текущие значения из системы, если доступны
-            if self.copy_system and hasattr(self.copy_system, 'copy_manager'):
-                try:
-                    if hasattr(self.copy_system.copy_manager, 'trailing_manager'):
-                        tm = self.copy_system.copy_manager.trailing_manager
-                        current_settings['initial_distance'] = getattr(tm, 'default_distance_percent', 0.02)
-                        current_settings['min_step'] = getattr(tm, 'min_trail_step', 0.005)
-                        current_settings['max_distance'] = getattr(tm, 'max_distance_percent', 0.05)
-                except Exception as e:
-                    logger.warning(f"Failed to get trailing settings: {e}")
-            
-            # Подсчитываем активные trailing stops
-            active_stops = 0
-            if self.copy_system and hasattr(self.copy_system, 'copy_manager'):
-                try:
-                    if hasattr(self.copy_system.copy_manager, 'trailing_manager'):
-                        active_stops = len(self.copy_system.copy_manager.trailing_manager.get_all_stops())
-                except Exception as e:
-                    logger.warning(f"Failed to get active trailing stops count: {e}")
-            
-            message = (
-                "🛡️ *НАСТРОЙКИ TRAILING STOPS*\n"
-                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                f"🎯 **ТЕКУЩИЕ ПАРАМЕТРЫ:**\n"
-                f"   Начальная дистанция: {current_settings['initial_distance']:.1%}\n"
-                f"   Минимальный шаг: {current_settings['min_step']:.2%}\n"
-                f"   Максимальная дистанция: {current_settings['max_distance']:.1%}\n"
-                f"   Агрессивный режим: {'✅ Включен' if current_settings['aggressive_mode'] else '❌ Выключен'}\n\n"
-                
-                f"📊 **СТАТИСТИКА:**\n"
-                f"   Активных trailing stops: {active_stops}\n"
-                f"   Режим работы: {'Агрессивный' if current_settings['aggressive_mode'] else 'Консервативный'}\n\n"
-                
-                "🔧 **КОМАНДЫ НАСТРОЙКИ:**\n"
-                "`/set_trailing distance 2.5` - начальная дистанция 2.5%\n"
-                "`/set_trailing step 0.3` - минимальный шаг 0.3%\n"
-                "`/set_trailing max 4.0` - максимальная дистанция 4.0%\n"
-                "`/set_trailing aggressive on` - включить агрессивный режим\n"
-                "`/set_trailing clear_all` - закрыть все trailing stops\n\n"
-                
-                "⚙️ **РЕЖИМЫ РАБОТЫ:**\n"
-                "   🐌 Консервативный - медленное сближение\n"
-                "   🚶 Умеренный - сбалансированный подход\n"
-                "   🏃 Агрессивный - быстрое сближение\n\n"
-                
-                "💡 **РЕКОМЕНДАЦИИ:**\n"
-                "   • Дистанция: 1.5-3.0% (зависит от волатильности)\n"
-                "   • Шаг: 0.2-0.5% (точность следования)\n"
-                "   • Максимум: 3.0-5.0% (защита от больших откатов)\n\n"
-                
-                f"⏰ Обновлено: {datetime.now().strftime('%H:%M:%S')}"
-            )
-            
-            await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
-            
-        except Exception as e:
-            logger.error(f"Trailing settings error: {e}")
-            logger.error(traceback.format_exc())
-            await update.message.reply_text(f"❌ Ошибка настроек trailing: {e}")
-    
+            return fmt.format(float(v))
+        except Exception:
+            return "—"
+
+    try:
+        active_stops = 0
+        snap = {
+            "enabled": None,
+            "mode": None,
+            "step_pct": None,
+            "max_pct": None,
+            "activation_pct": None,
+            "atr_period": None,
+            "atr_multiplier": None,
+        }
+
+        tm = None
+        if getattr(self, "copy_system", None) and hasattr(self.copy_system, "copy_manager"):
+            tm = getattr(self.copy_system.copy_manager, "trailing_manager", None)
+
+        if tm:
+            try:
+                if hasattr(tm, "get_config_snapshot"):
+                    snap.update(tm.get_config_snapshot() or {})
+                else:
+                    snap["activation_pct"] = getattr(tm, "default_distance_percent", None)
+                    snap["step_pct"]       = getattr(tm, "min_trail_step", None)
+                    snap["max_pct"]        = getattr(tm, "max_distance_percent", None)
+                    snap["mode"]           = "aggressive" if getattr(tm, "aggressive_mode", False) else "conservative"
+                    snap["enabled"]        = True
+            except Exception as e:
+                logger.warning(f"Failed to get trailing snapshot: {e}")
+
+            try:
+                if hasattr(tm, "get_all_stops"):
+                    active_stops = len(tm.get_all_stops() or [])
+            except Exception as e:
+                logger.warning(f"Failed to get active trailing stops count: {e}")
+
+        message = (
+            "🛡️ *НАСТРОЙКИ TRAILING STOPS*\n"
+            "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            "🎯 *ТЕКУЩИЕ ПАРАМЕТРЫ:*\n"
+            f"   Начальная дистанция: {_pct(snap.get('activation_pct'))}\n"
+            f"   Минимальный шаг:     {_pct(snap.get('step_pct'), '{:.2%}')}\n"
+            f"   Максимальная дистанция: {_pct(snap.get('max_pct'))}\n"
+            f"   ATR: период={snap.get('atr_period') or '—'}, множитель={snap.get('atr_multiplier') or '—'}\n"
+            f"   Режим: {'Агрессивный' if (snap.get('mode') == 'aggressive') else 'Консервативный'}\n"
+            f"   Статус: {'✅ Включен' if snap.get('enabled') else '❌ Выключен'}\n\n"
+            "📊 *СТАТИСТИКА:*\n"
+            f"   Активных trailing stops: {active_stops}\n\n"
+            "🔧 *КОМАНДЫ НАСТРОЙКИ:*\n"
+            "`/set_trailing distance 2.5` — начальная дистанция 2.5%\n"
+            "`/set_trailing step 0.3` — минимальный шаг 0.3%\n"
+            "`/set_trailing max 4.0` — максимальная дистанция 4.0%\n"
+            "`/set_trailing atr 14 1.5` — ATR период=14, множитель=1.5\n"
+            "`/set_trailing aggressive on|off` — режим\n"
+            "`/set_trailing enabled on|off` — вкл/выкл\n"
+            "`/set_trailing clear_all` — закрыть все trailing stops\n"
+            "`/set_trailing status` — показать текущие значения\n\n"
+            "💡 *РЕКОМЕНДАЦИИ:*\n"
+            "   • Дистанция: 1.5–3.0% (по волатильности)\n"
+            "   • Шаг: 0.2–0.5% (точность следования)\n"
+            "   • Максимум: 3.0–5.0% (защита от больших откатов)\n\n"
+            f"⏰ Обновлено: {datetime.now().strftime('%H:%M:%S')}"
+        )
+
+        await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
+
+    except Exception as e:
+        logger.error(f"Trailing settings error: {e}", exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка настроек trailing: {e}")
+
+
     async def export_reports_text(self, update):
         """🆕 Экспорт отчетов в различных форматах"""
         try:
@@ -1745,253 +1761,217 @@ class Stage2TelegramBot:
             logger.error(f"Test notification error: {e}")
             logger.error(traceback.format_exc())
     
-    async def set_trailing_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """🆕 Команда /set_trailing - настройка Trailing Stop"""
-        sys_logger.log_telegram_command("/set_trailing", update.effective_user.id)
+async def set_trailing_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """🆕 /set_trailing — работает через DynamicTrailingStopManager.reload_config(patch)"""
+    from datetime import datetime
+    from telegram.constants import ParseMode
+    sys_logger.log_telegram_command("/set_trailing", update.effective_user.id)
 
-        if not self.check_authorization(update.effective_user.id):
-            await update.message.reply_text("❌ Доступ запрещен")
-            return
-    
+    if not self.check_authorization(update.effective_user.id):
+        await update.message.reply_text("❌ Доступ запрещен")
+        return
+
+    def _parse_bool(val: str) -> bool:
+        v = (val or "").strip().lower()
+        if v in {"1", "on", "true", "yes", "y", "enable", "enabled"}:
+            return True
+        if v in {"0", "off", "false", "no", "n", "disable", "disabled"}:
+            return False
+        raise ValueError("Ожидалось on/off")
+
+    def _parse_float_pct(val: str, name: str, min_pct: float, max_pct: float) -> float:
         try:
-            args = context.args
-            if len(args) < 2:
-                await update.message.reply_text(
-                    "🛡️ *НАСТРОЙКА TRAILING STOP*\n\n"
-                    "📝 **ИСПОЛЬЗОВАНИЕ:**\n"
-                    "`/set_trailing distance 2.5` - дистанция 2.5%\n"
-                    "`/set_trailing step 0.3` - шаг 0.3%\n"
-                    "`/set_trailing max 4.0` - максимум 4.0%\n"
-                    "`/set_trailing aggressive on` - агрессивный режим\n"
-                    "`/set_trailing aggressive off` - консервативный режим\n"
-                    "`/set_trailing clear_all` - очистить все trailing stops",
-                    parse_mode=ParseMode.MARKDOWN
-                )
-                return
-        
-            param = args[0].lower()
-        
-            # НОВОЕ: Импортируем глобальный конфиг и модели БД
-            from stage2_copy_system import TRAILING_CONFIG
-            from app.db_session import SessionLocal
-            from app.db_models import SysEvents
-        
-            # Очистка всех трейлингов
-            if param == 'clear_all':
-                if self.copy_system and hasattr(self.copy_system, 'copy_manager') and hasattr(self.copy_system.copy_manager, 'trailing_manager'):
-                    try:
-                        await self.copy_system.copy_manager.trailing_manager.clear_all_stops()
-                    
-                        # НОВОЕ: Логируем очистку в sys_events
-                        try:
-                            with SessionLocal() as session:
-                                event = SysEvents(
-                                    level="INFO",
-                                    component="TelegramBot",
-                                    message="All trailing stops cleared",
-                                    details_json={"action": "clear_all", "user_id": update.effective_user.id}
-                                )
-                                session.add(event)
-                                session.commit()
-                        except Exception as e:
-                            logger.error(f"Failed to log clear_all to sys_events: {e}")
-                    
-                        await update.message.reply_text("✅ Все trailing stops очищены")
-                        await send_telegram_alert("🛡️ Все trailing stops были очищены через бота")
-                    except Exception as e:
-                        logger.error(f"Failed to clear trailing stops: {e}")
-                        await update.message.reply_text(f"❌ Ошибка очистки trailing stops: {e}")
-                else:
-                    await update.message.reply_text("❌ Trailing Manager недоступен")
-                return
-        
-            # Управление агрессивным режимом
-            if param == 'aggressive':
-                mode_value = args[1].lower() if len(args) > 1 else ""
-                if mode_value in ('on', 'true', '1', 'yes'):
-                    self.system_settings['trailing']['aggressive_mode'] = True
-                
-                    # НОВОЕ: Обновляем глобальный конфиг для агрессивного режима
-                    TRAILING_CONFIG['atr_multiplier_conservative'] = 1.5
-                    TRAILING_CONFIG['atr_multiplier_moderate'] = 1.0
-                    TRAILING_CONFIG['atr_multiplier_aggressive'] = 0.5
-                
-                    # Применяем к реальной системе если возможно
-                    if self.copy_system and hasattr(self.copy_system, 'copy_manager') and hasattr(self.copy_system.copy_manager, 'trailing_manager'):
-                        try:
-                            self.copy_system.copy_manager.trailing_manager.aggressive_mode = True
-                            # НОВОЕ: Применяем конфиг через reload_config
-                            if hasattr(self.copy_system.copy_manager.trailing_manager, 'reload_config'):
-                                self.copy_system.copy_manager.trailing_manager.reload_config(TRAILING_CONFIG)
-                        
-                            # НОВОЕ: Логируем в sys_events
-                            try:
-                                with SessionLocal() as session:
-                                    event = SysEvents(
-                                        level="INFO",
-                                        component="TelegramBot",
-                                        message="Trailing aggressive mode enabled",
-                                        details_json={"aggressive_mode": True, "user_id": update.effective_user.id}
-                                    )
-                                    session.add(event)
-                                    session.commit()
-                            except Exception as e:
-                                logger.error(f"Failed to log to sys_events: {e}")
-                        
-                            await update.message.reply_text("✅ Агрессивный режим trailing stop включен")
-                        except Exception as e:
-                            logger.error(f"Failed to set aggressive mode: {e}")
-                            await update.message.reply_text(f"⚠️ Настройка сохранена, но не применена к системе: {e}")
-                    else:
-                        await update.message.reply_text("✅ Агрессивный режим trailing stop включен (сохранено в настройках)")
-                
-                    return
-                
-                elif mode_value in ('off', 'false', '0', 'no'):
-                    self.system_settings['trailing']['aggressive_mode'] = False
-                
-                    # НОВОЕ: Обновляем глобальный конфиг для консервативного режима
-                    TRAILING_CONFIG['atr_multiplier_conservative'] = 2.0
-                    TRAILING_CONFIG['atr_multiplier_moderate'] = 1.5
-                    TRAILING_CONFIG['atr_multiplier_aggressive'] = 1.0
-                
-                    # Применяем к реальной системе если возможно
-                    if self.copy_system and hasattr(self.copy_system, 'copy_manager') and hasattr(self.copy_system.copy_manager, 'trailing_manager'):
-                        try:
-                            self.copy_system.copy_manager.trailing_manager.aggressive_mode = False
-                            # НОВОЕ: Применяем конфиг через reload_config
-                            if hasattr(self.copy_system.copy_manager.trailing_manager, 'reload_config'):
-                                self.copy_system.copy_manager.trailing_manager.reload_config(TRAILING_CONFIG)
-                        
-                            # НОВОЕ: Логируем в sys_events
-                            try:
-                                with SessionLocal() as session:
-                                    event = SysEvents(
-                                        level="INFO",
-                                        component="TelegramBot",
-                                        message="Trailing conservative mode enabled",
-                                        details_json={"aggressive_mode": False, "user_id": update.effective_user.id}
-                                    )
-                                    session.add(event)
-                                    session.commit()
-                            except Exception as e:
-                                logger.error(f"Failed to log to sys_events: {e}")
-                        
-                            await update.message.reply_text("✅ Консервативный режим trailing stop включен")
-                        except Exception as e:
-                            logger.error(f"Failed to set conservative mode: {e}")
-                            await update.message.reply_text(f"⚠️ Настройка сохранена, но не применена к системе: {e}")
-                    else:
-                        await update.message.reply_text("✅ Консервативный режим trailing stop включен (сохранено в настройках)")
-                
-                    return
-                else:
-                    await update.message.reply_text("❌ Неверное значение. Используйте: on/off")
-                    return
-        
-            # Остальные параметры требуют числового значения
+            x = float(val.replace(",", "."))
+        except Exception:
+            raise ValueError(f"{name}: неверное число '{val}'")
+        if not (min_pct <= x <= max_pct):
+            raise ValueError(f"{name}: должно быть в диапазоне {min_pct}–{max_pct}%")
+        return x / 100.0
+
+    def _reply_snapshot(mgr) -> str:
+        try:
+            snap = mgr.get_config_snapshot()
+        except Exception:
+            snap = {
+                "activation_pct": getattr(mgr, "default_distance_percent", None),
+                "step_pct": getattr(mgr, "min_trail_step", None),
+                "max_pct": getattr(mgr, "max_distance_percent", None),
+                "mode": "aggressive" if getattr(mgr, "aggressive_mode", False) else "conservative",
+                "enabled": True,
+                "atr_period": getattr(mgr, "atr_period", None),
+                "atr_multiplier": getattr(mgr, "atr_multiplier", None),
+            }
+        def _pct(v, fmt="{:.2%}"):
             try:
-                value = float(args[1])
-            except ValueError:
-                await update.message.reply_text("❌ Неверный формат числа")
-                return
-            
-            # Устанавливаем числовые параметры
-            if param in ('distance', 'initial_distance'):
-                if value < 0.1 or value > 10:
-                    await update.message.reply_text("❌ Дистанция должна быть от 0.1% до 10%")
-                    return
-            
-                # НОВОЕ: Обновляем глобальный конфиг
-                TRAILING_CONFIG['min_trail_distance'] = value / 100
-                self.system_settings['trailing']['initial_distance'] = value / 100
-                param_name = "Начальная дистанция"
-            
-                # Применяем к реальной системе если возможно
-                if self.copy_system and hasattr(self.copy_system, 'copy_manager') and hasattr(self.copy_system.copy_manager, 'trailing_manager'):
-                    try:
-                        self.copy_system.copy_manager.trailing_manager.default_distance_percent = value / 100
-                    except Exception as e:
-                        logger.warning(f"Failed to apply trailing distance: {e}")
-            
-            elif param in ('step', 'min_step'):
-                if value < 0.05 or value > 5:
-                    await update.message.reply_text("❌ Минимальный шаг должен быть от 0.05% до 5%")
-                    return
-            
-                # НОВОЕ: Обновляем глобальный конфиг
-                TRAILING_CONFIG['update_threshold'] = value / 100
-                self.system_settings['trailing']['min_step'] = value / 100
-                param_name = "Минимальный шаг"
-            
-                # Применяем к реальной системе если возможно
-                if self.copy_system and hasattr(self.copy_system, 'copy_manager') and hasattr(self.copy_system.copy_manager, 'trailing_manager'):
-                    try:
-                        self.copy_system.copy_manager.trailing_manager.min_trail_step = value / 100
-                    except Exception as e:
-                        logger.warning(f"Failed to apply trailing step: {e}")
-            
-            elif param in ('max', 'max_distance'):
-                if value < 1 or value > 15:
-                    await update.message.reply_text("❌ Максимальная дистанция должна быть от 1% до 15%")
-                    return
-            
-                # НОВОЕ: Обновляем глобальный конфиг
-                TRAILING_CONFIG['max_trail_distance'] = value / 100
-                self.system_settings['trailing']['max_distance'] = value / 100
-                param_name = "Максимальная дистанция"
-            
-                # Применяем к реальной системе если возможно
-                if self.copy_system and hasattr(self.copy_system, 'copy_manager') and hasattr(self.copy_system.copy_manager, 'trailing_manager'):
-                    try:
-                        self.copy_system.copy_manager.trailing_manager.max_distance_percent = value / 100
-                    except Exception as e:
-                        logger.warning(f"Failed to apply max distance: {e}")
-            
-            else:
-                await update.message.reply_text("❌ Неизвестный параметр. Используйте: distance, step, max, aggressive")
-                return
-        
-            # НОВОЕ: Применяем конфиг к реальному менеджеру через reload_config
-            if self.copy_system and hasattr(self.copy_system, 'copy_manager'):
-                if hasattr(self.copy_system.copy_manager, 'trailing_manager'):
-                    if hasattr(self.copy_system.copy_manager.trailing_manager, 'reload_config'):
-                        self.copy_system.copy_manager.trailing_manager.reload_config(TRAILING_CONFIG)
-        
-            # НОВОЕ: Логируем в sys_events
+                return fmt.format(float(v))
+            except Exception:
+                return "—"
+        return (
+            "🛡️ Текущие настройки:\n"
+            f"• enabled: {snap.get('enabled')}\n"
+            f"• mode: {snap.get('mode')}\n"
+            f"• activation: {_pct(snap.get('activation_pct'))}\n"
+            f"• step: {_pct(snap.get('step_pct'))}\n"
+            f"• max: {_pct(snap.get('max_pct'))}\n"
+            f"• atr_period: {snap.get('atr_period') or '—'}\n"
+            f"• atr_multiplier: {snap.get('atr_multiplier') or '—'}"
+        )
+
+    tm = None
+    if getattr(self, "copy_system", None) and hasattr(self.copy_system, "copy_manager"):
+        tm = getattr(self.copy_system.copy_manager, "trailing_manager", None)
+
+    if not tm:
+        await update.message.reply_text("❌ Trailing Manager недоступен")
+        return
+
+    args = context.args or []
+    if not args:
+        await update.message.reply_text(
+            "🛡️ *НАСТРОЙКА TRAILING STOP*\n\n"
+            "`/set_trailing distance 2.5` — начальная дистанция 2.5%\n"
+            "`/set_trailing step 0.3` — минимальный шаг 0.3%\n"
+            "`/set_trailing max 4.0` — максимальная дистанция 4.0%\n"
+            "`/set_trailing atr 14 1.5` — ATR период=14, множитель=1.5\n"
+            "`/set_trailing aggressive on|off` — режим\n"
+            "`/set_trailing enabled on|off` — вкл/выкл\n"
+            "`/set_trailing clear_all` — закрыть все trailing stops\n"
+            "`/set_trailing status` — показать текущие значения",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    sub = args[0].lower()
+
+    if sub in {"status", "show"}:
+        await update.message.reply_text(_reply_snapshot(tm))
+        return
+
+    if sub == "clear_all":
+        try:
+            if hasattr(tm, "clear_all_stops"):
+                fn = tm.clear_all_stops
+                if callable(getattr(fn, "__call__", None)):
+                    res = fn()
+                    if hasattr(res, "__await__"):
+                        await res
+            await update.message.reply_text("✅ Все trailing stops очищены")
             try:
+                from app.db_session import SessionLocal
+                from app.db_models import SysEvents
                 with SessionLocal() as session:
                     event = SysEvents(
                         level="INFO",
                         component="TelegramBot",
-                        message=f"Trailing config updated: {param_name}={value:.2f}%",
-                        details_json={
-                            "param": param,
-                            "value": value,
-                            "user_id": update.effective_user.id,
-                            "timestamp": datetime.now().isoformat()
-                        }
+                        message="All trailing stops cleared",
+                        details_json={"action": "clear_all", "user_id": update.effective_user.id},
                     )
                     session.add(event)
                     session.commit()
-                    logger.info(f"Trailing config change logged to sys_events: {param_name}={value:.2f}%")
             except Exception as e:
-                logger.error(f"Failed to log to sys_events: {e}")
-        
-            message = (
-                f"✅ **НАСТРОЙКА TRAILING ОБНОВЛЕНА**\n\n"
-                f"🔧 Параметр: {param_name}\n"
-                f"📊 Новое значение: {value:.2f}%\n"
-                f"⏰ Обновлено: {datetime.now().strftime('%H:%M:%S')}\n\n"
-                "🔄 Новые настройки вступили в силу"
-            )
-        
-            await update.message.reply_text(message, parse_mode=ParseMode.MARKDOWN)
-        
+                logger.error(f"Failed to log clear_all to sys_events: {e}")
+            try:
+                await send_telegram_alert("🛡️ Все trailing stops были очищены через бота")
+            except Exception:
+                pass
         except Exception as e:
-            logger.error(f"Set trailing command error: {e}")
-            logger.error(traceback.format_exc())
-            await update.message.reply_text(f"❌ Ошибка настройки Trailing Stop: {e}")
+            logger.error(f"Failed to clear trailing stops: {e}", exc_info=True)
+            await update.message.reply_text(f"❌ Ошибка очистки trailing stops: {e}")
+        return
+
+    patch = {}
+    try:
+        if sub in {"aggressive", "enabled", "mode"}:
+            if sub == "aggressive":
+                if len(args) < 2:
+                    raise ValueError("Usage: /set_trailing aggressive on|off")
+                patch["mode"] = "aggressive" if _parse_bool(args[1]) else "conservative"
+            elif sub == "enabled":
+                if len(args) < 2:
+                    raise ValueError("Usage: /set_trailing enabled on|off")
+                patch["enabled"] = _parse_bool(args[1])
+            else:
+                if len(args) < 2:
+                    raise ValueError("Usage: /set_trailing mode aggressive|conservative")
+                mode = args[1].strip().lower()
+                if mode not in {"aggressive", "conservative"}:
+                    raise ValueError("mode must be aggressive|conservative")
+                patch["mode"] = mode
+
+        elif sub in {"distance", "initial_distance", "activation"}:
+            if len(args) < 2:
+                raise ValueError("Usage: /set_trailing distance <percent>")
+            patch["activation_pct"] = _parse_float_pct(args[1], "Дистанция", 0.1, 10.0)
+
+        elif sub in {"step", "min_step"}:
+            if len(args) < 2:
+                raise ValueError("Usage: /set_trailing step <percent>")
+            patch["step_pct"] = _parse_float_pct(args[1], "Шаг", 0.05, 5.0)
+
+        elif sub in {"max", "max_distance"}:
+            if len(args) < 2:
+                raise ValueError("Usage: /set_trailing max <percent>")
+            patch["max_pct"] = _parse_float_pct(args[1], "Максимальная дистанция", 1.0, 15.0)
+
+        elif sub == "atr":
+            if len(args) < 3:
+                raise ValueError("Usage: /set_trailing atr <period:int> <multiplier:float>")
+            period = int(args[1]);  mult = float(args[2].replace(",", "."))
+            if period < 1:  raise ValueError("atr_period must be ≥ 1")
+            if mult <= 0:   raise ValueError("atr_multiplier must be > 0")
+            patch["atr_period"] = period
+            patch["atr_multiplier"] = mult
+
+        elif sub in {"atr_period", "atrperiod"}:
+            if len(args) < 2:
+                raise ValueError("Usage: /set_trailing atr_period <int>")
+            period = int(args[1])
+            if period < 1:
+                raise ValueError("atr_period must be ≥ 1")
+            patch["atr_period"] = period
+
+        elif sub in {"atr_mult", "atr_multiplier", "atrmult"}:
+            if len(args) < 2:
+                raise ValueError("Usage: /set_trailing atr_multiplier <float>")
+            mult = float(args[1].replace(",", "."))
+            if mult <= 0:
+                raise ValueError("atr_multiplier must be > 0")
+            patch["atr_multiplier"] = mult
+
+        else:
+            raise ValueError("Неизвестный параметр. Используйте: distance, step, max, atr, aggressive, enabled, status")
+
+    except ValueError as ve:
+        await update.message.reply_text(f"❌ {ve}")
+        return
+
+    try:
+        tm.reload_config(patch)
+        try:
+            from app.db_session import SessionLocal
+            from app.db_models import SysEvents
+            with SessionLocal() as session:
+                event = SysEvents(
+                    level="INFO",
+                    component="TelegramBot",
+                    message="Trailing config updated",
+                    details_json={
+                        "patch": patch,
+                        "user_id": update.effective_user.id,
+                        "timestamp": datetime.now().isoformat(),
+                    },
+                )
+                session.add(event)
+                session.commit()
+        except Exception as e:
+            logger.error(f"Failed to log trailing patch to sys_events: {e}")
+
+        reply = "✅ Настройка применена.\n" + _reply_snapshot(tm)
+        await update.message.reply_text(reply)
+
+    except Exception as e:
+        logger.error("Set trailing command error: %r", e, exc_info=True)
+        await update.message.reply_text(f"❌ Ошибка применения настроек: {e}")
 
     async def set_kelly_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """🆕 Команда /set_kelly - настройка Kelly Criterion"""

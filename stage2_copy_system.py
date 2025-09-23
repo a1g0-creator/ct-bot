@@ -92,6 +92,23 @@ KELLY_CONFIG = {
     'rebalance_threshold': 0.1              # Порог для ребалансировки (10%)
 }
 
+# Trailing Stop-Loss настройки
+TRAILING_CONFIG = {
+    'enabled': True,
+    'mode': 'conservative', # "aggressive" or "conservative"
+    'activation_pct': 0.015, # 1.5%
+    'step_pct': 0.002, # 0.2%
+    'max_pct': 0.05, # 5%
+    'atr_period': 14,
+    'atr_multiplier': 2.0,
+    'rearm_on_modify': True,
+    'update_on_add': True,
+    'only_on_open': False,
+    'min_notional_for_ts': 100.0, # $100
+    # Deprecated/internal - use mode
+    'use_atr': True,
+}
+
 # Контроль рисков
 RISK_CONFIG = {
     'max_daily_loss': 0.05,                # Максимальная дневная просадка (5%)
@@ -100,25 +117,6 @@ RISK_CONFIG = {
     'max_exposure_per_symbol': 0.2,        # Максимальная экспозиция на символ (20%)
     'emergency_stop_threshold': 0.1,       # Порог экстренной остановки (10%)
     'recovery_mode_threshold': 0.08        # Порог режима восстановления (8%)
-}
-
-# Trailing Stop-Loss настройки
-TRAILING_CONFIG = {
-    'enabled': True,
-    'rearm_on_modify': True,
-    'update_on_add': True,
-    'only_on_open': False,
-    'min_notional_for_ts': 100.0,
-    'mode': 'atr',
-    'atr': {
-        'period': 14,
-        'multiplier': 2.5,
-    },
-    'fixed_pct': {
-        'distance_pct': 0.015,
-    },
-    'max_ts_pct_of_price': 0.10,
-    'max_ts_distance_usd': 500.0,
 }
 
 async def format_quantity_for_symbol_live(bybit_client, symbol: str, quantity: float, price: float = None) -> str:
@@ -875,509 +873,114 @@ class AdvancedKellyCalculator:
 
 class DynamicTrailingStopManager:
     """
-    Продвинутая система динамических Trailing Stop-Loss
-    
-    Основано на:
-    - ATR (Average True Range) для измерения волатильности
-    - Адаптивные алгоритмы на основе рыночных условий
-    - Множественные стили трейлинга
+    Manages native exchange trailing stop orders based on a global configuration.
+    This manager does NOT hold state about stops itself; it acts as a stateless
+    service that uses the order_manager to place or cancel TS orders on the exchange.
     """
-    
-    def __init__(self, main_client: EnhancedBybitClient):
+    def __init__(self, main_client: EnhancedBybitClient, order_manager, trailing_config: dict):
         self.main_client = main_client
-        self.active_stops = {}  # symbol -> TrailingStop
-        self.price_history = defaultdict(lambda: deque(maxlen=50))
-        self.atr_cache = {}
-        self.last_update = defaultdict(float)
-        
-    def reload_config(self, cfg: dict) -> None:
+        self.order_manager = order_manager
+        self.cfg = trailing_config.copy()  # Work with a copy
+        logger.info(f"DynamicTrailingStopManager initialized with config: {self.cfg}")
+
+    def reload_config(self, patch: dict):
         """
-        Перезагружает конфигурацию Trailing Stop в рантайме.
-    
-        Args:
-            cfg: Словарь с параметрами trailing (из TRAILING_CONFIG)
+        Updates the trailing stop configuration at runtime.
         """
-        try:
-            # Сохраняем старую конфигурацию для логирования
-            old_config = {
-                'atr_period': self.atr_period,
-                'atr_multiplier_conservative': self.atr_multiplier_conservative,
-                'atr_multiplier_moderate': self.atr_multiplier_moderate,
-                'atr_multiplier_aggressive': self.atr_multiplier_aggressive,
-                'min_trail_distance': self.min_trail_distance,
-                'max_trail_distance': self.max_trail_distance,
-                'update_threshold': self.update_threshold
-            }
-        
-            # Обновляем параметры ATR
-            self.atr_period = int(cfg.get('atr_period', 14))
-            self.atr_multiplier_conservative = float(cfg.get('atr_multiplier_conservative', 2.0))
-            self.atr_multiplier_moderate = float(cfg.get('atr_multiplier_moderate', 1.5))
-            self.atr_multiplier_aggressive = float(cfg.get('atr_multiplier_aggressive', 1.0))
-        
-            # Обновляем лимиты
-            self.min_trail_distance = float(cfg.get('min_trail_distance', 0.005))
-            self.max_trail_distance = float(cfg.get('max_trail_distance', 0.05))
-            self.update_threshold = float(cfg.get('update_threshold', 0.001))
-        
-            # Сбрасываем кэш ATR для пересчёта с новыми параметрами
-            cache_size_before = len(self.atr_cache)
-            self.atr_cache.clear()
-        
-            # Логируем изменение конфигурации
-            sys_logger.log_event(
-                "INFO",
-                "TrailingStopManager",
-                "Trailing stop configuration updated",
-                {
-                    "old_config": old_config,
-                    "new_config": {
-                        'atr_period': self.atr_period,
-                        'atr_multiplier_conservative': self.atr_multiplier_conservative,
-                        'atr_multiplier_moderate': self.atr_multiplier_moderate,
-                        'atr_multiplier_aggressive': self.atr_multiplier_aggressive,
-                        'min_trail_distance': self.min_trail_distance,
-                        'max_trail_distance': self.max_trail_distance,
-                        'update_threshold': self.update_threshold
-                    },
-                    "active_stops_count": len(self.trailing_stops),
-                    "atr_cache_cleared": cache_size_before
-                }
-            )
-        
-            logger.info(f"Trailing config reloaded: ATR period={self.atr_period}")
-        
-        except Exception as e:
-            sys_logger.log_error(
-                "TrailingStopManager",
-                f"Config reload failed: {str(e)}",
-                {"config": cfg, "error": str(e)}
-            )
-            logger.error(f"Failed to reload trailing config: {e}")
-            raise
+        old_cfg = self.cfg.copy()
+        self.cfg.update(patch)
+        logger.info("Trailing stop config updated.")
+        sys_logger.log_event(
+            "INFO",
+            "TrailingStopManager",
+            "Trailing stop configuration updated",
+            {"old_config": old_cfg, "new_config": self.cfg}
+        )
 
-    async def calculate_atr(self, symbol: str, period: int = 14) -> float:
+    def get_config_snapshot(self) -> dict:
         """
-        Расчет Average True Range (ATR) с использованием get_kline.
+        Returns a snapshot of the current trailing stop configuration.
         """
-        try:
-            # Use cache if available and not stale
-            if symbol in self.atr_cache and time.time() - self.atr_cache[symbol]['timestamp'] < 300:
-                return self.atr_cache[symbol]['value']
+        return self.cfg.copy()
 
-            # Fetch kline data - assuming 15min interval for ATR
-            klines = await self.main_client.get_kline("linear", symbol, "15", period + 1)
-            if not klines or len(klines) < period + 1:
-                logger.warning(f"Not enough kline data for {symbol} to calculate ATR ({len(klines)} candles).")
-                return 0.01  # Default value if not enough data
-
-            # Bybit kline format: [timestamp, open, high, low, close, volume, turnover]
-            price_data = [
-                {'high': float(k[2]), 'low': float(k[3]), 'close': float(k[4])}
-                for k in reversed(klines)  # Bybit returns newest first, so reverse for chronological order
-            ]
-
-            true_ranges = []
-            for i in range(1, len(price_data)):
-                high = price_data[i]['high']
-                low = price_data[i]['low']
-                prev_close = price_data[i-1]['close']
-                
-                tr1 = high - low
-                tr2 = abs(high - prev_close)
-                tr3 = abs(low - prev_close)
-                
-                true_range = max(tr1, tr2, tr3)
-                true_ranges.append(true_range)
-            
-            if len(true_ranges) >= period:
-                atr = np.mean(true_ranges[-period:])
-                
-                self.atr_cache[symbol] = {'value': atr, 'timestamp': time.time()}
-                logger.info(f"Calculated ATR for {symbol} ({period}): {atr:.6f}")
-                return atr
-            
-            return 0.01
-            
-        except Exception as e:
-            logger.error(f"ATR calculation error for {symbol}: {e}", exc_info=True)
-            return 0.01
-    
-    def determine_trailing_style(self, market_conditions: MarketConditions) -> TrailingStyle:
-        """Определение стиля трейлинга на основе рыночных условий"""
-        try:
-            volatility = market_conditions.volatility
-            trend_strength = market_conditions.trend_strength
-            volume_ratio = market_conditions.volume_ratio
-            liquidity_score = market_conditions.liquidity_score
-            
-            # Высокая волатильность = консервативный трейлинг
-            if volatility > 0.03:
-                return TrailingStyle.CONSERVATIVE
-            
-            # Сильный тренд + высокий объем = агрессивный трейлинг
-            if trend_strength > 0.7 and volume_ratio > 1.5:
-                return TrailingStyle.AGGRESSIVE
-            
-            # Низкая ликвидность = консервативный трейлинг
-            if liquidity_score < 0.5:
-                return TrailingStyle.CONSERVATIVE
-            
-            # По умолчанию умеренный
-            return TrailingStyle.MODERATE
-            
-        except Exception as e:
-            logger.error(f"Error determining trailing style: {e}")
-            return TrailingStyle.MODERATE
-    
-    def create_trailing_stop(self, symbol: str, side: str, current_price: float, 
-                             position_size: float, market_conditions: MarketConditions = None) -> TrailingStop:
+    async def create_or_update_trailing_stop(self, symbol: str, side: str, position_qty: float, position_value: float, entry_price: float):
         """
-        Создание trailing stop с ИСПРАВЛЕННЫМ расчетом дистанции
-        Гарантирует разумные значения даже при отсутствии ATR данных
+        Creates or updates a native trailing stop order on the exchange.
         """
-        try:
-            # Определяем стиль трейлинга
-            if market_conditions:
-                trail_style = self.determine_trailing_style(market_conditions)
-                volatility = market_conditions.volatility
-            else:
-                trail_style = TrailingStyle.MODERATE
-                volatility = 0.01
-        
-            # Получаем ATR (используем кэш если доступен)
-            atr_value = 0.01
-            if symbol in self.atr_cache:
-                cache_data = self.atr_cache[symbol]
-                if time.time() - cache_data['timestamp'] < 300:  # 5 минут кэш
-                    atr_value = cache_data['value']
-        
-            # Выбираем множитель на основе стиля
-            multiplier_map = {
-                TrailingStyle.CONSERVATIVE: TRAILING_CONFIG.get('atr_multiplier_conservative', 2.0),
-                TrailingStyle.MODERATE: TRAILING_CONFIG.get('atr_multiplier_moderate', 1.5),
-                TrailingStyle.AGGRESSIVE: TRAILING_CONFIG.get('atr_multiplier_aggressive', 1.0)
-            }
-            multiplier = multiplier_map[trail_style]
-        
-            # ===== ИСПРАВЛЕННЫЙ РАСЧЕТ БАЗОВОЙ ДИСТАНЦИИ =====
-            # Проверяем адекватность ATR
-            if atr_value < current_price * 0.001:  # ATR слишком мал (менее 0.1% от цены)
-                # Используем процент от цены вместо ATR
-                if trail_style == TrailingStyle.CONSERVATIVE:
-                    base_distance = current_price * 0.02  # 2%
-                elif trail_style == TrailingStyle.MODERATE:
-                    base_distance = current_price * 0.01  # 1%
-                else:  # AGGRESSIVE
-                    base_distance = current_price * 0.015  # 1.5%
-            
-                logger.warning(f"ATR too small for {symbol} ({atr_value:.6f}), using percentage-based distance")
-            else:
-                # Используем ATR-based расчет
-                base_distance = atr_value * multiplier
-            
-                # Дополнительная проверка на разумность
-                min_reasonable = current_price * 0.005  # Минимум 0.5%
-                max_reasonable = current_price * 0.03   # Максимум 3%
-            
-                if base_distance < min_reasonable:
-                    logger.warning(f"ATR distance too small for {symbol}, adjusting to minimum")
-                    base_distance = min_reasonable
-                elif base_distance > max_reasonable:
-                    logger.warning(f"ATR distance too large for {symbol}, adjusting to maximum")
-                    base_distance = max_reasonable
-        
-            # Адаптация к размеру позиции (больше позиция = больше дистанция)
-            position_factor = min(2.0, max(1.0, (position_size / 1000) * 0.1))
-            adjusted_distance = base_distance * position_factor
-        
-            # Финальные ограничения из конфига
-            min_distance = current_price * TRAILING_CONFIG.get('min_trail_distance', 0.005)
-            max_distance = current_price * TRAILING_CONFIG.get('max_trail_distance', 0.05)
-            final_distance = max(min_distance, min(max_distance, adjusted_distance))
-        
-            # Расчет стоп-цены (правильная логика для Buy/Sell)
-            if side.upper() == 'BUY':
-                stop_price = current_price - final_distance  # Для лонга стоп НИЖЕ
-            else:
-                stop_price = current_price + final_distance  # Для шорта стоп ВЫШЕ
-        
-            # Расчет процента дистанции
-            distance_percent = final_distance / current_price  # В долях (0.01 = 1%)
-        
-            # Создаем объект TrailingStop
-            trailing_stop = TrailingStop(
-                symbol=symbol,
-                side=side,
-                current_price=current_price,
-                stop_price=stop_price,
-                distance=final_distance,
-                distance_percent=distance_percent,
-                trail_style=trail_style,
-                atr_value=atr_value
-            )
-        
-            # Сохраняем в активные стопы (проверяем дубликаты)
-            if symbol not in self.active_stops:
-                self.active_stops[symbol] = trailing_stop
-                logger.info(f"Created trailing stop for {symbol} {side}: "
-                           f"style={trail_style.value}, "
-                           f"distance=${final_distance:.2f} ({distance_percent:.1%}), "
-                           f"stop=${stop_price:.2f}, current=${current_price:.2f}")
-            else:
-                # Обновляем существующий
-                existing = self.active_stops[symbol]
-                existing.current_price = current_price
-                existing.stop_price = stop_price
-                existing.distance = final_distance
-                existing.distance_percent = distance_percent
-                trailing_stop = existing
-                logger.debug(f"Updated existing trailing stop for {symbol}")
-        
-            return trailing_stop
-        
-        except Exception as e:
-            logger.error(f"Error creating trailing stop for {symbol}: {e}")
-        
-            # В случае ошибки возвращаем безопасный дефолтный trailing stop
-            safe_distance = current_price * 0.015  # 1.5% по умолчанию
-        
-            return TrailingStop(
-                symbol=symbol,
-                side=side,
-                current_price=current_price,
-                stop_price=current_price - safe_distance if side.upper() == 'BUY' else current_price + safe_distance,
-                distance=safe_distance,
-                distance_percent=0.015,  # 1.5%
-                trail_style=TrailingStyle.MODERATE,
-                atr_value=0.0
-            )
-    
-    def update_trailing_stop(self, symbol: str, new_price: float) -> Optional[TrailingStop]:
-        """
-        Обновление trailing stop с поддержанием ПРОЦЕНТНОЙ дистанции
-        + защита от шумовых микросдвигов (относительный и абсолютный пороги).
-        """
-        try:
-            if symbol not in self.active_stops:
-                return None
+        if not self.cfg.get('enabled'):
+            logger.info(f"TS_SKIP: Trailing stops are disabled globally. Skipping for {symbol}.")
+            return
 
-            stop = self.active_stops[symbol]
+        if position_value < self.cfg.get('min_notional_for_ts', 0):
+            logger.info(f"TS_SKIP: Position value ${position_value:.2f} for {symbol} is below min_notional_for_ts of ${self.cfg.get('min_notional_for_ts', 0)}. Skipping.")
+            return
 
-            # 1) Относительный порог (в долях)
-            rel_change = abs(new_price - stop.current_price) / max(1e-12, stop.current_price)
-            if rel_change < TRAILING_CONFIG.get('update_threshold', 0.001):
-                return stop  # слишком маленькое относительное изменение
+        # First, cancel any existing stops for the symbol to ensure a clean state
+        await self.order_manager.cancel_all_symbol_orders(symbol, "Stop")
+        logger.info(f"TS_CANCEL_BEFORE_CREATE: Canceled existing stop orders for {symbol} before creating new one.")
 
-            # 2) Абсолютный порог (в долларах)
-            min_abs = TRAILING_CONFIG.get('min_abs_move', 0.0)
-            if min_abs and abs(new_price - stop.current_price) < min_abs:
-                return stop  # слишком маленькое абсолютное изменение
+        # Calculate distance
+        distance_value = 0.0
+        if self.cfg.get('use_atr', False):
+            try:
+                # Simplified ATR logic for now
+                kline_data = await self.main_client.get_kline(symbol, '15m', self.cfg.get('atr_period', 14))
+                if kline_data and len(kline_data) >= self.cfg.get('atr_period', 14):
+                    highs = [float(k[2]) for k in kline_data]
+                    lows = [float(k[3]) for k in kline_data]
+                    closes = [float(k[4]) for k in kline_data]
 
-            should_update  = False
-            new_stop_price = stop.stop_price
+                    true_ranges = [highs[0] - lows[0]]
+                    for i in range(1, len(kline_data)):
+                        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+                        true_ranges.append(tr)
 
-            if stop.side.upper() == 'BUY':
-                # для лонга стоп только вверх
-                if new_price > stop.current_price:
-                    new_stop_price = new_price * (1 - stop.distance_percent)
-                    should_update = new_stop_price > stop.stop_price
-            else:
-                # для шорта стоп только вниз
-                if new_price < stop.current_price:
-                    new_stop_price = new_price * (1 + stop.distance_percent)
-                    should_update = new_stop_price < stop.stop_price
+                    atr_val = sum(true_ranges) / len(true_ranges)
+                    distance_value = atr_val * self.cfg.get('atr_multiplier', 1.0)
+                    logger.info(f"TS_ATR_CALC: ATR for {symbol} is {atr_val:.4f}. Distance: ${distance_value:.4f}")
+                else:
+                    logger.warning(f"Not enough kline data for ATR on {symbol}, falling back to percentage.")
+                    distance_value = entry_price * self.cfg.get('activation_pct', 0.015)
+            except Exception as e:
+                logger.warning(f"Could not fetch kline for ATR, falling back. Error: {e}")
+                distance_value = entry_price * self.cfg.get('activation_pct', 0.015)
+        else:
+            distance_value = entry_price * self.cfg.get('activation_pct', 0.015)
+            logger.info(f"TS_FIXED_CALC: Using fixed distance for {symbol}. Pct: {self.cfg.get('activation_pct', 0.015):.2%}, Resulting Dist: ${distance_value:.4f}")
 
-            if not should_update:
-                return stop
+        # Apply limits
+        max_dist_val = entry_price * self.cfg.get('max_pct', 0.1)
+        distance_value = min(distance_value, max_dist_val)
+        
+        # Place the new order
+        ts_side = 'Sell' if side == 'Buy' else 'Buy'
+        
+        order_result = await self.order_manager.place_trailing_stop(
+            symbol=symbol,
+            side=ts_side,
+            qty=position_qty,
+            trailing_distance=distance_value
+        )
 
-            old_stop          = stop.stop_price
-            old_distance_pct  = stop.distance_percent
-            stop.stop_price   = new_stop_price
-            stop.current_price= new_price
-            stop.distance     = abs(new_price - new_stop_price)  # пересчёт абсолютной дистанции
-            stop.last_update  = time.time()
-
+        if order_result and order_result.get('success'):
             logger.info(
-                f"Updated trailing stop for {symbol}: ${old_stop:.2f} -> ${new_stop_price:.2f} "
-                f"(maintaining {old_distance_pct:.1%} distance)"
+                f"TS_CREATE: style={'atr' if self.cfg.get('use_atr') else 'fixed'} "
+                f"use_atr={self.cfg.get('use_atr')} dist=${distance_value:.4f} "
+                f"stop_price=N/A symbol={symbol} qty={position_qty}"
             )
-            return stop
-
-        except Exception as e:
-            logger.error(f"Trailing stop update error: {e}")
-            return None
-
-    
-    def check_stop_triggered(self, symbol: str, current_price: float) -> bool:
-        """Проверка срабатывания trailing stop - ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ"""
-        try:
-            if symbol not in self.active_stops:
-                return False
-        
-            stop = self.active_stops[symbol]
-    
-            # Правильная логика для лонгов и шортов
-            if stop.side.upper() == 'BUY':
-                # Для ЛОНГОВ: стоп срабатывает когда цена ПАДАЕТ НИЖЕ стоп-цены
-                triggered = current_price <= stop.stop_price
-                if triggered:
-                    # НОВОЕ: Логируем в risk_events
-                    risk_events_logger.log_risk_event(
-                        account_id=2,
-                        event=RiskEventType.TRAILING_STOP_HIT,
-                        reason=f"{symbol} LONG: Price ${current_price:.2f} hit stop ${stop.stop_price:.2f}",
-                        value=float(stop.stop_price)
-                    )
-                
-                    logger.warning(f"📉 Trailing stop TRIGGERED for LONG {symbol}: "
-                                 f"current_price={current_price:.2f} <= stop={stop.stop_price:.2f}")
-            else:
-                # Для ШОРТОВ: стоп срабатывает когда цена ПОДНИМАЕТСЯ ВЫШЕ стоп-цены
-                triggered = current_price >= stop.stop_price
-                if triggered:
-                    # НОВОЕ: Логируем в risk_events
-                    risk_events_logger.log_risk_event(
-                        account_id=2,
-                        event=RiskEventType.TRAILING_STOP_HIT,
-                        reason=f"{symbol} SHORT: Price ${current_price:.2f} hit stop ${stop.stop_price:.2f}",
-                        value=float(stop.stop_price)
-                    )
-                
-                    logger.warning(f"📈 Trailing stop TRIGGERED for SHORT {symbol}: "
-                                 f"current_price={current_price:.2f} >= stop={stop.stop_price:.2f}")
-    
-            return triggered
-    
-        except Exception as e:
-            logger.error(f"Error checking trailing stop for {symbol}: {e}")
-            return False
-
-# ================================================
-# ИСПРАВЛЕННЫЙ МЕТОД execute_trailing_stop
-# ================================================
-
-    async def execute_trailing_stop(self, symbol: str, stop: Any) -> bool:
-        """
-        ИСПРАВЛЕННОЕ исполнение trailing stop
-        """
-        try:
-            logger.info(f"🛑 Executing trailing stop for {symbol}")
-        
-            # Получаем позиции напрямую с биржи
-            positions = None
-            if hasattr(self, 'copy_manager') and hasattr(self.copy_manager, 'main_client'):
-                positions = await self.copy_manager.main_client.get_positions()
-            elif hasattr(self, 'base_monitor') and hasattr(self.base_monitor, 'main_client'):
-                positions = await self.base_monitor.main_client.get_positions()
-        
-            if not positions:
-                logger.error("Cannot get positions from exchange")
-                return False
-        
-            # Находим нужную позицию
-            position_data = None
-            for pos in positions:
-                if pos.get('symbol') == symbol:
-                    size = safe_float(pos.get('size', 0))
-                    if size > 0:
-                        position_data = pos
-                        break
-        
-            if not position_data:
-                logger.warning(f"No open position found for {symbol}, removing trailing stop")
-                if hasattr(self, 'active_stops') and symbol in self.active_stops:
-                    del self.active_stops[symbol]
-                return True  # Позиция уже закрыта
-        
-            # Получаем параметры позиции
-            position_size = safe_float(position_data.get('size', 0))
-            position_side = position_data.get('side', 'Buy')
-        
-            if position_size <= 0:
-                logger.error(f"Invalid position size: {position_size}")
-                return False
-        
-            # Определяем сторону закрытия
-            close_side = 'Sell' if position_side == 'Buy' else 'Buy'
-        
-            logger.info(f"Closing position: {symbol} {close_side} size={position_size:.6f}")
-        
-            # Подготовка ордера для Bybit
-            order_data = {
-                "category": "linear",
-                "symbol": symbol,
-                "side": close_side,
-                "orderType": "Market",
-                "qty": str(position_size),
-                "timeInForce": "IOC",
-                "reduceOnly": True,
-                "closeOnTrigger": False
-            }
-        
-            # Отправляем ордер
-            client = None
-            if hasattr(self, 'copy_manager') and hasattr(self.copy_manager, 'main_client'):
-                client = self.copy_manager.main_client
-            elif hasattr(self, 'base_monitor') and hasattr(self.base_monitor, 'main_client'):
-                client = self.base_monitor.main_client
-        
-            if not client:
-                logger.error("No client available for order placement")
-                return False
-        
-            result = await client._make_request_with_retry("POST", "order/create", data=order_data)
-        
-            if result and result.get('retCode') == 0:
-                order_id = result['result'].get('orderId')
-                logger.info(f"✅ Trailing stop order placed: {order_id}")
-            
-                # Удаляем trailing stop
-                if hasattr(self, 'active_stops') and symbol in self.active_stops:
-                    del self.active_stops[symbol]
-            
-                # Очищаем из активных позиций
-                if hasattr(self, 'copy_manager') and hasattr(self.copy_manager, 'active_positions'):
-                    if symbol in self.copy_manager.active_positions:
-                        del self.copy_manager.active_positions[symbol]
-            
-                # Отправляем уведомление
-                await send_telegram_alert(
-                    f"🛑 **TRAILING STOP EXECUTED**\n"
-                    f"Symbol: {symbol}\n"
-                    f"Size: {position_size:.6f}\n"
-                    f"Stop: ${stop.stop_price:.2f}\n"
-                    f"Order: {order_id}"
-                )
-            
-                return True
-            else:
-                error_msg = result.get('retMsg', 'Unknown') if result else 'No response'
-                logger.error(f"Order failed: {error_msg}")
-            
-                # Если позиция уже закрыта
-                if 'reduce only' in error_msg.lower():
-                    if hasattr(self, 'active_stops') and symbol in self.active_stops:
-                        del self.active_stops[symbol]
-                    return True
-            
-                return False
-            
-        except Exception as e:
-            logger.error(f"Trailing stop execution error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return False
-
-    def remove_trailing_stop(self, symbol: str):
-        """Удаление trailing stop"""
-        if symbol in self.active_stops:
-            del self.active_stops[symbol]
-            logger.info(f"Removed trailing stop for {symbol}")
-    
-    def get_all_stops(self) -> Dict[str, TrailingStop]:
-        """Получение всех активных trailing stops"""
-        return self.active_stops.copy()
+            orders_logger.log_order(
+                account_id=2,
+                symbol=symbol,
+                side=ts_side,
+                qty=position_qty,
+                price=None,
+                status=OrderStatus.PLACED.value,
+                order_type='TRAILING_STOP',
+                reason='ts_create',
+                exchange_order_id=order_result.get('order_id')
+            )
+        else:
+            logger.error(f"TS_CREATE_FAILED: Failed to create trailing stop for {symbol}. Reason: {order_result.get('error')}")
 
 # ================================
 # СИСТЕМА УПРАВЛЕНИЯ ОРДЕРАМИ
@@ -1416,94 +1019,27 @@ class AdaptiveOrderManager:
 
     async def get_min_order_qty(self, symbol: str, price: float) -> float:
         """
-        Возвращает минимально возможное количество для ордера по символу
-        с учётом фильтров min_qty и min_notional.
+        Получает минимально допустимый для ордера размер (в единицах qty) для символа.
+        Учитывает как minQty, так и minNotional из фильтров биржи.
         """
         try:
             filters = await self.main_client.get_symbol_filters(symbol, category="linear")
-            min_qty = float(filters.get("min_qty") or 0.001)
-            min_notional = float(filters.get("min_notional") or 5.0)
+            min_qty = float(filters.get("min_qty", 0.001))
+            min_notional = float(filters.get("min_notional", 5.0))
 
-            if price and price > 0:
-                min_qty_by_value = min_notional / price
-                effective_min = max(min_qty, min_qty_by_value)
-
-                # We also need to consider the qty_step
-                qty_step = float(filters.get("qty_step") or 0.001)
-
-                # Round up to the nearest step
-                if qty_step > 0:
-                    steps = effective_min / qty_step
-                    rounded_qty = math.ceil(steps) * qty_step
-                else:
-                    rounded_qty = effective_min
-
-                # Ensure it's not less than the absolute min_qty
-                final_min_qty = max(rounded_qty, min_qty)
-
-                self.logger.info(
-                    f"[get_min_qty] {symbol}: min_qty={min_qty}, min_notional={min_notional}, price={price} -> effective_min={final_min_qty}"
-                )
-                return final_min_qty
+            if price and price > 0 and min_notional > 0:
+                min_qty_by_notional = min_notional / price
+                effective_min_qty = max(min_qty, min_qty_by_notional)
+                self.logger.info(f"get_min_order_qty for {symbol}: min_qty={min_qty}, min_notional={min_notional}, price={price} -> effective_min_qty={effective_min_qty}")
+                return effective_min_qty
 
             return min_qty
         except Exception as e:
-            self.logger.error(f"Failed to get min order qty for {symbol}: {e}", exc_info=True)
-            # Fallback
-            if price and price > 0:
-                # A safe fallback value, assuming min notional is $5
-                return 5.0 / price
+            self.logger.warning(f"get_min_order_qty failed for {symbol}, falling back to default: {e}")
+            # Возвращаем безопасное, но не нулевое значение по умолчанию
             return 0.001
 
-    async def place_trailing_stop(self, symbol: str, side: str, qty: str, trail_distance: str, active_price: str = None) -> Dict[str, Any]:
-        """Places a trailing stop order."""
-        try:
-            # For a long position (side='Buy'), the trailing stop is a 'Sell' order.
-            # For a short position (side='Sell'), the trailing stop is a 'Buy' order.
-            stop_side = "Sell" if side == "Buy" else "Buy"
-            link_id = f"ts_{symbol}_{int(time.time()*1000)}"
 
-            order_data = {
-                "category": "linear",
-                "symbol": symbol,
-                "side": stop_side,
-                "orderType": "Market", # The order executed when triggered
-                "qty": qty,
-                "trailingStop": trail_distance,
-                "reduceOnly": True,
-                "orderLinkId": link_id
-            }
-            # activePrice is the price that triggers the trailing stop to start trailing.
-            # If not provided, it trails immediately based on the last traded price.
-            if active_price:
-                order_data["activePrice"] = active_price
-
-            self.logger.info(f"Placing TRAILING_STOP: {symbol} {order_data['side']} qty={qty} trail_dist={trail_distance}")
-
-            orders_logger.log_order(
-                account_id=2, symbol=symbol, side=order_data['side'], qty=qty,
-                price=None, status=OrderStatus.PENDING.value, order_type='TRAILING_STOP',
-                reason='ts_create', ext_id=link_id
-            )
-
-            result = await self.main_client.place_order(**order_data)
-
-            if result and result.get('orderId'):
-                order_id = result['orderId']
-                self.logger.info(f"Trailing Stop order placed successfully: {order_id}")
-                orders_logger.update_order_status_by_ext_id(link_id, OrderStatus.PLACED.value, exchange_order_id=order_id)
-                return {"success": True, "order_id": order_id}
-            else:
-                error_msg = result.get('retMsg', 'Unknown error') if result else "No response"
-                self.logger.error(f"Failed to place trailing stop order: {error_msg}")
-                orders_logger.update_order_status_by_ext_id(link_id, OrderStatus.FAILED.value, reason=error_msg)
-                return {"success": False, "error": error_msg}
-
-        except Exception as e:
-            self.logger.error(f"Trailing stop placement error: {e}", exc_info=True)
-            return {"success": False, "error": str(e)}
-
-        
     async def get_market_analysis(self, symbol: str) -> MarketConditions:
         """Анализ рыночных условий для символа"""
         try:
@@ -1916,7 +1452,62 @@ class AdaptiveOrderManager:
             self.logger.exception(f"Aggressive limit order error: {e}")
             return {"success": False, "error": str(e)}
 
+    async def place_trailing_stop(self, symbol: str, side: str, qty: float, trailing_distance: float) -> Dict[str, Any]:
+        """Places a native trailing stop order."""
+        try:
+            link_id = f"ts:{symbol}:{int(time.time()*1000)}"
+            distance_str = f"{trailing_distance:.4f}".rstrip('0').rstrip('.')
 
+            order_data = {
+                "category": "linear",
+                "symbol": symbol,
+                "side": side,
+                "orderType": "Market",
+                "qty": str(qty),
+                "tpslMode": "Partial",
+                "trailingStop": distance_str,
+                "orderLinkId": link_id,
+                "reduceOnly": True,
+            }
+
+            self.logger.info(f"Placing TRAILING_STOP: {symbol} {side} qty={qty} distance=${distance_str}")
+            result = await self.main_client._make_request_with_retry("POST", "order/create", data=order_data)
+
+            if result and result.get("retCode") == 0:
+                order_id = result.get("result", {}).get("orderId")
+                self.logger.info(f"Trailing stop placed successfully: {order_id} link={link_id}")
+                return {"success": True, "order_id": order_id, "order_link_id": link_id}
+
+            err = (result or {}).get("retMsg") or "No response"
+            self.logger.error(f"Trailing stop order failed: {err}")
+            return {"success": False, "error": err}
+
+        except Exception as e:
+            self.logger.exception(f"Trailing stop placement error: {e}")
+            return {"success": False, "error": str(e)}
+
+    async def cancel_all_symbol_orders(self, symbol: str, order_type_filter: Optional[str] = None) -> Dict[str, Any]:
+        """Cancels all open orders for a symbol, optionally filtering by type (e.g., 'Stop')."""
+        try:
+            self.logger.info(f"Canceling all '{order_type_filter or 'All'}' orders for {symbol}...")
+
+            data = {
+                "category": "linear",
+                "symbol": symbol,
+            }
+            if order_type_filter and order_type_filter.lower() == 'stop':
+                data["orderFilter"] = "StopOrder"
+
+            result = await self.main_client._make_request_with_retry("POST", "order/cancel-all", data=data)
+
+            if result and result.get("retCode") == 0:
+                cancelled_ids = [item.get('orderId') for item in result.get('result', {}).get('list', [])]
+                self.logger.info(f"Successfully canceled {len(cancelled_ids)} orders for {symbol}. IDs: {cancelled_ids}")
+                return {"success": True, "cancelled_ids": cancelled_ids}
+
+            err = (result or {}).get("retMsg") or "No response"
+            self.logger.error(f"Failed to cancel orders for {symbol}: {err}")
+            return {"success": False, "error": err}
 
     async def _monitor_order_execution(self, order_id: str, timeout: float = 30) -> Dict[str, Any]:
         """Мониторинг исполнения ордера"""
@@ -2029,14 +1620,14 @@ class PositionCopyManager:
     - Synchronization Manager для минимизации задержек
     """
     
-    def __init__(self, source_client: EnhancedBybitClient, main_client: EnhancedBybitClient):
+    def __init__(self, source_client: EnhancedBybitClient, main_client: EnhancedBybitClient, trailing_config: dict):
         self.source_client = source_client
         self.main_client = main_client
         
         # Основные компоненты
         self.kelly_calculator = AdvancedKellyCalculator()
         self.order_manager = AdaptiveOrderManager(main_client)
-        self.trailing_manager = DynamicTrailingStopManager(self.main_client)
+        self.trailing_manager = DynamicTrailingStopManager(main_client, self.order_manager, trailing_config)
         
         # Состояние системы
         self.copy_mode = CopyMode.KELLY_OPTIMAL
@@ -3150,9 +2741,8 @@ class Stage2CopyTradingSystem:
         main_api_url: Optional[str] = None,
         copy_config: Optional[dict] = None,
         kelly_config: Optional[dict] = None,
-        risk_config: Optional[dict] = None,
         trailing_config: Optional[dict] = None,
-        **_,
+        risk_config: Optional[dict] = None,
     ):
         # 1) Используем внешний монитор, если он передан
         self.base_monitor = base_monitor or FinalTradingMonitor(
@@ -3171,14 +2761,15 @@ class Stage2CopyTradingSystem:
         # 4) Конфигурации
         self.copy_config = copy_config or COPY_CONFIG
         self.kelly_config = kelly_config or KELLY_CONFIG
+        self.trailing_config = trailing_config or TRAILING_CONFIG
         self.risk_config = risk_config or RISK_CONFIG
-        self.trailing_config = TRAILING_CONFIG
 
 
         # 5) Основные компоненты Этапа 2
         self.copy_manager = PositionCopyManager(
             self.source_client,
             self.main_client,
+            self.trailing_config
         )
         self.drawdown_controller = DrawdownController()
 
@@ -3218,28 +2809,14 @@ class Stage2CopyTradingSystem:
         )
     
     async def initialize(self):
-        """Инициализация системы копирования и регистрация обработчиков."""
+        """Initializes the copy trading system and registers handlers."""
         try:
             logger.info("Initializing Stage 2 Copy Trading System...")
 
-            # Инициализация всех компонентов
-            self.kelly_calculator = AdvancedKellyCalculator()
-            self.copy_manager = PositionCopyManager(self.source_client, self.main_client)
-            try:
-                self.trailing_manager = DynamicTrailingStopManager(main_client=self.main_client)
-                logger.info("✅ DynamicTrailingStopManager initialized successfully.")
-            except Exception as e:
-                self.trailing_manager = None
-                logger.warning(f"Failed to initialize DynamicTrailingStopManager: {e}. Trailing stop feature will be disabled.", exc_info=True)
-                if self.trailing_config:
-                    self.trailing_config['enabled'] = False
+            # Component initialization is now handled in __init__ to ensure correct dependency injection.
+            # This method is for registering handlers and activating the system.
 
-            self.drawdown_controller = DrawdownController()
-            self.order_manager = AdaptiveOrderManager(self.main_client)
-
-            # Регистрация обработчика для WS сообщений о позициях
             if hasattr(self.base_monitor, 'websocket_manager'):
-                # Убедимся, что регистрируем правильный, исправленный обработчик
                 self.base_monitor.websocket_manager.register_handler(
                     'position',
                     self.on_position_item
@@ -3325,69 +2902,89 @@ class Stage2CopyTradingSystem:
             current_target_size = safe_float(target_pos.get('size')) if target_pos else 0.0
             current_target_side = (target_pos.get('side') or "").strip() if target_pos else ""
 
-            min_qty = await self.copy_manager.order_manager.get_min_order_qty(symbol, price=entry_price)
-
-            # 3. CALCULATE FINAL TARGET SIZE
+            # 3. CALCULATE FINAL TARGET SIZE (The core logic)
             final_target_size = 0
             kelly_fraction = 0.0
+
             if donor_size > 0 and donor_side:
+                # a. Proportional size based on balance ratio
                 proportional_size = donor_size * (main_balance / source_balance)
+
+                # b. Kelly Criterion adjustment
                 kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(
                     symbol=symbol, current_size=proportional_size, price=entry_price,
                     balance=main_balance, source_balance=source_balance
                 )
                 kelly_recommended_size = kelly_result.get('recommended_size', proportional_size)
                 kelly_fraction = kelly_result.get('kelly_fraction', 0.0)
+
+                # c. Apply master copy_config limits
                 final_target_size = kelly_recommended_size * COPY_CONFIG['default_copy_ratio']
                 final_target_size = max(COPY_CONFIG['min_copy_size'], final_target_size)
                 final_target_size = min(COPY_CONFIG['max_copy_size'], final_target_size)
 
                 logger.info(
-                    f"TARGET_CALC: Donor={donor_size:.4f} -> Proportional={proportional_size:.4f} -> KellyRec={kelly_recommended_size:.4f} -> PrePin={final_target_size:.4f}"
+                    f"TARGET_CALC: Donor Size={donor_size:.4f} -> Proportional={proportional_size:.4f} "
+                    f"-> Kelly Rec={kelly_recommended_size:.4f} -> Final Target={final_target_size:.4f}"
                 )
-                if 0 < final_target_size < min_qty:
-                    logger.info(f"PIN_TO_MIN: target {final_target_size:.4f} < min_qty {min_qty} for {symbol} -> use min_qty")
-                    final_target_size = min_qty
 
-            # 4. CALCULATE DELTA AND EXECUTE
+            # 4. ANTI-CLOSURE & PIN-TO-MIN LOGIC
+            min_qty = await self.copy_manager.order_manager.get_min_order_qty(symbol, price=entry_price)
+
+            if donor_size > 0 and 0 < final_target_size < min_qty:
+                logger.info(f"PIN_TO_MIN: target {final_target_size:.4f} < min_qty {min_qty} for {symbol} -> use min_qty")
+                final_target_size = min_qty
+
+            # 5. CALCULATE DELTA AND EXECUTE
             is_flip = current_target_side and donor_side and current_target_side != donor_side
-            order_result = None
 
             if is_flip:
                 logger.info(f"FLIP DETECTED: {symbol} from {current_target_side} to {donor_side}")
-                logger.info(f"TS_CANCEL_BEFORE_FLIP: Cancelling existing orders for {symbol}.")
-                await self.copy_manager.order_manager.cancel_all_orders_for_symbol(symbol, reason='ts_flip_cancel')
 
-                logger.info(f"FLIP_CLOSE: Closing {current_target_size} of {symbol} with a reduceOnly order.")
+                # Step 1: Close existing position
+                close_side = 'Sell' if current_target_side == 'Buy' else 'Buy'
+                logger.info(f"FLIP_CLOSE: Closing {current_target_size} of {symbol} with a {close_side} order.")
                 close_order = CopyOrder(
-                    source_signal=None, target_symbol=symbol,
-                    target_side='Sell' if current_target_side == 'Buy' else 'Buy',
-                    target_quantity=current_target_size, target_price=entry_price,
-                    order_strategy=OrderStrategy.MARKET, kelly_fraction=0, priority=0,
+                    source_signal=None,
+                    target_symbol=symbol,
+                    target_side=close_side,
+                    target_quantity=current_target_size,
+                    target_price=entry_price,
+                    order_strategy=OrderStrategy.MARKET,
+                    kelly_fraction=0, # Not applicable for closing
+                    priority=0,
                     metadata={'reason': 'ws_flip_close', 'reduceOnly': True}
                 )
                 close_result = await self.copy_manager.order_manager.place_adaptive_order(close_order)
+
                 if not close_result.get('success'):
                     logger.error(f"FLIP_CLOSE FAILED for {symbol}. Aborting flip.")
                     return
 
-                logger.info(f"FLIP_CLOSE for {symbol} successful. Waiting before opening new side.")
-                await asyncio.sleep(1.5)
+                logger.info(f"FLIP_CLOSE for {symbol} successful.")
+                await asyncio.sleep(1) # Small delay to allow position to update
 
-                logger.info(f"FLIP_OPEN: Opening {final_target_size} of {symbol} on side {donor_side}.")
+                # Step 2: Open new position
+                logger.info(f"FLIP_OPEN: Opening {final_target_size} of {symbol} with a {donor_side} order.")
                 open_order = CopyOrder(
-                    source_signal=None, target_symbol=symbol,
-                    target_side=donor_side, target_quantity=final_target_size,
-                    target_price=entry_price, order_strategy=OrderStrategy.MARKET,
-                    kelly_fraction=kelly_fraction, priority=1,
+                    source_signal=None,
+                    target_symbol=symbol,
+                    target_side=donor_side,
+                    target_quantity=final_target_size,
+                    target_price=entry_price,
+                    order_strategy=OrderStrategy.MARKET,
+                    kelly_fraction=kelly_fraction,
+                    priority=1,
                     metadata={'reason': 'ws_flip_open', 'reduceOnly': False}
                 )
                 order_result = await self.copy_manager.order_manager.place_adaptive_order(open_order)
 
-            else: # Not a flip, just a regular delta change
+            else:
+                # Original delta logic for non-flip scenarios
                 size_delta = final_target_size - current_target_size
+
                 if abs(size_delta) < min_qty:
-                    logger.info(f"HYSTERESIS_SKIP: Delta {size_delta:.4f} is smaller than min_qty {min_qty}. No action.")
+                    logger.info(f"HYSTERESIS_SKIP: Delta {size_delta:.6f} is smaller than min_qty {min_qty} for {symbol}. No action needed.")
                     return
 
                 order_side = 'Buy' if size_delta > 0 else 'Sell'
@@ -3395,79 +2992,78 @@ class Stage2CopyTradingSystem:
 
                 is_opening = current_target_size == 0 and final_target_size > 0
                 is_closing = final_target_size == 0 and current_target_size > 0
-
-                if is_closing and self.trailing_config.get('enabled'):
-                    logger.info(f"TS_CANCEL: Cancelling orders for {symbol} due to position close.")
-                    await self.copy_manager.order_manager.cancel_all_orders_for_symbol(symbol, reason='ts_close')
+                is_modifying = not is_opening and not is_closing
 
                 reason = "ws_open" if is_opening else "ws_close" if is_closing else "ws_modify"
+
                 logger.info(f"COPY_ACTION: {reason.upper()} for {symbol} | Delta: {size_delta:.4f} | Qty: {order_qty:.4f} | Side: {order_side}")
 
                 order = CopyOrder(
-                    source_signal=None, target_symbol=symbol, target_side=order_side,
-                    target_quantity=order_qty, target_price=entry_price,
-                    order_strategy=OrderStrategy.MARKET, kelly_fraction=kelly_fraction,
+                    source_signal=None,
+                    target_symbol=symbol,
+                    target_side=order_side,
+                    target_quantity=order_qty,
+                    target_price=entry_price,
+                    order_strategy=OrderStrategy.MARKET,
+                    kelly_fraction=kelly_fraction,
                     priority=1 if is_opening or is_closing else 0,
                     metadata={'reason': reason, 'reduceOnly': size_delta < 0}
                 )
+
                 order_result = await self.copy_manager.order_manager.place_adaptive_order(order)
 
-            # 5. POST-ORDER ACTIONS (Trailing Stops)
+            # 6. POST-ORDER ACTIONS (Trailing Stops Lifecycle)
             if order_result and order_result.get('success'):
-                is_opening = (current_target_size == 0 and final_target_size > 0) or is_flip
-                is_modifying_increase = final_target_size > current_target_size and current_target_size > 0
-                is_modifying_decrease = final_target_size < current_target_size and final_target_size > 0
+                ts_manager = self.copy_manager.trailing_manager
+                ts_cfg = ts_manager.cfg
 
-                should_set_ts = (
-                    self.trailing_config.get('enabled') and
-                    (is_opening or
-                    (is_modifying_increase and self.trailing_config.get('update_on_add')) or
-                    (is_modifying_decrease and self.trailing_config.get('rearm_on_modify')))
-                )
+                if not ts_cfg.get('enabled'):
+                    logger.info(f"TS_LIFECYCLE: TS is disabled, no action for {symbol}.")
+                    return
 
-                if should_set_ts:
-                    if is_modifying_increase and self.trailing_config.get('only_on_open'):
-                        logger.info(f"TS_SKIP: `only_on_open` is true, skipping TS update for {symbol}.")
+                # For modifications, the position value is based on the new total size
+                avg_price = order_result.get('price', entry_price)
+                position_value = final_target_size * avg_price
+
+                # Opening a new position
+                if is_opening:
+                    logger.info(f"TS_LIFECYCLE (OPEN): Creating TS for new {symbol} position.")
+                    await ts_manager.create_or_update_trailing_stop(symbol, donor_side, final_target_size, position_value, avg_price)
+
+                # Adding to an existing position
+                elif is_modifying and size_delta > 0:
+                    if ts_cfg.get('update_on_add'):
+                        logger.info(f"TS_LIFECYCLE (ADD): Updating TS for {symbol} position.")
+                        await ts_manager.create_or_update_trailing_stop(symbol, donor_side, final_target_size, position_value, avg_price)
                     else:
-                        position_value = final_target_size * entry_price
-                        if position_value >= self.trailing_config.get('min_notional_for_ts', 0):
+                        logger.info(f"TS_LIFECYCLE (ADD): update_on_add is false, TS for {symbol} not updated.")
 
-                            # Cancel existing TS before creating a new one
-                            await self.copy_manager.order_manager.cancel_all_orders_for_symbol(symbol, reason='ts_rearm')
+                # Reducing an existing position
+                elif is_modifying and size_delta < 0:
+                    logger.info(f"TS_LIFECYCLE (REDUCE): Modifying TS for {symbol} position.")
+                    if ts_cfg.get('rearm_on_modify'):
+                        await ts_manager.create_or_update_trailing_stop(symbol, donor_side, final_target_size, position_value, avg_price)
+                    else:
+                        await self.copy_manager.order_manager.cancel_all_symbol_orders(symbol, "Stop")
+                        logger.info(f"TS_LIFECYCLE (REDUCE): rearm_on_modify is false, existing TS for {symbol} cancelled.")
 
-                            trail_dist_val = 0
-                            mode = self.trailing_config.get('mode', 'fixed_pct')
-                            if mode == 'atr':
-                                atr_cfg = self.trailing_config.get('atr', {})
-                                atr_value = await self.copy_manager.trailing_manager.calculate_atr(symbol, period=atr_cfg.get('period', 14))
-                                if atr_value > 0:
-                                    trail_dist_val = atr_value * atr_cfg.get('multiplier', 2.5)
-                                else:
-                                    logger.warning(f"ATR for {symbol} is 0, falling back to fixed_pct for TS.")
-                                    mode = 'fixed_pct'
+                # Closing a position
+                elif is_closing:
+                    logger.info(f"TS_LIFECYCLE (CLOSE): Cancelling TS for closing {symbol} position.")
+                    await self.copy_manager.order_manager.cancel_all_symbol_orders(symbol, "Stop")
 
-                            if mode == 'fixed_pct':
-                                pct_cfg = self.trailing_config.get('fixed_pct', {})
-                                trail_dist_val = entry_price * pct_cfg.get('distance_pct', 0.015)
+            # Handle TS on FLIP
+            elif is_flip:
+                ts_manager = self.copy_manager.trailing_manager
+                logger.info(f"TS_LIFECYCLE (FLIP): Handling TS for {symbol} flip.")
+                # Cancel before close is already handled by create_or_update_trailing_stop
+                # Create after open
+                if order_result and order_result.get('success'):
+                    avg_price = order_result.get('price', entry_price)
+                    position_value = final_target_size * avg_price
+                    await ts_manager.create_or_update_trailing_stop(symbol, donor_side, final_target_size, position_value, avg_price)
 
-                            max_dist_by_pct = entry_price * self.trailing_config.get('max_ts_pct_of_price', 0.10)
-                            max_dist_by_usd = self.trailing_config.get('max_ts_distance_usd', 500)
-                            trail_dist_val = min(trail_dist_val, max_dist_by_pct, max_dist_by_usd)
 
-                            tick_size = float((await self.main_client.get_symbol_filters(symbol)).get('tick_size', 0.01))
-                            trail_dist_str = str(round(trail_dist_val / tick_size) * tick_size) if tick_size > 0 else f"{trail_dist_val:.4f}"
-                            formatted_qty = await self.copy_manager.order_manager._format_qty_live(symbol, final_target_size, entry_price)
-
-                            ts_result = await self.copy_manager.order_manager.place_trailing_stop(
-                                symbol=symbol, side=donor_side, qty=formatted_qty, trail_distance=trail_dist_str
-                            )
-
-                            if ts_result.get('success'):
-                                logger.info(f"TS_CREATE: style={mode} use_atr={mode=='atr'} dist={trail_dist_str} symbol={symbol} qty={formatted_qty}")
-                            else:
-                                logger.error(f"TS_CREATE FAILED for {symbol}: {ts_result.get('error')}")
-                        else:
-                            logger.info(f"TS_SKIP: Position value {position_value:.2f} is below min_notional_for_ts {self.trailing_config.get('min_notional_for_ts', 0)}.")
         except Exception as e:
             logger.error(f"on_position_item failed: {e}", exc_info=True)
 
