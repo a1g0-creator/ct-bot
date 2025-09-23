@@ -928,12 +928,15 @@ class DynamicTrailingStopManager:
 
     def _rebind_legacy_attrs(self):
         """Sets legacy attributes from the self.cfg dictionary for backward compatibility."""
-        self.default_distance_percent = self.cfg.get("activation_pct")
-        self.min_trail_step = self.cfg.get("step_pct")
-        self.max_distance_percent = self.cfg.get("max_pct")
-        self.aggressive_mode = (self.cfg.get("mode") == "aggressive")
-        self.atr_period = self.cfg.get("atr_period")
-        self.atr_multiplier = self.cfg.get("atr_multiplier")
+        # Percent-based
+        self.default_distance_percent = float(self.cfg.get('activation_pct', 0.015))
+        self.min_trail_step           = float(self.cfg.get('step_pct', 0.002))
+        self.max_distance_percent     = float(self.cfg.get('max_pct', 0.05))
+        # ATR
+        self.atr_period               = int(self.cfg.get('atr_period', 14))
+        self.atr_multiplier           = float(self.cfg.get('atr_multiplier', 2.0))
+        # Mode flag
+        self.aggressive_mode          = (str(self.cfg.get('mode', 'conservative')).lower() == 'aggressive')
 
     def reload_config(self, new_cfg_or_patch: dict) -> dict:
         """
@@ -956,18 +959,48 @@ class DynamicTrailingStopManager:
 
     def get_config_snapshot(self) -> dict:
         """
-        Returns a snapshot of the current config, built strictly from self.cfg
-        with sane defaults to prevent errors.
+        Returns a snapshot of the current configuration, ensuring values are
+        consistent with the active (and backward-compatible) legacy attributes.
         """
-        return {
-            "enabled":        bool(self.cfg.get("enabled", True)),
-            "mode":           self.cfg.get("mode", "conservative"),
-            "activation_pct": float(self.cfg.get("activation_pct", 0.02)),
-            "step_pct":       float(self.cfg.get("step_pct", 0.003)),
-            "max_pct":        float(self.cfg.get("max_pct", 0.05)),
-            "atr_period":     int(self.cfg.get("atr_period", 14)),
-            "atr_multiplier": float(self.cfg.get("atr_multiplier", 1.5)),
-        }
+        snap = dict(self.cfg)
+        # also mirror legacy names to help any other code paths:
+        snap.update({
+            "activation_pct": self.default_distance_percent,
+            "step_pct": self.min_trail_step,
+            "max_pct": self.max_distance_percent,
+            "mode": "aggressive" if self.aggressive_mode else "conservative",
+            "atr_period": self.atr_period,
+            "atr_multiplier": self.atr_multiplier,
+        })
+        return snap
+
+    async def get_all_stops(self, symbol: Optional[str] = None) -> list:
+        """
+        Fetches all open stop orders (including trailing stops) from the exchange.
+        This method is required for backward compatibility with the Telegram UI.
+        """
+        try:
+            params = {"category": "linear"}
+            if symbol:
+                params["symbol"] = symbol
+            # Filter only stop/tpsl/trailing if available
+            params["orderFilter"] = "StopOrder"
+            res = await self.main_client._make_request_with_retry("GET", "open-orders", params)
+            items = (res or {}).get("result", {}).get("list", []) if (res and res.get("retCode") == 0) else []
+            # normalize a tiny dict for UI len()
+            return [
+                {
+                    "symbol": it.get("symbol"),
+                    "orderId": it.get("orderId"),
+                    "orderType": it.get("orderType"),
+                    "stopOrderType": it.get("stopOrderType"),
+                    "tsActivation": it.get("triggerPrice") or it.get("activatePrice") or None,
+                }
+                for it in items
+            ]
+        except Exception as e:
+            logger.warning(f"get_all_stops failed: {e}")
+            return []
 
     async def create_or_update_trailing_stop(self, symbol: str, side: str, position_qty: float, position_value: float, entry_price: float):
         """
@@ -1560,6 +1593,10 @@ class AdaptiveOrderManager:
             err = (result or {}).get("retMsg") or "No response"
             self.logger.error(f"Failed to cancel orders for {symbol}: {err}")
             return {"success": False, "error": err}
+
+        except Exception as e:
+            self.logger.exception(f"Failed to cancel all orders for {symbol}: {e}")
+            return {"success": False, "error": str(e)}
 
     async def _monitor_order_execution(self, order_id: str, timeout: float = 30) -> Dict[str, Any]:
         """Мониторинг исполнения ордера"""
