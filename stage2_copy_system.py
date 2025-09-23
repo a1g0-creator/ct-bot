@@ -898,8 +898,54 @@ class DynamicTrailingStopManager:
 
         # 3. Rebind legacy attributes to ensure they exist
         self._rebind_legacy_attrs()
+        self._stops_cache = []  # list[dict]: локальный кэш открытых стоп/трейлинг ордеров
 
         logger.info(f"DynamicTrailingStopManager initialized with config: {self.cfg}")
+
+    def get_all_stops(self, symbol: Optional[str] = None) -> list:
+        """
+        Back-compat для Telegram UI: синхронно возвращает список стоп-ордеров.
+        Меню использует только len(...) и первые несколько элементов.
+        """
+        try:
+            cache = self._stops_cache
+        except AttributeError:
+            self._stops_cache = []
+            cache = self._stops_cache
+        if symbol:
+            return [s for s in cache if s.get("symbol") == symbol]
+        return list(cache)
+
+    async def refresh_stops_cache(self, symbol: Optional[str] = None) -> list:
+        """
+        Опционально: подтянуть открытые стоп/TS ордера с биржи и обновить локальный кэш.
+        Не используется телеграм-меню напрямую (оно вызывает sync get_all_stops()).
+        """
+        try:
+            params = {"category": "linear"}
+            if symbol:
+                params["symbol"] = symbol
+            params["orderFilter"] = "StopOrder"
+            res = await self.main_client._make_request_with_retry("GET", "open-orders", params)
+
+            items = (res or {}).get("result", {}).get("list", []) if (res and res.get("retCode") == 0) else []
+            norm = [{
+                "symbol": it.get("symbol"),
+                "orderId": it.get("orderId"),
+                "orderType": it.get("orderType"),
+                "stopOrderType": it.get("stopOrderType"),
+                "activatePrice": it.get("triggerPrice") or it.get("activatePrice"),
+            } for it in items]
+
+            # если фильтровали по символу — обновим только его; иначе заменим целиком
+            if symbol:
+                self._stops_cache = [s for s in self._stops_cache if s.get("symbol") != symbol] + norm
+            else:
+                self._stops_cache = norm
+            return self.get_all_stops(symbol)
+        except Exception as e:
+            logger.warning(f"refresh_stops_cache failed: {e}")
+            return self.get_all_stops(symbol)
 
     @staticmethod
     def _normalize_keys(in_cfg: dict) -> dict:
@@ -974,34 +1020,6 @@ class DynamicTrailingStopManager:
         })
         return snap
 
-    async def get_all_stops(self, symbol: Optional[str] = None) -> list:
-        """
-        Fetches all open stop orders (including trailing stops) from the exchange.
-        This method is required for backward compatibility with the Telegram UI.
-        """
-        try:
-            params = {"category": "linear"}
-            if symbol:
-                params["symbol"] = symbol
-            # Filter only stop/tpsl/trailing if available
-            params["orderFilter"] = "StopOrder"
-            res = await self.main_client._make_request_with_retry("GET", "open-orders", params)
-            items = (res or {}).get("result", {}).get("list", []) if (res and res.get("retCode") == 0) else []
-            # normalize a tiny dict for UI len()
-            return [
-                {
-                    "symbol": it.get("symbol"),
-                    "orderId": it.get("orderId"),
-                    "orderType": it.get("orderType"),
-                    "stopOrderType": it.get("stopOrderType"),
-                    "tsActivation": it.get("triggerPrice") or it.get("activatePrice") or None,
-                }
-                for it in items
-            ]
-        except Exception as e:
-            logger.warning(f"get_all_stops failed: {e}")
-            return []
-
     async def create_or_update_trailing_stop(self, symbol: str, side: str, position_qty: float, position_value: float, entry_price: float):
         """
         Creates or updates a native trailing stop order on the exchange using the current config.
@@ -1014,7 +1032,17 @@ class DynamicTrailingStopManager:
             logger.info(f"TS_SKIP: Position value ${position_value:.2f} is below min_notional_for_ts of ${self.cfg.get('min_notional_for_ts', 0)}. Skipping.")
             return
 
-        await self.order_manager.cancel_all_symbol_orders(symbol, "Stop")
+        cancellation_result = await self.order_manager.cancel_all_symbol_orders(symbol, "Stop")
+        if cancellation_result.get('success'):
+            try:
+                cancelled_ids = set(cancellation_result.get('cancelled_ids', []))
+                if cancelled_ids:
+                    before = len(self._stops_cache)
+                    self._stops_cache = [s for s in self._stops_cache if s.get("orderId") not in cancelled_ids]
+                    logger.info(f"TS cache pruned for {symbol}: {before} -> {len(self._stops_cache)}")
+            except Exception as e:
+                logger.warning(f"TS cache pruning failed during cancellation: {e}")
+
         logger.info(f"TS_CANCEL_BEFORE_CREATE: Canceled existing stop orders for {symbol} before creating new one.")
 
         distance_value = 0.0
@@ -1064,6 +1092,16 @@ class DynamicTrailingStopManager:
                 status=OrderStatus.PLACED.value, order_type='TRAILING_STOP',
                 reason='ts_create', exchange_order_id=order_result.get('order_id')
             )
+            try:
+                self._stops_cache.append({
+                    "symbol": symbol,
+                    "orderId": order_result.get('order_id'),
+                    "orderType": "TrailingStop",
+                    "stopOrderType": "TrailingStop",
+                    "activatePrice": None, # Not available from create call
+                })
+            except Exception:
+                pass
         else:
             logger.error(f"TS_CREATE_FAILED: Failed to create trailing stop for {symbol}. Reason: {order_result.get('error')}")
 
@@ -1593,9 +1631,8 @@ class AdaptiveOrderManager:
             err = (result or {}).get("retMsg") or "No response"
             self.logger.error(f"Failed to cancel orders for {symbol}: {err}")
             return {"success": False, "error": err}
-
         except Exception as e:
-            self.logger.exception(f"Failed to cancel all orders for {symbol}: {e}")
+            self.logger.exception(f"Exception in cancel_all_symbol_orders for {symbol}: {e}")
             return {"success": False, "error": str(e)}
 
     async def _monitor_order_execution(self, order_id: str, timeout: float = 30) -> Dict[str, Any]:
