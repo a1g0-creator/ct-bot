@@ -3150,7 +3150,8 @@ class Stage2CopyTradingSystem:
         main_api_url: Optional[str] = None,
         copy_config: Optional[dict] = None,
         kelly_config: Optional[dict] = None,
-        risk_config: Optional[dict] = None
+        risk_config: Optional[dict] = None,
+        trailing_config: Optional[dict] = None,
     ):
         # 1) Используем внешний монитор, если он передан
         self.base_monitor = base_monitor or FinalTradingMonitor(
