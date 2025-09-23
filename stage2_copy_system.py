@@ -3152,6 +3152,7 @@ class Stage2CopyTradingSystem:
         kelly_config: Optional[dict] = None,
         risk_config: Optional[dict] = None,
         trailing_config: Optional[dict] = None,
+        **_,
     ):
         # 1) Используем внешний монитор, если он передан
         self.base_monitor = base_monitor or FinalTradingMonitor(
@@ -3224,7 +3225,15 @@ class Stage2CopyTradingSystem:
             # Инициализация всех компонентов
             self.kelly_calculator = AdvancedKellyCalculator()
             self.copy_manager = PositionCopyManager(self.source_client, self.main_client)
-            self.trailing_manager = DynamicTrailingStopManager()
+            try:
+                self.trailing_manager = DynamicTrailingStopManager(main_client=self.main_client)
+                logger.info("✅ DynamicTrailingStopManager initialized successfully.")
+            except Exception as e:
+                self.trailing_manager = None
+                logger.warning(f"Failed to initialize DynamicTrailingStopManager: {e}. Trailing stop feature will be disabled.", exc_info=True)
+                if self.trailing_config:
+                    self.trailing_config['enabled'] = False
+
             self.drawdown_controller = DrawdownController()
             self.order_manager = AdaptiveOrderManager(self.main_client)
 
