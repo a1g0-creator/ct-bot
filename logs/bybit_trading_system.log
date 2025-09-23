@@ -2,3 +2,9 @@
 2025-09-23 07:56:46,729 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
 2025-09-23 07:56:46,740 [    INFO] bybit_trading_system:328 - Advanced Kelly Calculator initialized with safety limits
 2025-09-23 07:56:46,743 [    INFO] bybit_trading_system:3135 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-23 12:59:48,754 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-23 12:59:49,466 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-23 12:59:49,477 [    INFO] bybit_trading_system:333 - Advanced Kelly Calculator initialized with safety limits
+2025-09-23 12:59:49,478 [    INFO] bybit_trading_system:905 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-23 12:59:49,498 [    INFO] bybit_trading_system:378 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-23 12:59:49,498 [    INFO] bybit_trading_system:2938 - Stage 2 Copy Trading System initialized (monitor=MagicMock)

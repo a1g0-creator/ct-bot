@@ -335,71 +335,73 @@ class AdvancedKellyCalculator:
     def apply_config(self, cfg: dict) -> None:
         """
         Применяет новую конфигурацию в рантайме.
-        Сбрасывает кэши и обновляет параметры мгновенно.
-
-        Args:
-            cfg: Словарь с параметрами Kelly (из KELLY_CONFIG)
+        Обеспечивает совместимость с Telegram и внутренними механизмами.
         """
         try:
-            # Сохраняем старую конфигурацию для логирования
-            old_config = {
-                'kelly_multiplier': self.kelly_multiplier,
-                'max_position_size': self.max_position_size,
-                'min_position_size': self.min_position_size,
-                'max_drawdown_threshold': self.max_drawdown_threshold,
-                'lookback_window': getattr(self.trade_history, 'maxlen', 100)
-            }
-        
-            # Обновляем множители и лимиты
-            self.kelly_multiplier = float(cfg.get('conservative_factor', self.kelly_multiplier))
-            self.max_position_size = float(cfg.get('max_kelly_fraction', self.max_position_size))
-            self.min_position_size = float(cfg.get('min_position_size', self.min_position_size))
+            # Используем get_config_snapshot для получения "старого" состояния, если метод уже есть
+            old_config = self.get_config_snapshot() if hasattr(self, 'get_config_snapshot') else {}
+
+            # 1. Обновляем атрибуты, которые напрямую читает Telegram
+            self.confidence_threshold = float(cfg.get('confidence_threshold', 0.6))
+            self.max_kelly_fraction = float(cfg.get('max_kelly_fraction', 0.25))
+            self.conservative_factor = float(cfg.get('conservative_factor', 0.5))
+            self.min_trades_required = int(cfg.get('min_trades_required', 30))
+            self.lookback_period = int(cfg.get('lookback_window', 100))  # Важный маппинг
+            self.min_position_size = float(cfg.get('min_position_size', 0.01))
+            self.rebalance_threshold = float(cfg.get('rebalance_threshold', 0.1))
+
+            # 2. Синхронизируем внутренние переменные калькулятора для обратной совместимости
+            self.kelly_multiplier = self.conservative_factor
+            self.max_position_size = self.max_kelly_fraction
             self.default_position_size = max(self.min_position_size, 0.001)
-    
-            # Обновляем пороги
             self.max_drawdown_threshold = float(cfg.get('max_drawdown_threshold', 0.15))
-    
-            # Обновляем размер окна истории если изменился
-            new_lookback = int(cfg.get('lookback_window', 100))
+
+            # 3. Обновляем размер окна истории, если он изменился
+            new_lookback = self.lookback_period
             cache_cleared = False
-            if new_lookback != getattr(self.trade_history, 'maxlen', new_lookback):
+            if not hasattr(self, 'trade_history') or new_lookback != getattr(self.trade_history, 'maxlen', new_lookback):
                 from collections import deque
-                # Сохраняем существующие данные при изменении окна
-                self.trade_history = deque(list(self.trade_history), maxlen=new_lookback)
+                current_history = list(getattr(self, 'trade_history', []))
+                self.trade_history = deque(current_history, maxlen=new_lookback)
                 cache_cleared = True
-        
-            # Сбрасываем кэш для мгновенного эффекта
-            self.kelly_cache.clear()
-        
-            # Логируем изменение конфигурации
+
+            # 4. Сбрасываем кэш для немедленного применения настроек
+            if hasattr(self, 'kelly_cache'):
+                self.kelly_cache.clear()
+
+            # 5. Логируем изменения
+            new_config = self.get_config_snapshot()
             sys_logger.log_event(
-                "INFO",
-                "KellyCalculator",
-                "Kelly configuration updated",
-                {
-                    "old_config": old_config,
-                    "new_config": {
-                        'kelly_multiplier': self.kelly_multiplier,
-                        'max_position_size': self.max_position_size,
-                        'min_position_size': self.min_position_size,
-                        'max_drawdown_threshold': self.max_drawdown_threshold,
-                        'lookback_window': new_lookback
-                    },
-                    "cache_cleared": cache_cleared
-                }
+                "INFO", "KellyCalculator", "Kelly configuration updated",
+                {"old_config": old_config, "new_config": new_config, "cache_cleared": cache_cleared}
             )
-    
-            logger.info(f"Kelly config applied: multiplier={self.kelly_multiplier}, "
-                       f"max_size={self.max_position_size}, lookback={new_lookback}")
-                   
+            logger.info(
+                f"Kelly config applied: multiplier={self.conservative_factor}, "
+                f"max_size={self.max_kelly_fraction}, lookback={self.lookback_period}"
+            )
+
         except Exception as e:
             sys_logger.log_error(
-                "KellyCalculator",
-                f"Failed to apply config: {str(e)}",
+                "KellyCalculator", f"Failed to apply config: {str(e)}",
                 {"config": cfg, "error": str(e)}
             )
-            logger.error(f"Failed to apply Kelly config: {e}")
+            logger.error(f"Failed to apply Kelly config: {e}", exc_info=True)
             raise
+
+    def get_config_snapshot(self) -> dict:
+        """
+        Возвращает снимок текущей конфигурации калькулятора для логов и отладки.
+        """
+        # Используем дефолты из глобального конфига, если атрибут еще не установлен
+        return {
+            'confidence_threshold': getattr(self, 'confidence_threshold', KELLY_CONFIG.get('confidence_threshold')),
+            'max_kelly_fraction': getattr(self, 'max_kelly_fraction', KELLY_CONFIG.get('max_kelly_fraction')),
+            'conservative_factor': getattr(self, 'conservative_factor', KELLY_CONFIG.get('conservative_factor')),
+            'min_trades_required': getattr(self, 'min_trades_required', KELLY_CONFIG.get('min_trades_required')),
+            'lookback_window': getattr(self, 'lookback_period', KELLY_CONFIG.get('lookback_window')),
+            'min_position_size': getattr(self, 'min_position_size', KELLY_CONFIG.get('min_position_size')),
+            'rebalance_threshold': getattr(self, 'rebalance_threshold', KELLY_CONFIG.get('rebalance_threshold')),
+        }
 
     def add_trade_result(self, symbol: str, pnl: float, trade_data: Dict[str, Any]):
         """Добавление результата сделки для анализа"""
@@ -2898,6 +2900,10 @@ class Stage2CopyTradingSystem:
             self.trailing_config
         )
         self.drawdown_controller = DrawdownController()
+
+        # ✅ Инициализация и алиас для Kelly Calculator (совместимость с Telegram)
+        self.kelly_calculator = self.copy_manager.kelly_calculator
+        self.kelly_calculator.apply_config(KELLY_CONFIG)
 
         # 5) Состояние системы
         self.system_active = False
