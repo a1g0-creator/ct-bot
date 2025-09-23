@@ -873,70 +873,133 @@ class AdvancedKellyCalculator:
 
 class DynamicTrailingStopManager:
     """
-    Manages native exchange trailing stop orders based on a global configuration.
-    This manager does NOT hold state about stops itself; it acts as a stateless
-    service that uses the order_manager to place or cancel TS orders on the exchange.
+    Manages native exchange trailing stop orders. It is self-contained and backward-compatible.
+    It stores its configuration in `self.cfg` but also sets legacy attributes like `self.atr_period`
+    to ensure old code that references them continues to work.
     """
     def __init__(self, main_client: EnhancedBybitClient, order_manager, trailing_config: dict):
         self.main_client = main_client
         self.order_manager = order_manager
-        self.cfg = trailing_config.copy()  # Work with a copy
+
+        # 1. Establish complete defaults
+        self.cfg = {
+            "enabled": True,
+            "mode": "conservative",
+            "activation_pct": 0.02,
+            "step_pct": 0.003,
+            "max_pct": 0.05,
+            "atr_period": 14,
+            "atr_multiplier": 1.5,
+        }
+
+        # 2. Normalize and merge incoming config
+        normalized_initial_cfg = self._normalize_keys(trailing_config)
+        self.cfg.update(normalized_initial_cfg)
+
+        # 3. Rebind legacy attributes to ensure they exist
+        self._rebind_legacy_attrs()
+
         logger.info(f"DynamicTrailingStopManager initialized with config: {self.cfg}")
 
-    def reload_config(self, patch: dict):
+    @staticmethod
+    def _normalize_keys(in_cfg: dict) -> dict:
+        """Maps legacy keys to new keys and normalizes values."""
+        if not in_cfg:
+            return {}
+
+        out = {}
+
+        # Map legacy keys
+        if 'min_trail_distance' in in_cfg:
+            out['activation_pct'] = in_cfg['min_trail_distance']
+        if 'update_threshold' in in_cfg:
+            out['step_pct'] = in_cfg['update_threshold']
+        if 'max_trail_distance' in in_cfg:
+            out['max_pct'] = in_cfg['max_trail_distance']
+        if 'aggressive_mode' in in_cfg:
+            out['mode'] = "aggressive" if in_cfg['aggressive_mode'] else "conservative"
+
+        # Pass through new-style keys
+        for key in ["activation_pct", "step_pct", "max_pct", "mode", "enabled", "atr_period", "atr_multiplier"]:
+            if key in in_cfg:
+                out[key] = in_cfg[key]
+
+        return out
+
+    def _rebind_legacy_attrs(self):
+        """Sets legacy attributes from the self.cfg dictionary for backward compatibility."""
+        self.default_distance_percent = self.cfg.get("activation_pct")
+        self.min_trail_step = self.cfg.get("step_pct")
+        self.max_distance_percent = self.cfg.get("max_pct")
+        self.aggressive_mode = (self.cfg.get("mode") == "aggressive")
+        self.atr_period = self.cfg.get("atr_period")
+        self.atr_multiplier = self.cfg.get("atr_multiplier")
+
+    def reload_config(self, new_cfg_or_patch: dict) -> dict:
         """
-        Updates the trailing stop configuration at runtime.
+        Updates the trailing stop configuration at runtime, normalizes keys,
+        and rebinds legacy attributes to maintain compatibility.
         """
         old_cfg = self.cfg.copy()
-        self.cfg.update(patch)
+
+        normalized_patch = self._normalize_keys(new_cfg_or_patch)
+        self.cfg.update(normalized_patch)
+
+        self._rebind_legacy_attrs() # Ensure legacy attrs are always in sync
+
         logger.info("Trailing stop config updated.")
         sys_logger.log_event(
-            "INFO",
-            "TrailingStopManager",
-            "Trailing stop configuration updated",
+            "INFO", "TrailingStopManager", "Trailing stop configuration updated",
             {"old_config": old_cfg, "new_config": self.cfg}
         )
+        return self.get_config_snapshot()
 
     def get_config_snapshot(self) -> dict:
         """
-        Returns a snapshot of the current trailing stop configuration.
+        Returns a snapshot of the current config, built strictly from self.cfg
+        with sane defaults to prevent errors.
         """
-        return self.cfg.copy()
+        return {
+            "enabled":        bool(self.cfg.get("enabled", True)),
+            "mode":           self.cfg.get("mode", "conservative"),
+            "activation_pct": float(self.cfg.get("activation_pct", 0.02)),
+            "step_pct":       float(self.cfg.get("step_pct", 0.003)),
+            "max_pct":        float(self.cfg.get("max_pct", 0.05)),
+            "atr_period":     int(self.cfg.get("atr_period", 14)),
+            "atr_multiplier": float(self.cfg.get("atr_multiplier", 1.5)),
+        }
 
     async def create_or_update_trailing_stop(self, symbol: str, side: str, position_qty: float, position_value: float, entry_price: float):
         """
-        Creates or updates a native trailing stop order on the exchange.
+        Creates or updates a native trailing stop order on the exchange using the current config.
         """
         if not self.cfg.get('enabled'):
             logger.info(f"TS_SKIP: Trailing stops are disabled globally. Skipping for {symbol}.")
             return
 
         if position_value < self.cfg.get('min_notional_for_ts', 0):
-            logger.info(f"TS_SKIP: Position value ${position_value:.2f} for {symbol} is below min_notional_for_ts of ${self.cfg.get('min_notional_for_ts', 0)}. Skipping.")
+            logger.info(f"TS_SKIP: Position value ${position_value:.2f} is below min_notional_for_ts of ${self.cfg.get('min_notional_for_ts', 0)}. Skipping.")
             return
 
-        # First, cancel any existing stops for the symbol to ensure a clean state
         await self.order_manager.cancel_all_symbol_orders(symbol, "Stop")
         logger.info(f"TS_CANCEL_BEFORE_CREATE: Canceled existing stop orders for {symbol} before creating new one.")
 
-        # Calculate distance
         distance_value = 0.0
-        if self.cfg.get('use_atr', False):
+        use_atr = self.cfg.get('use_atr', self.cfg.get('mode') == 'atr') # Compatibility
+
+        if use_atr:
             try:
-                # Simplified ATR logic for now
                 kline_data = await self.main_client.get_kline(symbol, '15m', self.cfg.get('atr_period', 14))
                 if kline_data and len(kline_data) >= self.cfg.get('atr_period', 14):
                     highs = [float(k[2]) for k in kline_data]
                     lows = [float(k[3]) for k in kline_data]
                     closes = [float(k[4]) for k in kline_data]
-
                     true_ranges = [highs[0] - lows[0]]
                     for i in range(1, len(kline_data)):
                         tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
                         true_ranges.append(tr)
-
                     atr_val = sum(true_ranges) / len(true_ranges)
-                    distance_value = atr_val * self.cfg.get('atr_multiplier', 1.0)
+                    distance_value = atr_val * self.cfg.get('atr_multiplier', 1.5)
                     logger.info(f"TS_ATR_CALC: ATR for {symbol} is {atr_val:.4f}. Distance: ${distance_value:.4f}")
                 else:
                     logger.warning(f"Not enough kline data for ATR on {symbol}, falling back to percentage.")
@@ -948,36 +1011,25 @@ class DynamicTrailingStopManager:
             distance_value = entry_price * self.cfg.get('activation_pct', 0.015)
             logger.info(f"TS_FIXED_CALC: Using fixed distance for {symbol}. Pct: {self.cfg.get('activation_pct', 0.015):.2%}, Resulting Dist: ${distance_value:.4f}")
 
-        # Apply limits
         max_dist_val = entry_price * self.cfg.get('max_pct', 0.1)
         distance_value = min(distance_value, max_dist_val)
         
-        # Place the new order
         ts_side = 'Sell' if side == 'Buy' else 'Buy'
         
         order_result = await self.order_manager.place_trailing_stop(
-            symbol=symbol,
-            side=ts_side,
-            qty=position_qty,
-            trailing_distance=distance_value
+            symbol=symbol, side=ts_side, qty=position_qty, trailing_distance=distance_value
         )
 
         if order_result and order_result.get('success'):
             logger.info(
-                f"TS_CREATE: style={'atr' if self.cfg.get('use_atr') else 'fixed'} "
-                f"use_atr={self.cfg.get('use_atr')} dist=${distance_value:.4f} "
+                f"TS_CREATE: style={'atr' if use_atr else 'fixed'} "
+                f"use_atr={use_atr} dist=${distance_value:.4f} "
                 f"stop_price=N/A symbol={symbol} qty={position_qty}"
             )
             orders_logger.log_order(
-                account_id=2,
-                symbol=symbol,
-                side=ts_side,
-                qty=position_qty,
-                price=None,
-                status=OrderStatus.PLACED.value,
-                order_type='TRAILING_STOP',
-                reason='ts_create',
-                exchange_order_id=order_result.get('order_id')
+                account_id=2, symbol=symbol, side=ts_side, qty=position_qty, price=None,
+                status=OrderStatus.PLACED.value, order_type='TRAILING_STOP',
+                reason='ts_create', exchange_order_id=order_result.get('order_id')
             )
         else:
             logger.error(f"TS_CREATE_FAILED: Failed to create trailing stop for {symbol}. Reason: {order_result.get('error')}")
