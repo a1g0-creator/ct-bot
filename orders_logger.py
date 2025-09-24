@@ -39,24 +39,16 @@ class OrdersLogger:
         side: str,
         qty: float,
         status: str,
+        price: Optional[float] = None,
+        order_type: Optional[str] = None,
         exchange_order_id: Optional[str] = None,
         attempt: int = 1,
         latency_ms: Optional[int] = None,
         reason: Optional[str] = None,
+        raw: Optional[Dict[str, Any]] = None,
     ) -> bool:
         """
         Записывает информацию об ордере в БД.
-
-        Args:
-            account_id: ID аккаунта (1 для источника, 2 для основного)
-            symbol: Торговая пара
-            side: Buy/Sell
-            qty: Размер ордера
-            status: Статус ордера (PENDING, PLACED, FILLED, etc.)
-            exchange_order_id: ID ордера на бирже
-            attempt: Номер попытки
-            latency_ms: Задержка выполнения в мс
-            reason: Причина ошибки/отмены
         """
         try:
             with SessionLocal() as session:
@@ -76,6 +68,12 @@ class OrdersLogger:
                             existing.latency_ms = latency_ms
                         if reason:
                             existing.reason = reason
+                        if price:
+                            existing.price = price
+                        if order_type:
+                            existing.order_type = order_type
+                        if raw:
+                            existing.raw = raw
                         session.commit()
 
                         logger.debug(f"Order updated: {exchange_order_id} -> {status}")
@@ -87,11 +85,14 @@ class OrdersLogger:
                     symbol=symbol,
                     side=side,
                     qty=qty,
+                    price=price,
+                    order_type=order_type,
                     status=status,
                     exchange_order_id=exchange_order_id or f"pending_{int(time.time()*1000)}",
                     attempt=attempt,
                     latency_ms=latency_ms,
-                    reason=reason
+                    reason=reason,
+                    raw=raw
                 )
 
                 session.add(order)

@@ -3153,8 +3153,8 @@ class EnhancedBybitClient:
             logger.error(f"{self.name} - Order placement error: {e}", exc_info=True)
             return None
 
-    async def set_leverage(self, category: str, symbol: str, leverage: str) -> Optional[dict]:
-        """Sets leverage for a symbol."""
+    async def set_leverage(self, category: str, symbol: str, leverage: str) -> dict:
+        """Sets leverage for a symbol, handles 110043 as success without retries."""
         try:
             data = {
                 "category": category,
@@ -3163,23 +3163,28 @@ class EnhancedBybitClient:
                 "sellLeverage": str(leverage),
             }
             logger.info(f"{self.name} - Setting leverage for {symbol} to {leverage}x")
-            result = await self._make_request_with_retry("POST", "position/set-leverage", data=data)
 
-            if result and result.get('retCode') == 0:
-                logger.info(f"{self.name} - Leverage for {symbol} set to {leverage}x successfully.")
-                return result
+            # Call single request to bypass the generic retry logic for this specific case
+            result = await self._make_single_request("POST", "position/set-leverage", data=data)
 
             ret_code = (result or {}).get("retCode")
-            if ret_code == 110025: # Leverage not modified
-                logger.info(f"Leverage for {symbol} was already {leverage}x. Not an error.")
-                return {"success": True, "already_set": True}
 
+            if ret_code == 0:
+                logger.info(f"{self.name} - Leverage for {symbol} set to {leverage}x successfully.")
+                return {"success": True, "result": result}
+
+            if ret_code == 110043: # Leverage not modified
+                logger.info(f"Leverage for {symbol} was already {leverage}x. Treating as success.")
+                return {"success": True, "already_set": True, "result": result}
+
+            # For any other error, return failure
             error_msg = result.get('retMsg', 'Unknown error') if result else 'No response'
             logger.error(f"{self.name} - Failed to set leverage for {symbol}: {error_msg} (retCode: {ret_code})")
-            return None
+            return {"success": False, "error": error_msg, "result": result}
+
         except Exception as e:
             logger.error(f"{self.name} - Set leverage error for {symbol}: {e}", exc_info=True)
-            return None
+            return {"success": False, "error": str(e)}
 
     async def close_all_positions_by_market(self) -> Tuple[int, int]:
         """Closes all open linear positions by market order."""
