@@ -1075,6 +1075,10 @@ class DynamicTrailingStopManager:
         """
         symbol = position_data.get('symbol')
         position_idx = int(position_data.get('position_idx', 0))
+        size = safe_float(position_data.get('size', 0))
+        if size <= 0:
+            logger.info(f"TS_SKIP: size=0 for {symbol}, skip trailing-stop")
+            return
 
         try:
             # 1. Debounce check
@@ -1113,20 +1117,21 @@ class DynamicTrailingStopManager:
             filters = await self.main_client.get_symbol_filters(symbol, category="linear")
             tick_size = float(filters.get("tick_size", 0.01))
 
-            # Calculate new trailing stop distance
-            ts_pct = self.cfg.get('activation_pct', 0.015)
-            new_ts_dist = self._round_to_tick(ref_price * ts_pct, tick_size)
+            # v5 (linear): trailingStop = callback percent (string), activePrice = trigger price (tick-quantized)
+            callback_frac = float(self.cfg.get('step_pct', 0.002))
+            callback_frac = max(callback_frac, 0.0001)
+            new_ts_pct = callback_frac * 100.0
+            new_ts_pct_str = f"{new_ts_pct:.3f}".rstrip('0').rstrip('.')
 
-            # Calculate new activation price
-            activation_pct = self.cfg.get('activation_pct', 0.015)
-            price_change_for_activation = ref_price * activation_pct
+            activation_frac = float(self.cfg.get('activation_pct', 0.015))
+            base = float(current_pos.get('markPrice', entry_price)) or entry_price
             if side == 'Buy':
-                new_active_price = self._round_to_tick(entry_price + price_change_for_activation, tick_size)
-            else: # Sell
-                new_active_price = self._round_to_tick(entry_price - price_change_for_activation, tick_size)
+                new_active_price = self._round_to_tick(base * (1.0 + activation_frac), tick_size)
+            else:
+                new_active_price = self._round_to_tick(base * (1.0 - activation_frac), tick_size)
 
             # 4. Compare with existing values (with tolerance)
-            is_ts_same = abs(new_ts_dist - current_ts) < (tick_size / 2)
+            is_ts_same = abs((current_ts or 0.0) - new_ts_pct) < 1e-3
             is_active_price_same = abs(new_active_price - current_active_price) < (tick_size / 2)
 
             # If active price is not set yet, we should not consider it "the same"
@@ -1142,8 +1147,8 @@ class DynamicTrailingStopManager:
             # 5. Set the trailing stop if values differ
             await self.order_manager.place_trailing_stop(
                 symbol=symbol,
-                trailing_stop_price=str(new_ts_dist),
-                active_price=str(new_active_price) if not is_active_price_same else "", # Only send activePrice if not set
+                trailing_stop_price=new_ts_pct_str,
+                active_price=(f"{new_active_price:.12f}" if not is_active_price_same else ""),
                 position_idx=position_idx
             )
 
@@ -1163,16 +1168,18 @@ class DynamicTrailingStopManager:
         await self.create_or_update_trailing_stop(position, ref_price_type='mark') # Or entry, based on config
 
     async def remove_trailing_stop(self, position: Dict[str, Any]):
-        """Adapter to remove a trailing stop by setting it to an empty string."""
+        """Adapter to remove a trailing stop: skip API if position size == 0."""
         symbol = position.get('symbol')
         position_idx = int(position.get('position_idx', 0))
         logger.info(f"TS_ADAPTER(remove): Triggered for {symbol}")
         try:
-            await self.order_manager.place_trailing_stop(
-                symbol=symbol,
-                trailing_stop_price="", # Sending empty string resets the TS
-                position_idx=position_idx
-            )
+            positions = await self.main_client.get_positions(category="linear", symbol=symbol)
+            pos = next((p for p in positions if int(p.get('positionIdx', -1)) == position_idx), None)
+            size_now = safe_float(pos.get('size', 0.0)) if pos else 0.0
+            if size_now <= 0:
+                logger.info(f"TS_RESET_SKIP: {symbol} size=0, skip trading-stop reset")
+                return
+            await self.order_manager.place_trailing_stop(symbol=symbol, trailing_stop_price="", position_idx=position_idx)
             logger.info(f"TS_RESET_OK: symbol={symbol}")
         except Exception as e:
             logger.error(f"TS_ADAPTER_FAIL(remove): Failed for {symbol}", exc_info=True)
