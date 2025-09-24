@@ -297,3 +297,39 @@
 2025-09-24 07:15:29,825 [    INFO] bybit_trading_system:944 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
 2025-09-24 07:15:29,826 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
 2025-09-24 07:15:29,827 [    INFO] bybit_trading_system:2863 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-24 08:08:12,602 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-24 08:08:12,625 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-24 08:08:12,632 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-24 08:08:12,639 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-24 08:08:12,645 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-24 08:09:16,910 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-24 08:09:16,927 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-24 08:09:16,929 [    INFO] bybit_trading_system:1166 - TS_ADAPTER(remove): Triggered for DOGEUSDT
+2025-09-24 08:09:16,929 [    INFO] bybit_trading_system:1173 - TS_RESET_OK: symbol=DOGEUSDT
+2025-09-24 08:09:16,929 [    INFO] bybit_trading_system:1166 - TS_ADAPTER(remove): Triggered for DOGEUSDT
+2025-09-24 08:09:16,930 [    INFO] bybit_trading_system:1173 - TS_RESET_OK: symbol=DOGEUSDT
+2025-09-24 08:09:16,933 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-24 08:09:17,083 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-24 08:09:17,085 [    INFO] bybit_trading_system:1134 - TS_SKIP_IDEMPOTENT: Trailing stop for DOGEUSDT is already set correctly. Current: ts=0.00301, active=0.14139. New: ts=0.003, active=0.1414.
+2025-09-24 08:09:17,088 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-24 08:09:17,089 [    INFO] bybit_trading_system:1134 - TS_SKIP_IDEMPOTENT: Trailing stop for DOGEUSDT is already set correctly. Current: ts=0.001, active=0.13. New: ts=0.0, active=0.14.
+2025-09-24 08:10:47,117 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-24 08:10:47,134 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.05, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-24 08:10:47,135 [    INFO] bybit_trading_system:1169 - TS_ADAPTER(remove): Triggered for DOGEUSDT
+2025-09-24 08:10:47,135 [    INFO] bybit_trading_system:1176 - TS_RESET_OK: symbol=DOGEUSDT
+2025-09-24 08:10:47,136 [    INFO] bybit_trading_system:1169 - TS_ADAPTER(remove): Triggered for DOGEUSDT
+2025-09-24 08:10:47,136 [    INFO] bybit_trading_system:1176 - TS_RESET_OK: symbol=DOGEUSDT
+2025-09-24 08:10:47,140 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.05, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-24 08:10:47,290 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.05, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-24 08:10:47,292 [    INFO] bybit_trading_system:1137 - TS_SKIP_IDEMPOTENT: Trailing stop for DOGEUSDT is already set correctly. Current: ts=0.00301, active=0.14139. New: ts=0.003, active=0.1414.
+2025-09-24 08:10:47,296 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.05, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-24 08:11:46,673 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-24 08:11:46,690 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.05, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-24 08:11:46,692 [    INFO] bybit_trading_system:1169 - TS_ADAPTER(remove): Triggered for DOGEUSDT
+2025-09-24 08:11:46,692 [    INFO] bybit_trading_system:1176 - TS_RESET_OK: symbol=DOGEUSDT
+2025-09-24 08:11:46,692 [    INFO] bybit_trading_system:1169 - TS_ADAPTER(remove): Triggered for DOGEUSDT
+2025-09-24 08:11:46,692 [    INFO] bybit_trading_system:1176 - TS_RESET_OK: symbol=DOGEUSDT
+2025-09-24 08:11:46,696 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.05, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-24 08:11:46,701 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.05, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-24 08:11:46,702 [    INFO] bybit_trading_system:1137 - TS_SKIP_IDEMPOTENT: Trailing stop for DOGEUSDT is already set correctly. Current: ts=0.00301, active=0.14139. New: ts=0.003, active=0.1414.
+2025-09-24 08:11:46,706 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.05, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}

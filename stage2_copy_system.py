@@ -940,6 +940,7 @@ class DynamicTrailingStopManager:
         # 3. Rebind legacy attributes to ensure they exist
         self._rebind_legacy_attrs()
         self._stops_cache = []  # list[dict]: локальный кэш открытых стоп/трейлинг ордеров
+        self._ts_update_timestamps = {} # For debounce mechanism
 
         logger.info(f"DynamicTrailingStopManager initialized with config: {self.cfg}")
 
@@ -1061,50 +1062,89 @@ class DynamicTrailingStopManager:
         })
         return snap
 
+    def _round_to_tick(self, value: float, tick_size: float) -> float:
+        """Rounds a value to the nearest tick size."""
+        if tick_size <= 0:
+            return value
+        return round(value / tick_size) * tick_size
+
     async def create_or_update_trailing_stop(self, position_data: Dict[str, Any], ref_price_type: str = 'entry'):
         """
         Calculates and sets a trailing stop using the v5/position/trading-stop endpoint.
-        This method now converts a percentage to an absolute distance and rounds it.
+        This method is now idempotent, checks existing values, and includes a debounce mechanism.
         """
         symbol = position_data.get('symbol')
+        position_idx = int(position_data.get('position_idx', 0))
+
         try:
+            # 1. Debounce check
+            now = time.time()
+            last_update = self._ts_update_timestamps.get(symbol, 0)
+            if now - last_update < 2:  # 2-second debounce
+                logger.info(f"TS_DEBOUNCE: Skipping update for {symbol}, last update was {now - last_update:.1f}s ago.")
+                return
+            self._ts_update_timestamps[symbol] = now
+
             if not self.cfg.get('enabled'):
                 logger.info(f"TS_SKIP: Trailing stops are disabled globally for {symbol}.")
                 return
 
-            entry_price = float(position_data.get('entry_price', 0))
-            position_value = float(position_data.get('quantity', 0)) * entry_price
+            entry_price = float(position_data.get('entryPrice', 0)) # Corrected key
+            position_value = float(position_data.get('size', 0)) * entry_price
             if position_value < self.cfg.get('min_notional_for_ts', 0):
                 logger.info(f"TS_SKIP: Position value ${position_value:.2f} for {symbol} is below threshold.")
                 return
 
-            # Determine reference price for calculation (entry or mark)
-            # For simplicity in this refactoring, we'll stick to entry_price passed in.
-            ref_price = entry_price
+            # 2. Fetch current position state from Bybit
+            positions = await self.main_client.get_positions(category="linear", symbol=symbol)
+            current_pos = next((p for p in positions if int(p.get('positionIdx', -1)) == position_idx), None)
 
-            # Calculate distance from percentage
-            activation_pct = self.cfg.get('activation_pct', 0.015)
-            distance_value = ref_price * activation_pct
+            if not current_pos:
+                logger.warning(f"TS_WARN: Could not find current position for {symbol} to compare.")
+                return
 
-            # Round distance to the symbol's tickSize
+            current_ts = safe_float(current_pos.get('trailingStop', 0.0))
+            current_active_price = safe_float(current_pos.get('activePrice', 0.0))
+
+            # 3. Calculate new TS values
+            side = position_data.get('side', 'Buy')
+            ref_price = float(current_pos.get('markPrice', entry_price)) # Prefer mark price for stability
+
             filters = await self.main_client.get_symbol_filters(symbol, category="linear")
             tick_size = float(filters.get("tick_size", 0.01))
 
-            if tick_size > 0:
-                rounded_distance = round(distance_value / tick_size) * tick_size
-                decimals = 0
-                if tick_size < 1:
-                    s = f"{tick_size:.12f}".rstrip('0')
-                    decimals = len(s.split('.')[-1]) if '.' in s else 0
-                distance_str = f"{rounded_distance:.{decimals}f}"
-            else:
-                distance_str = f"{distance_value:.4f}" # Fallback
+            # Calculate new trailing stop distance
+            ts_pct = self.cfg.get('activation_pct', 0.015)
+            new_ts_dist = self._round_to_tick(ref_price * ts_pct, tick_size)
 
-            # Set the trailing stop
+            # Calculate new activation price
+            activation_pct = self.cfg.get('activation_pct', 0.015)
+            price_change_for_activation = ref_price * activation_pct
+            if side == 'Buy':
+                new_active_price = self._round_to_tick(entry_price + price_change_for_activation, tick_size)
+            else: # Sell
+                new_active_price = self._round_to_tick(entry_price - price_change_for_activation, tick_size)
+
+            # 4. Compare with existing values (with tolerance)
+            is_ts_same = abs(new_ts_dist - current_ts) < (tick_size / 2)
+            is_active_price_same = abs(new_active_price - current_active_price) < (tick_size / 2)
+
+            # If active price is not set yet, we should not consider it "the same"
+            if current_active_price == 0 and new_active_price > 0:
+                is_active_price_same = False
+
+            if is_ts_same and is_active_price_same:
+                logger.info(f"TS_SKIP_IDEMPOTENT: Trailing stop for {symbol} is already set correctly. "
+                            f"Current: ts={current_ts}, active={current_active_price}. "
+                            f"New: ts={new_ts_dist}, active={new_active_price}.")
+                return
+
+            # 5. Set the trailing stop if values differ
             await self.order_manager.place_trailing_stop(
                 symbol=symbol,
-                trailing_stop_price=distance_str,
-                position_idx=int(position_data.get('position_idx', 0))
+                trailing_stop_price=str(new_ts_dist),
+                active_price=str(new_active_price) if not is_active_price_same else "", # Only send activePrice if not set
+                position_idx=position_idx
             )
 
         except Exception as e:
@@ -1619,35 +1659,56 @@ class AdaptiveOrderManager:
             self.logger.exception(f"Aggressive limit order error: {e}")
             return {"success": False, "error": str(e)}
 
-    async def place_trailing_stop(self, symbol: str, trailing_stop_price: str, position_idx: int = 0) -> Dict[str, Any]:
-        """Sets a trailing stop for a position using the v5/position/trading-stop endpoint."""
+    async def place_trailing_stop(self, symbol: str, trailing_stop_price: str, active_price: str = "", position_idx: int = 0) -> Dict[str, Any]:
+        """
+        Sets or resets a trailing stop for a position using the v5/position/trading-stop endpoint.
+        Handles the specific payload requirements for resetting stops to avoid 10001 errors.
+        """
         try:
             link_id = f"ts:{symbol}:{int(time.time()*1000)}"
-
             data = {
                 "category": "linear",
                 "symbol": symbol,
-                "trailingStop": trailing_stop_price,
                 "positionIdx": position_idx,
-                "orderLinkId": link_id,
             }
 
-            self.logger.info(f"TS_APPLY_START: symbol={symbol} trailingStop='{trailing_stop_price}' positionIdx={position_idx}")
+            # If trailing_stop_price is an empty string, it's a reset request.
+            # Bybit requires at least one of takeProfit, stopLoss, or trailingStop.
+            if trailing_stop_price == "":
+                self.logger.info(f"TS_RESET_START: symbol={symbol}, positionIdx={position_idx}")
+                data.update({
+                    "takeProfit": "",
+                    "stopLoss": "",
+                    "trailingStop": ""
+                })
+            else:
+                self.logger.info(f"TS_APPLY_START: symbol={symbol}, trailingStop='{trailing_stop_price}', activePrice='{active_price}', positionIdx={position_idx}")
+                data["trailingStop"] = trailing_stop_price
+                if active_price:
+                    data["activePrice"] = active_price
 
             # Use _make_single_request to avoid retries on user error like 10001
+            # Log the sanitized payload for debugging
+            self.logger.debug(f"TS Payload for {symbol}: {json.dumps(data)}")
             result = await self.main_client._make_single_request("POST", "position/trading-stop", data=data)
 
             ret_code = (result or {}).get("retCode")
             ret_msg = (result or {}).get("retMsg", "Unknown error")
 
             if ret_code == 0:
-                self.logger.info(f"TS_APPLY_OK: symbol={symbol} trailingStop='{trailing_stop_price}'")
+                self.logger.info(f"TS_APPLY_OK: symbol={symbol}, trailingStop='{trailing_stop_price}'")
                 return {"success": True, "result": result}
 
-            # Handle specific non-retriable errors
+            # Handle specific non-retriable errors like invalid parameters
             if ret_code == 10001:
-                self.logger.error(f"TS_APPLY_FAIL: Invalid parameters for {symbol}. code={ret_code}, msg='{ret_msg}'")
+                self.logger.error(f"TS_APPLY_FAIL: Invalid parameters for {symbol}. code={ret_code}, msg='{ret_msg}', payload={json.dumps(data)}")
                 return {"success": False, "error": ret_msg, "no_retry": True}
+
+            # Not modified is not an error, just info.
+            if ret_code == 34040:
+                self.logger.info(f"TS_APPLY_INFO: Not modified for {symbol}. code={ret_code}, msg='{ret_msg}'")
+                return {"success": True, "already_set": True, "result": result}
+
 
             # For other errors, let the caller decide on retries if necessary
             self.logger.error(f"Trailing stop placement failed for {symbol}: {ret_msg} (retCode: {ret_code})")

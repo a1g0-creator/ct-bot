@@ -1175,6 +1175,13 @@ class IntegratedTradingSystem:
                 self._refresh_bot_refs()
             logger.info("Telegram bot references refreshed (after Stage1/Stage2 reinit)")
 
+            # Pass the copy_state object from stage2 to stage1
+            if self.stage1_monitor and self.stage2_system and hasattr(self.stage1_monitor, 'set_copy_state_ref'):
+                state_ref = getattr(self.stage2_system, 'copy_state', None)
+                if state_ref:
+                    self.stage1_monitor.set_copy_state_ref(state_ref)
+                    logger.info("✅ Propagated copy_state from Stage2 to Stage1.")
+
             # 6) Загружаем и применяем ключи
             if not await self._load_and_apply_credentials():
                 raise RuntimeError("Failed to load/apply credentials to systems")

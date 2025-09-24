@@ -2463,11 +2463,12 @@ class AWSTimeSyncPro:
 class EnhancedBybitClient:
     """Улучшенный клиент Bybit API с промышленной обработкой ошибок"""
     
-    def __init__(self, api_key: str, api_secret: str, api_url: str, name: str = "client"):
+    def __init__(self, api_key: str, api_secret: str, api_url: str, name: str = "client", copy_state=None):
         self.api_key = api_key
         self.api_secret = api_secret
         self.api_url = api_url
         self.name = name
+        self.copy_state = copy_state
         
         # Системы управления
         self.rate_limiter = AdvancedRateLimiterPro(
@@ -2693,21 +2694,27 @@ class EnhancedBybitClient:
                     logger.debug(f"{self.name} - Request successful: {endpoint}")
                     result = response_data
                     self.request_stats['successful_requests'] += 1
+                    if self.copy_state and self.name == "MAIN": self.copy_state.main_rest_ok = True
                     return result
                 else:
                     # Специальная обработка критических ошибок
                     if ret_code == 10003:  # Invalid signature
                         logger.critical(f"{self.name} - Invalid signature error!")
+                        if self.copy_state and self.name == "MAIN": self.copy_state.main_rest_ok = False
                         raise Exception(f"Signature error: {ret_msg}")
                     elif ret_code == 10006:  # Rate limit exceeded
                         logger.warning(f"{self.name} - Rate limit exceeded")
+                        if self.copy_state and self.name == "MAIN": self.copy_state.main_rest_ok = False
                         raise Exception(f"Rate limit: {ret_msg}")
                     else:
+                        if self.copy_state and self.name == "MAIN": self.copy_state.main_rest_ok = False
                         raise Exception(f"API error {ret_code}: {ret_msg}")
             else:
+                if self.copy_state and self.name == "MAIN": self.copy_state.main_rest_ok = False
                 raise Exception(f"HTTP {response.status}: {response_data}")
 
         except Exception as e:
+            if self.copy_state and self.name == "MAIN": self.copy_state.main_rest_ok = False
             self.request_stats['failed_requests'] += 1
             self.request_stats['last_error'] = str(e)
             # Логируем ошибку с максимальной информацией
@@ -3309,10 +3316,11 @@ class FinalFixedWebSocketManager:
     - ✅ Полная совместимость с websockets 15.0.1
     """
     
-    def __init__(self, api_key: str, api_secret: str, name: str = "websocket"):
+    def __init__(self, api_key: str, api_secret: str, name: str = "websocket", copy_state=None):
         self.api_key = api_key
         self.api_secret = api_secret
         self.name = name
+        self.copy_state = copy_state
         
         # Состояние WebSocket
         self.ws = None
@@ -3466,15 +3474,19 @@ class FinalFixedWebSocketManager:
                 
                 if is_authenticated:
                     self.status = ConnectionStatus.AUTHENTICATED
+                    if self.copy_state: self.copy_state.source_ws_ok = True
                     masked_key = f"{self.api_key[:6]}...{self.api_key[-4:]}" if self.api_key else "N/A"
                     logger.info(f"{self.name} - ✅ WebSocket authenticated successfully for key {masked_key} (account_id={DONOR_ACCOUNT_ID})")
                 else:
+                    if self.copy_state: self.copy_state.source_ws_ok = False
                     raise Exception(f"Authentication failed: {auth_response}")
                     
             except asyncio.TimeoutError:
+                if self.copy_state: self.copy_state.source_ws_ok = False
                 raise Exception("Authentication timeout after 10 seconds")
                 
         except Exception as e:
+            if self.copy_state: self.copy_state.source_ws_ok = False
             logger.error(f"{self.name} - Authentication error: {e}")
             await send_telegram_alert(f"WebSocket authentication failed for {self.name}: {e}")
             raise
@@ -5235,17 +5247,20 @@ class FinalTradingMonitor:
     
     def __init__(self):
         # Инициализация компонентов
+        # State object for cross-component status
+        self.copy_state = None
+
         self.source_client = EnhancedBybitClient(
-            SOURCE_API_KEY, SOURCE_API_SECRET, SOURCE_API_URL, "SOURCE"
+            SOURCE_API_KEY, SOURCE_API_SECRET, SOURCE_API_URL, "SOURCE", copy_state=self.copy_state
         )
         
         self.main_client = EnhancedBybitClient(
-            MAIN_API_KEY, MAIN_API_SECRET, MAIN_API_URL, "MAIN"
+            MAIN_API_KEY, MAIN_API_SECRET, MAIN_API_URL, "MAIN", copy_state=self.copy_state
         )
         
         # ✅ ИСПРАВЛЕНО: Используем окончательно исправленный WebSocket менеджер
         self.websocket_manager = FinalFixedWebSocketManager(
-            SOURCE_API_KEY, SOURCE_API_SECRET, "SOURCE_WS"
+            SOURCE_API_KEY, SOURCE_API_SECRET, "SOURCE_WS", copy_state=self.copy_state
         )
         
         self.signal_processor = ProductionSignalProcessor(account_id=DONOR_ACCOUNT_ID)
@@ -5270,6 +5285,18 @@ class FinalTradingMonitor:
         self._system_active = False           # главный флаг "жить" для _run_main_loop()
         # === /NEW ===
         
+    def set_copy_state_ref(self, state_obj):
+        """Sets the reference to the shared copy_state object."""
+        self.copy_state = state_obj
+        # Propagate the reference to child components
+        if hasattr(self, 'main_client'):
+            self.main_client.copy_state = state_obj
+        if hasattr(self, 'source_client'):
+            self.source_client.copy_state = state_obj
+        if hasattr(self, 'websocket_manager'):
+            self.websocket_manager.copy_state = state_obj
+        logger.info("Shared copy_state reference has been set in FinalTradingMonitor and its children.")
+
         # Регистрируем обработчики WebSocket событий
         self._register_websocket_handlers()
         

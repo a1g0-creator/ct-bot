@@ -3374,13 +3374,9 @@ async def set_trailing_command(self, update: Update, context: ContextTypes.DEFAU
             msg = await update.message.reply_text("🔄 Собираю полную сводку по системе...")
 
             # 1. System Status & Uptime
-            system_active = getattr(self.copy_system, 'active', False)
-            copy_enabled = getattr(self.copy_system, 'copy_enabled', False)
-            start_time = getattr(self.copy_system, 'start_time', time.time())
+            start_time = self.copy_system.system_stats.get('start_time', time.time())
             uptime_seconds = time.time() - start_time
             uptime_str = str(timedelta(seconds=int(uptime_seconds)))
-            scale_factor = getattr(self.copy_system.copy_manager, 'position_scaling', 1.0) if hasattr(self.copy_system, 'copy_manager') else 'N/A'
-
 
             # 2. Balances
             source_summary = await self.get_account_summary(self.copy_system.base_monitor.source_client)
@@ -3388,44 +3384,30 @@ async def set_trailing_command(self, update: Update, context: ContextTypes.DEFAU
 
             # 3. WS Diagnostics
             ws_manager = self.copy_system.base_monitor.websocket_manager
+            ws_status = ws_manager.get_stats().get('status', 'UNKNOWN')
             ws_diag_info = (
-                f"Connected: {'✅' if ws_manager.ws and not ws_manager.closed else '❌'}\n"
-                f"   Authenticated: {'✅' if ws_manager.status == ConnectionStatus.AUTHENTICATED else '❌'}\n"
-                f"   Messages (R/P): {ws_manager.stats.get('messages_received', 0)}/{ws_manager.stats.get('messages_processed', 0)}"
+                f"  Status: {ws_status}\n"
+                f"  Authenticated: {'✅' if ws_status == 'authenticated' else '❌'}\n"
+                f"  Messages (R/P): {ws_manager.stats.get('messages_received', 0)}/{ws_manager.stats.get('messages_processed', 0)}"
             )
 
-            # 4. Reconciliation Status
-            last_reconcile = getattr(self.copy_system.base_monitor, 'last_reconciliation_time', 0)
-            reconcile_ago = "Никогда"
-            if last_reconcile:
-                reconcile_ago_secs = time.time() - last_reconcile
-                reconcile_ago = f"{int(reconcile_ago_secs)}с назад"
-
-            # 5. Risk Status
-            risk_info = "Недоступно"
-            if hasattr(self.copy_system, 'drawdown_controller'):
-                controller = self.copy_system.drawdown_controller
-                risk_stats = controller.get_risk_stats() if hasattr(controller, 'get_risk_stats') else {}
-                current_dd = risk_stats.get("current_drawdown", 0) * 100
-                risk_info = f"Просадка: {current_dd:.2f}%"
-
-            # 6. Assemble message
+            # 4. Copy State ("Single Source of Truth")
             copy_state = self.copy_system.copy_state
             state_details = (
                 f"  Copy Ready: {'✅' if copy_state.ready else '❌'}\n"
-                f"     - REST API OK: {'✅' if copy_state.main_rest_ok else '❌'}\n"
+                f"     - Main REST OK: {'✅' if copy_state.main_rest_ok else '❌'}\n"
                 f"     - Source WS OK: {'✅' if copy_state.source_ws_ok else '❌'}\n"
-                f"     - Keys Loaded: {'✅' if copy_state.keys_loaded else '❌'}\n"
-                f"     - Limits Checked: {'✅' if copy_state.limits_checked else '❌'}"
+                f"     - Keys Loaded: {'✅' if copy_state.keys_loaded else '❌'}"
             )
             if copy_state.last_error:
                 state_details += f"\n     - Last Error: `{copy_state.last_error}`"
+
 
             report = (
                 f"📊 *ПОЛНЫЙ СТАТУС СИСТЕМЫ*\n"
                 f"_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_\n"
                 "━━━━━━━━━━━━━━━━━━\n"
-                f"*Состояние:*\n"
+                f"*Состояние Копирования:*\n"
                 f"{state_details}\n"
                 f"  Uptime: {uptime_str}\n\n"
                 f"*Финансы (Донор / Основной):*\n"
@@ -3433,14 +3415,10 @@ async def set_trailing_command(self, update: Update, context: ContextTypes.DEFAU
                 f"  P&L: `${source_summary['total_unrealized_pnl']:+.2f}` / `${main_summary['total_unrealized_pnl']:+.2f}`\n\n"
 
                 f"*Позиции (Донор / Основной):*\n"
-                f"  Кол-во: {source_summary['positions_count']} / {main_summary['positions_count']}\n"
-                f"  Сверка: {reconcile_ago}\n\n"
+                f"  Кол-во: {source_summary['positions_count']} / {main_summary['positions_count']}\n\n"
 
                 f"*Подключения:*\n"
-                f"  {ws_diag_info}\n\n"
-
-                f"*Риски:*\n"
-                f"  {risk_info}\n"
+                f"{ws_diag_info}\n"
             )
 
             await msg.edit_text(report, parse_mode=ParseMode.MARKDOWN)
