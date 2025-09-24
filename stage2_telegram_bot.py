@@ -3410,24 +3410,16 @@ async def set_trailing_command(self, update: Update, context: ContextTypes.DEFAU
                 risk_info = f"Просадка: {current_dd:.2f}%"
 
             # 6. Assemble message
-            copy_state = self.copy_system.copy_state
-            state_details = (
-                f"  Copy Ready: {'✅' if copy_state.ready else '❌'}\n"
-                f"     - REST API OK: {'✅' if copy_state.main_rest_ok else '❌'}\n"
-                f"     - Source WS OK: {'✅' if copy_state.source_ws_ok else '❌'}\n"
-                f"     - Keys Loaded: {'✅' if copy_state.keys_loaded else '❌'}\n"
-                f"     - Limits Checked: {'✅' if copy_state.limits_checked else '❌'}"
-            )
-            if copy_state.last_error:
-                state_details += f"\n     - Last Error: `{copy_state.last_error}`"
-
             report = (
                 f"📊 *ПОЛНЫЙ СТАТУС СИСТЕМЫ*\n"
                 f"_{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}_\n"
                 "━━━━━━━━━━━━━━━━━━\n"
                 f"*Состояние:*\n"
-                f"{state_details}\n"
-                f"  Uptime: {uptime_str}\n\n"
+                f"  Система: {'🟢 Активна' if system_active else '🔴 Стоп'}\n"
+                f"  Копирование: {'✅ Включено' if copy_enabled else '❌ Выключено'}\n"
+                f"  Множитель: `{scale_factor}`\n"
+                f"  Время работы: {uptime_str}\n\n"
+
                 f"*Финансы (Донор / Основной):*\n"
                 f"  Баланс: `${source_summary['balance']:.2f}` / `${main_summary['balance']:.2f}`\n"
                 f"  P&L: `${source_summary['total_unrealized_pnl']:+.2f}` / `${main_summary['total_unrealized_pnl']:+.2f}`\n\n"
