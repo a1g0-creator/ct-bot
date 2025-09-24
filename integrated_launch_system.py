@@ -2070,15 +2070,8 @@ class IntegratedTradingSystem:
                             logger.info("%s restarted", name)
                             continue
 
-                        if name == "Stage1_PositionsReconcile" and ws is not None:
-                            if os.getenv("RECONCILE_ENABLE", "1") == "1":
-                                reconcile_coro = getattr(ws, "reconcile_positions_from_rest", None)
-                                if callable(reconcile_coro):
-                                    nt = asyncio.create_task(reconcile_coro(), name=name)
-                                    self.active_tasks.add(nt)
-                                    logger.info("%s restarted", name)
-                                    continue
-                            logger.info("Reconcile disabled; skip restart for Stage1_PositionsReconcile")
+                        if name == "Stage1_PositionsReconcile":
+                            logger.info("Task %s completed and will not be restarted.", name)
                             continue
 
                         # Иначе — отдаём на общий хук (если есть)
