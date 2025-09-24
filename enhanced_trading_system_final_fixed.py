@@ -4007,6 +4007,8 @@ class FinalFixedWebSocketManager:
                         asyncio.create_task(_run(handler, position_item))
             else:
                 logger.debug(f"[{self.name}] No handler for position topic.")
+        except Exception as e:
+            logger.error("%s - Position update handling error: %s", getattr(self, 'name', 'WS'), e, exc_info=True)
 
     async def reconcile_positions_from_rest(self):
         """Compatibility method for integrated_launch_system"""
@@ -4017,9 +4019,6 @@ class FinalFixedWebSocketManager:
                 logger.debug("reconcile_positions_from_rest: no monitor attached")
         except Exception as e:
             logger.error(f"reconcile_positions_from_rest error: {e}", exc_info=True)
-
-        except Exception as e:
-            logger.error("%s - Position update handling error: %s", getattr(self, 'name', 'WS'), e, exc_info=True)
 
 
     async def _generate_copy_signal(self, position_data: dict, event_type: str, prev_qty: float = 0):
