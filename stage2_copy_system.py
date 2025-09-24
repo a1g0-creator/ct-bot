@@ -121,45 +121,61 @@ RISK_CONFIG = {
 
 async def format_quantity_for_symbol_live(bybit_client, symbol: str, quantity: float, price: float = None) -> str:
     """
-    Форматирование количества на основе реальных биржевых фильтров Bybit.
-    - Если не дотягиваем до минимальной стоимости (min_notional) — поднимаем количество ВВЕРХ.
-    - Во всех остальных случаях округляем ВНИЗ к шагу, чтобы не завышать риск.
+    Formats quantity based on Bybit's live exchange filters.
+    - If the quantity is below the effective minimum (considering min_qty and min_notional), it's bumped UP.
+    - Otherwise, it's rounded DOWN to the nearest quantity step to avoid increasing risk.
     """
     try:
         filters = await bybit_client.get_symbol_filters(symbol, category="linear")
-        # Фоллбеки на случай, если биржа не вернула значения
-        qty_step     = float(filters.get("qty_step") or 0.001)
-        min_qty      = float(filters.get("min_qty") or 0.001)
-        min_notional = float(filters.get("min_notional") or 10.0)
+        qty_step = float(filters.get("qty_step") or 0.001)
+        min_qty = float(filters.get("min_qty") or 0.001)
+        min_notional = float(filters.get("min_notional") or 5.0)
 
+        if qty_step <= 0: # Avoid division by zero
+            return str(quantity)
+
+        # Determine the number of decimal places from the qty_step
         decimals = 0
-        # оценим количество знаков после запятой по шагу
         if qty_step < 1:
             s = f"{qty_step:.12f}".rstrip('0')
             decimals = len(s.split('.')[-1]) if '.' in s else 0
 
-        need_bump_to_min = False
-        if price and price > 0:
-            min_qty_by_value = float(min_notional) / float(price)
-            effective_min    = max(min_qty, min_qty_by_value)
-            if quantity < effective_min:
-                quantity = effective_min
-                need_bump_to_min = True
+        # Calculate the effective minimum quantity
+        notional_min_qty = 0.0
+        effective_min_qty = min_qty
+        if price and price > 0 and min_notional > 0:
+            notional_min_qty = (min_notional / price)
+            # This is the required formula: ceil(min_notional/price/step)*step
+            min_qty_from_notional = math.ceil(notional_min_qty / qty_step) * qty_step
+            effective_min_qty = max(min_qty, min_qty_from_notional)
 
-        steps = quantity / qty_step
-        rounded_qty = (math.ceil(steps) * qty_step) if need_bump_to_min else (math.floor(steps) * qty_step)
-        if rounded_qty < min_qty:
-            rounded_qty = min_qty
+        # Decide on the final quantity
+        if quantity < effective_min_qty:
+            final_qty = effective_min_qty
+        else:
+            # Round down to the nearest step
+            steps = quantity / qty_step
+            final_qty = math.floor(steps) * qty_step
 
-        formatted = f"{rounded_qty:.{decimals}f}".rstrip('0').rstrip('.')
+        # Final check to ensure we don't fall below the absolute min_qty after rounding down
+        if final_qty < min_qty:
+             final_qty = min_qty
+
+        formatted_qty = f"{final_qty:.{decimals}f}"
+        if '.' in formatted_qty:
+            formatted_qty = formatted_qty.rstrip('0').rstrip('.')
+
+        # New logging
         logger.info(
-            f"[live-format] {symbol}: qty_in={quantity:.8f} step={qty_step} "
-            f"min_qty={min_qty} min_notional={min_notional} → qty_out={formatted}"
+            f"[live-format] {symbol}: qty_in={quantity:.8f}, price=${price or 0:.4f}, step={qty_step}, "
+            f"rule_min_qty={min_qty}, min_notional={min_notional}, notional_min_qty={notional_min_qty:.8f}, "
+            f"effective_min_qty={effective_min_qty:.8f} -> final_qty={formatted_qty}"
         )
-        return formatted or "0"
+        return formatted_qty or "0"
+
     except Exception as e:
-        logger.warning(f"format_quantity_for_symbol_live fallback due to: {e}")
-        # Фоллбек: используем прежнюю статическую функцию, чтобы не падать
+        logger.warning(f"format_quantity_for_symbol_live fallback due to: {e}", exc_info=True)
+        # Fallback to the old static function to prevent crashes
         return format_quantity_for_symbol(symbol, quantity, price)
 
 
@@ -1431,6 +1447,18 @@ class AdaptiveOrderManager:
                     "price": current_price
                 }
 
+            # Handle specific error for min notional value
+            ret_code = (result or {}).get("retCode")
+            if ret_code == 110094: # Order does not meet minimum order value
+                err_msg = (result or {}).get("retMsg", "Min notional error")
+                self.logger.warning(
+                    f"NO-OP: Market order for {copy_order.target_symbol} failed with 110094 ({err_msg}). "
+                    f"This will not be retried. Qty: {formatted_qty}, Value: ${order_value:.2f}"
+                )
+                # Return success=False but with a specific error type to prevent retries by the caller
+                return {"success": False, "error": err_msg, "no_retry": True}
+
+
             err = (result or {}).get("retMsg") or "No response"
             self.logger.error(f"Market order failed: {err}")
             if "Qty invalid" in err:
@@ -1886,7 +1914,8 @@ class PositionCopyManager:
             self._processed_link_ids.add(link_id)
 
             # Инкременты — здесь и только здесь
-            self.system_stats['successful_copies'] = self.system_stats.get('successful_copies', 0) + 1
+            if hasattr(self, 'system_stats') and self.system_stats is not None:
+                self.system_stats['successful_copies'] = self.system_stats.get('successful_copies', 0) + 1
             if hasattr(self, 'copy_stats'):
                 self.copy_stats['positions_copied'] = self.copy_stats.get('positions_copied', 0) + 1
             return True
@@ -1970,6 +1999,8 @@ class PositionCopyManager:
                 # 3) Позиционный трекинг
                 if copy_order.source_signal.signal_type == SignalType.POSITION_OPEN:
                     await self._setup_position_tracking(copy_order, result)
+                elif copy_order.source_signal.signal_type == SignalType.POSITION_MODIFY:
+                    await self._handle_position_modify(copy_order, result)
                 elif copy_order.source_signal.signal_type == SignalType.POSITION_CLOSE:
                     await self._cleanup_position_tracking(copy_order)
 
@@ -2015,7 +2046,7 @@ class PositionCopyManager:
                 self._update_copy_stats(False, sync_delay, copy_order)
 
                 # Повторные попытки
-                if copy_order.retry_count < COPY_CONFIG['order_retry_attempts']:
+                if not result.get("no_retry") and copy_order.retry_count < COPY_CONFIG['order_retry_attempts']:
                     copy_order.retry_count += 1
                     await asyncio.sleep(COPY_CONFIG['order_retry_delay'] * copy_order.retry_count)
                     await self.copy_queue.put((copy_order.priority, time.time(), copy_order))
@@ -2075,6 +2106,23 @@ class PositionCopyManager:
             
             self.active_positions[symbol] = position_data
             
+            # Log OPEN event to DB
+            api_payload = {
+                "account_id": 2, # Main account
+                "symbol": symbol,
+                "side": copy_order.target_side,
+                "qty": str(copy_order.target_quantity),
+                "position_idx": copy_order.source_signal.metadata.get('pos_idx', 0),
+                "entry_price": str(position_data['entry_price']),
+                "leverage": copy_order.source_signal.metadata.get('leverage', '10'),
+                "opened_at": position_data['open_time'] * 1000,
+                "raw_open": {
+                    "order_id": execution_result.get('order_id'),
+                    "kelly_fraction": copy_order.kelly_fraction
+                }
+            }
+            await self._log_position_event_to_db("open", api_payload)
+
             # Создаем trailing stop
             market_conditions = await self.order_manager.get_market_analysis(symbol)
             current_price = execution_result.get('avg_price', copy_order.target_price)
@@ -2361,6 +2409,72 @@ class PositionCopyManager:
             'trailing_stops_active': len(self.trailing_manager.get_all_stops())
         })
         return stats
+
+    async def _log_position_event_to_db(self, event_type: str, payload: dict):
+        """Helper to log position events to the external web API."""
+        if event_type not in ["open", "modify", "close"]:
+            logger.warning(f"Invalid DB log event type: {event_type}")
+            return
+
+        endpoint = f"http://localhost:8080/api/positions/{event_type}"
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    endpoint,
+                    json=payload,
+                    headers={"Content-Type": "application/json"},
+                    timeout=aiohttp.ClientTimeout(total=5)
+                ) as response:
+                    if response.status == 200:
+                        logger.info(f"Position {event_type} event recorded in DB for {payload.get('symbol')}")
+                    else:
+                        logger.warning(f"Failed to record {event_type} event in DB: {response.status} - {await response.text()}")
+        except Exception as e:
+            logger.warning(f"Non-critical: Failed to record position {event_type} event in DB: {e}")
+
+    async def _handle_position_modify(self, copy_order: CopyOrder, execution_result: Dict[str, Any]):
+        """Handles position modification tracking and DB logging."""
+        try:
+            symbol = copy_order.target_symbol
+            if symbol not in self.active_positions:
+                logger.warning(f"Cannot log MODIFY for untracked position: {symbol}")
+                # If position is not tracked, it might be a new open that was missed.
+                # Let's treat it as a setup.
+                await self._setup_position_tracking(copy_order, execution_result)
+                return
+
+            position = self.active_positions[symbol]
+
+            # Determine if it's an increase or decrease
+            qty_change = safe_float(copy_order.target_quantity)
+            if copy_order.target_side == 'Sell':
+                qty_change = -qty_change
+
+            new_qty = safe_float(position['quantity']) + qty_change
+
+            logger.info(f"Modifying position for {symbol}. Old qty: {position['quantity']}, Change: {qty_change}, New qty: {new_qty}")
+
+            position['quantity'] = new_qty
+            position['last_modified_price'] = execution_result.get('avg_price', copy_order.target_price)
+            position['last_modified_time'] = time.time()
+
+            # Log to DB
+            api_payload = {
+                "account_id": 2, # Main account
+                "symbol": symbol,
+                "side": copy_order.target_side,
+                "qty": str(copy_order.target_quantity),
+                "price": str(execution_result.get('avg_price', copy_order.target_price)),
+                "timestamp": time.time() * 1000,
+                "metadata": {
+                    "reason": "position_modify",
+                    "total_position_size": new_qty,
+                    "order_id": execution_result.get('order_id')
+                }
+            }
+            await self._log_position_event_to_db("modify", api_payload)
+        except Exception as e:
+            logger.error(f"Position modify handling error: {e}", exc_info=True)
 
 # ================================
 # СИСТЕМА КОНТРОЛЯ РИСКОВ
@@ -3034,6 +3148,18 @@ class Stage2CopyTradingSystem:
             current_target_size = safe_float(target_pos.get('size')) if target_pos else 0.0
             current_target_side = (target_pos.get('side') or "").strip() if target_pos else ""
 
+            # Leverage Synchronization
+            donor_leverage = item.get('leverage')
+            target_leverage = target_pos.get('leverage') if target_pos else None
+
+            if donor_leverage and donor_leverage != target_leverage:
+                logger.info(f"Leverage mismatch for {symbol}. Donor: {donor_leverage}x, Target: {target_leverage or 'N/A'}x. Syncing...")
+                await self.main_client.set_leverage(
+                    category="linear",
+                    symbol=symbol,
+                    leverage=donor_leverage
+                )
+
             # 3. CALCULATE FINAL TARGET SIZE (The core logic)
             final_target_size = 0
             kelly_fraction = 0.0
@@ -3115,85 +3241,56 @@ class Stage2CopyTradingSystem:
                 # Original delta logic for non-flip scenarios
                 size_delta = final_target_size - current_target_size
 
-                if abs(size_delta) < min_qty:
-                    logger.info(f"HYSTERESIS_SKIP: Delta {size_delta:.6f} is smaller than min_qty {min_qty} for {symbol}. No action needed.")
+                is_opening = current_target_size == 0 and final_target_size > 0
+                is_closing = final_target_size == 0 and current_target_size > 0
+
+                # Hysteresis check: skip tiny modifications, but NEVER skip a full close.
+                if not is_closing and abs(size_delta) < min_qty:
+                    logger.info(f"HYSTERESIS_SKIP: Delta {size_delta:.6f} for {symbol} is smaller than min_qty {min_qty}. No action.")
                     return
+
+                logger.info(
+                    f"POSITION_MODIFY: symbol={symbol} donor={donor_size:.4f} main={current_target_size:.4f} "
+                    f"-> target={final_target_size:.4f} | delta={size_delta:.4f}"
+                )
 
                 order_side = 'Buy' if size_delta > 0 else 'Sell'
                 order_qty = abs(size_delta)
 
-                is_opening = current_target_size == 0 and final_target_size > 0
-                is_closing = final_target_size == 0 and current_target_size > 0
                 is_modifying = not is_opening and not is_closing
-
                 reason = "ws_open" if is_opening else "ws_close" if is_closing else "ws_modify"
 
-                logger.info(f"COPY_ACTION: {reason.upper()} for {symbol} | Delta: {size_delta:.4f} | Qty: {order_qty:.4f} | Side: {order_side}")
+                logger.info(f"COPY_ACTION: {reason.upper()} for {symbol} | Qty: {order_qty:.4f} | Side: {order_side}")
+
+                # Create a synthetic signal to pass to the queue processor
+                synthetic_signal = TradingSignal(
+                    signal_type=SignalType.POSITION_OPEN if is_opening else SignalType.POSITION_CLOSE if is_closing else SignalType.POSITION_MODIFY,
+                    symbol=symbol,
+                    side=donor_side if is_opening or is_modifying else ('Sell' if current_target_side == 'Buy' else 'Buy'),
+                    size=order_qty,
+                    price=entry_price,
+                    timestamp=time.time(),
+                    metadata={'reason': reason, 'reduceOnly': size_delta < 0, 'pos_idx': pos_idx}
+                )
 
                 order = CopyOrder(
-                    source_signal=None,
+                    source_signal=synthetic_signal,
                     target_symbol=symbol,
                     target_side=order_side,
                     target_quantity=order_qty,
                     target_price=entry_price,
                     order_strategy=OrderStrategy.MARKET,
                     kelly_fraction=kelly_fraction,
-                    priority=1 if is_opening or is_closing else 0,
+                    priority=0 if is_closing else (1 if is_opening else 2), # Close highest priority
                     metadata={'reason': reason, 'reduceOnly': size_delta < 0}
                 )
 
-                order_result = await self.copy_manager.order_manager.place_adaptive_order(order)
+                # Put the order on the queue to be processed by the main loop
+                await self.copy_manager.copy_queue.put((order.priority, order.created_at, order))
 
-            # 6. POST-ORDER ACTIONS (Trailing Stops Lifecycle)
-            if order_result and order_result.get('success'):
-                ts_manager = self.copy_manager.trailing_manager
-                ts_cfg = ts_manager.cfg
-
-                if not ts_cfg.get('enabled'):
-                    logger.info(f"TS_LIFECYCLE: TS is disabled, no action for {symbol}.")
-                    return
-
-                # For modifications, the position value is based on the new total size
-                avg_price = order_result.get('price', entry_price)
-                position_value = final_target_size * avg_price
-
-                # Opening a new position
-                if is_opening:
-                    logger.info(f"TS_LIFECYCLE (OPEN): Creating TS for new {symbol} position.")
-                    await ts_manager.create_or_update_trailing_stop(symbol, donor_side, final_target_size, position_value, avg_price)
-
-                # Adding to an existing position
-                elif is_modifying and size_delta > 0:
-                    if ts_cfg.get('update_on_add'):
-                        logger.info(f"TS_LIFECYCLE (ADD): Updating TS for {symbol} position.")
-                        await ts_manager.create_or_update_trailing_stop(symbol, donor_side, final_target_size, position_value, avg_price)
-                    else:
-                        logger.info(f"TS_LIFECYCLE (ADD): update_on_add is false, TS for {symbol} not updated.")
-
-                # Reducing an existing position
-                elif is_modifying and size_delta < 0:
-                    logger.info(f"TS_LIFECYCLE (REDUCE): Modifying TS for {symbol} position.")
-                    if ts_cfg.get('rearm_on_modify'):
-                        await ts_manager.create_or_update_trailing_stop(symbol, donor_side, final_target_size, position_value, avg_price)
-                    else:
-                        await self.copy_manager.order_manager.cancel_all_symbol_orders(symbol, "Stop")
-                        logger.info(f"TS_LIFECYCLE (REDUCE): rearm_on_modify is false, existing TS for {symbol} cancelled.")
-
-                # Closing a position
-                elif is_closing:
-                    logger.info(f"TS_LIFECYCLE (CLOSE): Cancelling TS for closing {symbol} position.")
-                    await self.copy_manager.order_manager.cancel_all_symbol_orders(symbol, "Stop")
-
-            # Handle TS on FLIP
-            elif is_flip:
-                ts_manager = self.copy_manager.trailing_manager
-                logger.info(f"TS_LIFECYCLE (FLIP): Handling TS for {symbol} flip.")
-                # Cancel before close is already handled by create_or_update_trailing_stop
-                # Create after open
-                if order_result and order_result.get('success'):
-                    avg_price = order_result.get('price', entry_price)
-                    position_value = final_target_size * avg_price
-                    await ts_manager.create_or_update_trailing_stop(symbol, donor_side, final_target_size, position_value, avg_price)
+            # Post-order actions like Trailing Stop management are now handled by the
+            # queue processor (_execute_copy_order) after a successful trade,
+            # so no direct handling is needed here anymore.
 
 
         except Exception as e:

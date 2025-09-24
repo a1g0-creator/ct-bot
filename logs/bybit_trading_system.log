@@ -8,3 +8,77 @@
 2025-09-23 12:59:49,478 [    INFO] bybit_trading_system:905 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
 2025-09-23 12:59:49,498 [    INFO] bybit_trading_system:378 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
 2025-09-23 12:59:49,498 [    INFO] bybit_trading_system:2938 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-23 16:17:33,000 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-23 16:17:33,013 [    INFO] bybit_trading_system:347 - Advanced Kelly Calculator initialized with safety limits
+2025-09-23 16:17:33,013 [    INFO] bybit_trading_system:919 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-23 16:17:33,046 [    INFO] bybit_trading_system:392 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-23 16:17:33,046 [    INFO] bybit_trading_system:3050 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-23 16:17:33,053 [    INFO] bybit_trading_system:3134 - COPY_HANDLER_IN: symbol=ETHUSDT side='' size=0.0 entry=3000.0 idx=0
+2025-09-23 16:17:33,053 [    INFO] bybit_trading_system:3250 - POSITION_MODIFY: symbol=ETHUSDT donor=0.0000 main=0.7500 -> target=0.0000 | delta=-0.7500
+2025-09-23 16:17:33,053 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_CLOSE for ETHUSDT | Qty: 0.7500 | Side: Sell
+2025-09-23 16:17:33,072 [    INFO] bybit_trading_system:347 - Advanced Kelly Calculator initialized with safety limits
+2025-09-23 16:17:33,073 [    INFO] bybit_trading_system:919 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-23 16:17:33,074 [    INFO] bybit_trading_system:392 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-23 16:17:33,075 [    INFO] bybit_trading_system:3050 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-23 16:17:33,077 [    INFO] bybit_trading_system:3134 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=3.0 entry=3000.0 idx=0
+2025-09-23 16:17:33,077 [    INFO] bybit_trading_system:3182 - TARGET_CALC: Donor Size=3.0000 -> Proportional=1.5000 -> Kelly Rec=1.5000 -> Final Target=1.5000
+2025-09-23 16:17:33,078 [    INFO] bybit_trading_system:3250 - POSITION_MODIFY: symbol=ETHUSDT donor=3.0000 main=1.0000 -> target=1.5000 | delta=0.5000
+2025-09-23 16:17:33,078 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_MODIFY for ETHUSDT | Qty: 0.5000 | Side: Buy
+2025-09-23 16:17:33,088 [    INFO] bybit_trading_system:347 - Advanced Kelly Calculator initialized with safety limits
+2025-09-23 16:17:33,088 [    INFO] bybit_trading_system:919 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-23 16:17:33,089 [    INFO] bybit_trading_system:392 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-23 16:17:33,089 [    INFO] bybit_trading_system:3050 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-23 16:17:33,092 [    INFO] bybit_trading_system:3134 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=1.5 entry=3000.0 idx=0
+2025-09-23 16:17:33,092 [    INFO] bybit_trading_system:3154 - Leverage mismatch for ETHUSDT. Donor: 10x, Target: N/Ax. Syncing...
+2025-09-23 16:17:33,093 [    INFO] bybit_trading_system:3182 - TARGET_CALC: Donor Size=1.5000 -> Proportional=0.7500 -> Kelly Rec=0.7500 -> Final Target=0.7500
+2025-09-23 16:17:33,093 [    INFO] bybit_trading_system:3250 - POSITION_MODIFY: symbol=ETHUSDT donor=1.5000 main=0.0000 -> target=0.7500 | delta=0.7500
+2025-09-23 16:17:33,093 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_OPEN for ETHUSDT | Qty: 0.7500 | Side: Buy
+2025-09-23 16:17:33,103 [    INFO] bybit_trading_system:347 - Advanced Kelly Calculator initialized with safety limits
+2025-09-23 16:17:33,103 [    INFO] bybit_trading_system:919 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-23 16:17:33,105 [    INFO] bybit_trading_system:392 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-23 16:17:33,105 [    INFO] bybit_trading_system:3050 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-23 16:17:33,107 [    INFO] bybit_trading_system:3134 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=2.0 entry=3000.0 idx=0
+2025-09-23 16:17:33,108 [    INFO] bybit_trading_system:3182 - TARGET_CALC: Donor Size=2.0000 -> Proportional=1.0000 -> Kelly Rec=1.0000 -> Final Target=1.0000
+2025-09-23 16:17:33,108 [    INFO] bybit_trading_system:3250 - POSITION_MODIFY: symbol=ETHUSDT donor=2.0000 main=2.0000 -> target=1.0000 | delta=-1.0000
+2025-09-23 16:17:33,108 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_MODIFY for ETHUSDT | Qty: 1.0000 | Side: Sell
+2025-09-23 16:17:33,117 [    INFO] bybit_trading_system:167 - [live-format] DOGEUSDT: qty_in=37.00000000, price=$0.1000, step=1.0, rule_min_qty=1.0, min_notional=5.0, notional_min_qty=50.00000000, effective_min_qty=50.00000000 -> final_qty=5
+2025-09-23 16:17:33,121 [    INFO] bybit_trading_system:167 - [live-format] SOMECOINUSDT: qty_in=20.90000000, price=$0.4000, step=1.0, rule_min_qty=1.0, min_notional=10.0, notional_min_qty=25.00000000, effective_min_qty=25.00000000 -> final_qty=25
+2025-09-23 16:17:33,124 [    INFO] bybit_trading_system:167 - [live-format] DOGEUSDT: qty_in=55.90000000, price=$0.1000, step=1.0, rule_min_qty=1.0, min_notional=5.0, notional_min_qty=50.00000000, effective_min_qty=50.00000000 -> final_qty=55
+2025-09-23 16:17:33,126 [    INFO] bybit_trading_system:167 - [live-format] ETHUSDT: qty_in=123.45600000, price=$3000.0000, step=0.01, rule_min_qty=0.01, min_notional=5.0, notional_min_qty=0.00166667, effective_min_qty=0.01000000 -> final_qty=123.45
+2025-09-23 16:19:33,864 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-23 16:19:33,876 [    INFO] bybit_trading_system:349 - Advanced Kelly Calculator initialized with safety limits
+2025-09-23 16:19:33,876 [    INFO] bybit_trading_system:921 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-23 16:19:33,899 [    INFO] bybit_trading_system:394 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-23 16:19:33,899 [    INFO] bybit_trading_system:3052 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-23 16:19:33,904 [    INFO] bybit_trading_system:3136 - COPY_HANDLER_IN: symbol=ETHUSDT side='' size=0.0 entry=3000.0 idx=0
+2025-09-23 16:19:33,905 [    INFO] bybit_trading_system:3252 - POSITION_MODIFY: symbol=ETHUSDT donor=0.0000 main=0.7500 -> target=0.0000 | delta=-0.7500
+2025-09-23 16:19:33,905 [    INFO] bybit_trading_system:3263 - COPY_ACTION: WS_CLOSE for ETHUSDT | Qty: 0.7500 | Side: Sell
+2025-09-23 16:19:33,910 [    INFO] bybit_trading_system:349 - Advanced Kelly Calculator initialized with safety limits
+2025-09-23 16:19:33,910 [    INFO] bybit_trading_system:921 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-23 16:19:33,912 [    INFO] bybit_trading_system:394 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-23 16:19:33,912 [    INFO] bybit_trading_system:3052 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-23 16:19:33,915 [    INFO] bybit_trading_system:3136 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=3.0 entry=3000.0 idx=0
+2025-09-23 16:19:33,915 [    INFO] bybit_trading_system:3184 - TARGET_CALC: Donor Size=3.0000 -> Proportional=1.5000 -> Kelly Rec=1.5000 -> Final Target=1.5000
+2025-09-23 16:19:33,915 [    INFO] bybit_trading_system:3252 - POSITION_MODIFY: symbol=ETHUSDT donor=3.0000 main=1.0000 -> target=1.5000 | delta=0.5000
+2025-09-23 16:19:33,916 [    INFO] bybit_trading_system:3263 - COPY_ACTION: WS_MODIFY for ETHUSDT | Qty: 0.5000 | Side: Buy
+2025-09-23 16:19:33,919 [    INFO] bybit_trading_system:349 - Advanced Kelly Calculator initialized with safety limits
+2025-09-23 16:19:33,919 [    INFO] bybit_trading_system:921 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-23 16:19:33,920 [    INFO] bybit_trading_system:394 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-23 16:19:33,920 [    INFO] bybit_trading_system:3052 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-23 16:19:33,923 [    INFO] bybit_trading_system:3136 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=1.5 entry=3000.0 idx=0
+2025-09-23 16:19:33,923 [    INFO] bybit_trading_system:3156 - Leverage mismatch for ETHUSDT. Donor: 10x, Target: N/Ax. Syncing...
+2025-09-23 16:19:33,924 [    INFO] bybit_trading_system:3184 - TARGET_CALC: Donor Size=1.5000 -> Proportional=0.7500 -> Kelly Rec=0.7500 -> Final Target=0.7500
+2025-09-23 16:19:33,924 [    INFO] bybit_trading_system:3252 - POSITION_MODIFY: symbol=ETHUSDT donor=1.5000 main=0.0000 -> target=0.7500 | delta=0.7500
+2025-09-23 16:19:33,924 [    INFO] bybit_trading_system:3263 - COPY_ACTION: WS_OPEN for ETHUSDT | Qty: 0.7500 | Side: Buy
+2025-09-23 16:19:33,928 [    INFO] bybit_trading_system:349 - Advanced Kelly Calculator initialized with safety limits
+2025-09-23 16:19:33,928 [    INFO] bybit_trading_system:921 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-23 16:19:33,929 [    INFO] bybit_trading_system:394 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-23 16:19:33,929 [    INFO] bybit_trading_system:3052 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-23 16:19:33,932 [    INFO] bybit_trading_system:3136 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=2.0 entry=3000.0 idx=0
+2025-09-23 16:19:33,932 [    INFO] bybit_trading_system:3184 - TARGET_CALC: Donor Size=2.0000 -> Proportional=1.0000 -> Kelly Rec=1.0000 -> Final Target=1.0000
+2025-09-23 16:19:33,932 [    INFO] bybit_trading_system:3252 - POSITION_MODIFY: symbol=ETHUSDT donor=2.0000 main=2.0000 -> target=1.0000 | delta=-1.0000
+2025-09-23 16:19:33,933 [    INFO] bybit_trading_system:3263 - COPY_ACTION: WS_MODIFY for ETHUSDT | Qty: 1.0000 | Side: Sell
+2025-09-23 16:19:33,936 [    INFO] bybit_trading_system:169 - [live-format] DOGEUSDT: qty_in=37.00000000, price=$0.1000, step=1.0, rule_min_qty=1.0, min_notional=5.0, notional_min_qty=50.00000000, effective_min_qty=50.00000000 -> final_qty=50
+2025-09-23 16:19:33,939 [    INFO] bybit_trading_system:169 - [live-format] SOMECOINUSDT: qty_in=20.90000000, price=$0.4000, step=1.0, rule_min_qty=1.0, min_notional=10.0, notional_min_qty=25.00000000, effective_min_qty=25.00000000 -> final_qty=25
+2025-09-23 16:19:33,942 [    INFO] bybit_trading_system:169 - [live-format] DOGEUSDT: qty_in=55.90000000, price=$0.1000, step=1.0, rule_min_qty=1.0, min_notional=5.0, notional_min_qty=50.00000000, effective_min_qty=50.00000000 -> final_qty=55
+2025-09-23 16:19:33,944 [    INFO] bybit_trading_system:169 - [live-format] ETHUSDT: qty_in=123.45600000, price=$3000.0000, step=0.01, rule_min_qty=0.01, min_notional=5.0, notional_min_qty=0.00166667, effective_min_qty=0.01000000 -> final_qty=123.45
