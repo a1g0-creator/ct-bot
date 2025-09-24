@@ -4007,30 +4007,9 @@ class FinalFixedWebSocketManager:
                         asyncio.create_task(_run(handler, position_item))
             else:
                 logger.debug(f"[{self.name}] No handler for position topic.")
+
         except Exception as e:
             logger.error("%s - Position update handling error: %s", getattr(self, 'name', 'WS'), e, exc_info=True)
-
-    async def reconcile_positions_from_rest(self):
-        """
-        Periodically runs the reconciliation cycle. This is a long-running task.
-        """
-        while not getattr(self, 'should_stop', False):
-            try:
-                if hasattr(self, 'monitor') and self.monitor:
-                    logger.info("Running periodic reconciliation cycle...")
-                    await self.monitor.run_reconciliation_cycle()
-                else:
-                    logger.debug("reconcile_positions_from_rest: no monitor attached, skipping cycle.")
-
-                # Wait for the next cycle
-                await asyncio.sleep(60) # 60-second interval
-
-            except asyncio.CancelledError:
-                logger.info("Reconciliation task cancelled.")
-                break
-            except Exception as e:
-                logger.error(f"reconcile_positions_from_rest error in loop: {e}", exc_info=True)
-                await asyncio.sleep(60) # Wait before retrying on error
 
 
     async def _generate_copy_signal(self, position_data: dict, event_type: str, prev_qty: float = 0):
@@ -4690,6 +4669,16 @@ class FinalFixedWebSocketManager:
             return 0
         except (AttributeError, RuntimeError):
             return 0
+
+    async def reconcile_positions_from_rest(self):
+        """Compatibility method for integrated_launch_system"""
+        try:
+            if hasattr(self, 'monitor') and self.monitor:
+                await self.monitor.run_reconciliation_cycle()
+            else:
+                logger.debug("reconcile_positions_from_rest: no monitor attached")
+        except Exception as e:
+            logger.error(f"reconcile_positions_from_rest error: {e}", exc_info=True)
 
 # ================================
 # ИСПРАВЛЕННАЯ СИСТЕМА ОБРАБОТКИ СИГНАЛОВ (без изменений)
