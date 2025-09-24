@@ -3186,6 +3186,32 @@ class EnhancedBybitClient:
             logger.error(f"{self.name} - Set leverage error for {symbol}: {e}", exc_info=True)
             return {"success": False, "error": str(e)}
 
+    async def add_margin(self, symbol: str, margin: str, position_idx: int = 0) -> dict:
+        """Adds margin to an isolated margin position."""
+        try:
+            data = {
+                "category": "linear",
+                "symbol": symbol,
+                "margin": str(margin),
+                "positionIdx": position_idx,
+            }
+            logger.info(f"{self.name} - Adding margin to {symbol}: {margin} USDT")
+            result = await self._make_single_request("POST", "position/add-margin", data=data)
+
+            ret_code = (result or {}).get("retCode")
+            ret_msg = (result or {}).get("retMsg", "Unknown error")
+
+            if ret_code == 0:
+                logger.info(f"Successfully added margin to {symbol}.")
+                return {"success": True, "result": result}
+            else:
+                logger.error(f"Failed to add margin to {symbol}: {ret_msg} (retCode: {ret_code})")
+                return {"success": False, "error": ret_msg, "result": result}
+
+        except Exception as e:
+            logger.error(f"{self.name} - Add margin error for {symbol}: {e}", exc_info=True)
+            return {"success": False, "error": str(e)}
+
     async def close_all_positions_by_market(self) -> Tuple[int, int]:
         """Closes all open linear positions by market order."""
         closed_count = 0

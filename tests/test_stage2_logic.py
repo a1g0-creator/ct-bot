@@ -131,6 +131,156 @@ class TestStage2Logic(unittest.IsolatedAsyncioTestCase):
 if __name__ == '__main__':
     unittest.main()
 
+
+@patch.dict('sys.modules', MOCK_MODULES)
+class TestTrailingStopManager(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from stage2_copy_system import DynamicTrailingStopManager
+        from enhanced_trading_system_final_fixed import EnhancedBybitClient
+
+        self.mock_main_client = AsyncMock(spec=EnhancedBybitClient)
+        self.mock_order_manager = MagicMock()
+
+        # Default config for the manager
+        self.trailing_config = {
+            'enabled': True,
+            'activation_pct': 0.01, # 1%
+            'min_notional_for_ts': 50,
+        }
+
+        self.ts_manager = DynamicTrailingStopManager(
+            main_client=self.mock_main_client,
+            order_manager=self.mock_order_manager,
+            trailing_config=self.trailing_config
+        )
+
+    async def test_ts_price_conversion_and_rounding(self):
+        """
+        Tests if the trailing stop distance is correctly converted from percentage
+        to an absolute price distance and rounded to the symbol's tick size.
+        """
+        # --- Arrange ---
+        position_data = {
+            'symbol': 'BTCUSDT',
+            'side': 'Buy',
+            'quantity': 0.1,
+            'entry_price': 50000,
+            'position_idx': 0,
+        }
+        # Mock the client's filter response
+        self.mock_main_client.get_symbol_filters.return_value = {
+            "tick_size": "0.5" # e.g., BTCUSDT tick size
+        }
+        # Mock the order placement method
+        self.mock_order_manager.place_trailing_stop = AsyncMock()
+
+        # --- Act ---
+        await self.ts_manager.create_or_update_trailing_stop(position_data)
+
+        # --- Assert ---
+        # Expected distance = 50000 * 0.01 = 500
+        # Rounded to nearest 0.5, it remains 500.0
+        expected_distance_str = "500.0"
+
+        self.mock_order_manager.place_trailing_stop.assert_called_once_with(
+            symbol='BTCUSDT',
+            trailing_stop_price=expected_distance_str,
+            position_idx=0
+        )
+
+    async def test_remove_trailing_stop(self):
+        """
+        Tests if removing a trailing stop calls the correct method with an empty string.
+        """
+        # --- Arrange ---
+        position_data = {'symbol': 'BTCUSDT', 'position_idx': 0}
+        self.mock_order_manager.place_trailing_stop = AsyncMock()
+
+        # --- Act ---
+        await self.ts_manager.remove_trailing_stop(position_data)
+
+        # --- Assert ---
+        self.mock_order_manager.place_trailing_stop.assert_called_once_with(
+            symbol='BTCUSDT',
+            trailing_stop_price="", # Should be empty string to reset
+            position_idx=0
+        )
+
+
+@patch.dict('sys.modules', MOCK_MODULES)
+class TestMarginMirroring(unittest.IsolatedAsyncioTestCase):
+    def setUp(self):
+        from stage2_copy_system import Stage2CopyTradingSystem, MARGIN_CONFIG
+        from enhanced_trading_system_final_fixed import EnhancedBybitClient
+
+        self.mock_source_client = AsyncMock(spec=EnhancedBybitClient)
+        self.mock_main_client = AsyncMock(spec=EnhancedBybitClient)
+        self.mock_main_client.api_key = "main_key"
+        self.mock_main_client.api_secret = "main_secret"
+
+        mock_monitor = MagicMock()
+        mock_monitor.source_client = self.mock_source_client
+        mock_monitor.main_client = self.mock_main_client
+
+        self.system = Stage2CopyTradingSystem(base_monitor=mock_monitor)
+
+        # Configure margin mirroring for tests
+        MARGIN_CONFIG['enabled'] = True
+        MARGIN_CONFIG['debounce_sec'] = 1
+        MARGIN_CONFIG['min_usdt_delta'] = 5.0
+
+    async def test_proportional_margin_addition(self):
+        """Tests if a margin addition on the donor is proportionally mirrored."""
+        # --- Arrange ---
+        self.mock_source_client.get_balance.return_value = 10000.0
+        self.mock_main_client.get_balance.return_value = 5000.0 # 0.5x ratio
+        self.mock_main_client.add_margin = AsyncMock(return_value={'success': True})
+
+        donor_margin_change = 50.0 # Donor adds 50 USDT
+
+        # --- Act ---
+        await self.system._mirror_margin_adjustment("BTCUSDT", donor_margin_change, 0)
+
+        # --- Assert ---
+        # Expected main change = 50.0 * (5000 / 10000) = 25.0
+        expected_margin_str = "25.0000"
+        self.mock_main_client.add_margin.assert_called_once_with(
+            symbol='BTCUSDT',
+            margin=expected_margin_str,
+            position_idx=0
+        )
+
+    async def test_debounce_logic(self):
+        """Tests that rapid margin changes are debounced."""
+        # --- Arrange ---
+        self.mock_source_client.get_balance.return_value = 10000.0
+        self.mock_main_client.get_balance.return_value = 5000.0
+        self.mock_main_client.add_margin = AsyncMock(return_value={'success': True})
+
+        # --- Act ---
+        # Call twice in quick succession
+        await self.system._mirror_margin_adjustment("BTCUSDT", 50.0, 0)
+        await self.system._mirror_margin_adjustment("BTCUSDT", 20.0, 0) # This one should be ignored
+
+        # --- Assert ---
+        self.mock_main_client.add_margin.assert_called_once() # Should only be called once
+
+    async def test_minimum_delta_check(self):
+        """Tests that small margin changes are ignored."""
+        # --- Arrange ---
+        self.mock_source_client.get_balance.return_value = 10000.0
+        self.mock_main_client.get_balance.return_value = 1000.0 # 0.1x ratio
+        self.mock_main_client.add_margin = AsyncMock(return_value={'success': True})
+
+        # Proportional change will be 20.0 * 0.1 = 2.0 USDT, which is less than min_usdt_delta of 5.0
+        donor_margin_change = 20.0
+
+        # --- Act ---
+        await self.system._mirror_margin_adjustment("BTCUSDT", donor_margin_change, 0)
+
+        # --- Assert ---
+        self.mock_main_client.add_margin.assert_not_called()
+
 @patch.dict('sys.modules', MOCK_MODULES)
 class TestPositionItemHandler(unittest.IsolatedAsyncioTestCase):
 
@@ -143,6 +293,8 @@ class TestPositionItemHandler(unittest.IsolatedAsyncioTestCase):
         # Mock clients
         self.mock_source_client = AsyncMock(spec=EnhancedBybitClient)
         self.mock_main_client = AsyncMock(spec=EnhancedBybitClient)
+        self.mock_main_client.api_key = "main_key"
+        self.mock_main_client.api_secret = "main_secret"
 
         # Mock the base monitor that holds the clients
         mock_monitor = MagicMock()
@@ -151,6 +303,11 @@ class TestPositionItemHandler(unittest.IsolatedAsyncioTestCase):
 
         # Instantiate the system with the mocked monitor
         self.system = Stage2CopyTradingSystem(base_monitor=mock_monitor)
+
+        # Manually set the system to ready for these tests
+        self.system.copy_state.main_rest_ok = True
+        self.system.copy_state.source_ws_ok = True
+        self.system.copy_state.limits_checked = True
 
         # Replace the real queue with a standard asyncio.Queue for testing
         self.system.copy_manager.copy_queue = asyncio.Queue()

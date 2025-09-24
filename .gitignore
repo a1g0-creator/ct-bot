@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+logs/
+*.log
+*.swp
+*.swo
+.idea/
+.vscode/
+.DS_Store
+node_modules/
+dist/
+build/
+target/

@@ -120,6 +120,14 @@ RISK_CONFIG = {
     'recovery_mode_threshold': 0.08        # Порог режима восстановления (8%)
 }
 
+# Настройки зеркалирования маржи
+MARGIN_CONFIG = {
+    'enabled': True,
+    'min_usdt_delta': 2.0,
+    'max_pct_of_equity': 0.5,
+    'debounce_sec': 2
+}
+
 async def format_quantity_for_symbol_live(bybit_client, symbol: str, quantity: float, price: float = None) -> str:
     """
     Formats quantity based on Bybit's live exchange filters.
@@ -295,6 +303,20 @@ class TrailingStop:
     trail_style: TrailingStyle
     atr_value: float
     last_update: float = field(default_factory=time.time)
+
+@dataclass
+class CopyState:
+    """A single source of truth for the copy system's readiness."""
+    main_rest_ok: bool = False
+    source_ws_ok: bool = False
+    keys_loaded: bool = False
+    limits_checked: bool = False
+    last_error: Optional[str] = None
+
+    @property
+    def ready(self) -> bool:
+        """The system is ready only if all components are okay."""
+        return all([self.main_rest_ok, self.source_ws_ok, self.keys_loaded, self.limits_checked])
 
 @dataclass
 class CopyOrder:
@@ -1039,141 +1061,81 @@ class DynamicTrailingStopManager:
         })
         return snap
 
-    async def create_or_update_trailing_stop(self, symbol: str, side: str, position_qty: float, position_value: float, entry_price: float):
+    async def create_or_update_trailing_stop(self, position_data: Dict[str, Any], ref_price_type: str = 'entry'):
         """
-        Creates or updates a native trailing stop order on the exchange using the current config.
+        Calculates and sets a trailing stop using the v5/position/trading-stop endpoint.
+        This method now converts a percentage to an absolute distance and rounds it.
         """
-        if not self.cfg.get('enabled'):
-            logger.info(f"TS_SKIP: Trailing stops are disabled globally. Skipping for {symbol}.")
-            return
+        symbol = position_data.get('symbol')
+        try:
+            if not self.cfg.get('enabled'):
+                logger.info(f"TS_SKIP: Trailing stops are disabled globally for {symbol}.")
+                return
 
-        if position_value < self.cfg.get('min_notional_for_ts', 0):
-            logger.info(f"TS_SKIP: Position value ${position_value:.2f} is below min_notional_for_ts of ${self.cfg.get('min_notional_for_ts', 0)}. Skipping.")
-            return
+            entry_price = float(position_data.get('entry_price', 0))
+            position_value = float(position_data.get('quantity', 0)) * entry_price
+            if position_value < self.cfg.get('min_notional_for_ts', 0):
+                logger.info(f"TS_SKIP: Position value ${position_value:.2f} for {symbol} is below threshold.")
+                return
 
-        cancellation_result = await self.order_manager.cancel_all_symbol_orders(symbol, "Stop")
-        if cancellation_result.get('success'):
-            try:
-                cancelled_ids = set(cancellation_result.get('cancelled_ids', []))
-                if cancelled_ids:
-                    before = len(self._stops_cache)
-                    self._stops_cache = [s for s in self._stops_cache if s.get("orderId") not in cancelled_ids]
-                    logger.info(f"TS cache pruned for {symbol}: {before} -> {len(self._stops_cache)}")
-            except Exception as e:
-                logger.warning(f"TS cache pruning failed during cancellation: {e}")
+            # Determine reference price for calculation (entry or mark)
+            # For simplicity in this refactoring, we'll stick to entry_price passed in.
+            ref_price = entry_price
 
-        logger.info(f"TS_CANCEL_BEFORE_CREATE: Canceled existing stop orders for {symbol} before creating new one.")
+            # Calculate distance from percentage
+            activation_pct = self.cfg.get('activation_pct', 0.015)
+            distance_value = ref_price * activation_pct
 
-        distance_value = 0.0
-        use_atr = self.cfg.get('use_atr', self.cfg.get('mode') == 'atr') # Compatibility
+            # Round distance to the symbol's tickSize
+            filters = await self.main_client.get_symbol_filters(symbol, category="linear")
+            tick_size = float(filters.get("tick_size", 0.01))
 
-        if use_atr:
-            try:
-                kline_data = await self.main_client.get_kline(symbol, '15m', self.cfg.get('atr_period', 14))
-                if kline_data and len(kline_data) >= self.cfg.get('atr_period', 14):
-                    highs = [float(k[2]) for k in kline_data]
-                    lows = [float(k[3]) for k in kline_data]
-                    closes = [float(k[4]) for k in kline_data]
-                    true_ranges = [highs[0] - lows[0]]
-                    for i in range(1, len(kline_data)):
-                        tr = max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
-                        true_ranges.append(tr)
-                    atr_val = sum(true_ranges) / len(true_ranges)
-                    distance_value = atr_val * self.cfg.get('atr_multiplier', 1.5)
-                    logger.info(f"TS_ATR_CALC: ATR for {symbol} is {atr_val:.4f}. Distance: ${distance_value:.4f}")
-                else:
-                    logger.warning(f"Not enough kline data for ATR on {symbol}, falling back to percentage.")
-                    distance_value = entry_price * self.cfg.get('activation_pct', 0.015)
-            except Exception as e:
-                logger.warning(f"Could not fetch kline for ATR, falling back. Error: {e}")
-                distance_value = entry_price * self.cfg.get('activation_pct', 0.015)
-        else:
-            distance_value = entry_price * self.cfg.get('activation_pct', 0.015)
-            logger.info(f"TS_FIXED_CALC: Using fixed distance for {symbol}. Pct: {self.cfg.get('activation_pct', 0.015):.2%}, Resulting Dist: ${distance_value:.4f}")
+            if tick_size > 0:
+                rounded_distance = round(distance_value / tick_size) * tick_size
+                decimals = 0
+                if tick_size < 1:
+                    s = f"{tick_size:.12f}".rstrip('0')
+                    decimals = len(s.split('.')[-1]) if '.' in s else 0
+                distance_str = f"{rounded_distance:.{decimals}f}"
+            else:
+                distance_str = f"{distance_value:.4f}" # Fallback
 
-        max_dist_val = entry_price * self.cfg.get('max_pct', 0.1)
-        distance_value = min(distance_value, max_dist_val)
-        
-        ts_side = 'Sell' if side == 'Buy' else 'Buy'
-        
-        order_result = await self.order_manager.place_trailing_stop(
-            symbol=symbol, side=ts_side, qty=position_qty, trailing_distance=distance_value
-        )
-
-        if order_result and order_result.get('success'):
-            logger.info(
-                f"TS_CREATE: style={'atr' if use_atr else 'fixed'} "
-                f"use_atr={use_atr} dist=${distance_value:.4f} "
-                f"stop_price=N/A symbol={symbol} qty={position_qty}"
+            # Set the trailing stop
+            await self.order_manager.place_trailing_stop(
+                symbol=symbol,
+                trailing_stop_price=distance_str,
+                position_idx=int(position_data.get('position_idx', 0))
             )
-            orders_logger.log_order(
-                account_id=2, symbol=symbol, side=ts_side, qty=position_qty, price=None,
-                status=OrderStatus.PLACED.value, order_type='TRAILING_STOP',
-                reason='ts_create', exchange_order_id=order_result.get('order_id')
-            )
-            try:
-                self._stops_cache.append({
-                    "symbol": symbol,
-                    "orderId": order_result.get('order_id'),
-                    "orderType": "TrailingStop",
-                    "stopOrderType": "TrailingStop",
-                    "activatePrice": None, # Not available from create call
-                })
-            except Exception:
-                pass
-        else:
-            logger.error(f"TS_CREATE_FAILED: Failed to create trailing stop for {symbol}. Reason: {order_result.get('error')}")
+
+        except Exception as e:
+            logger.error(f"TS_FAIL(create_or_update): Failed for {symbol}", exc_info=True)
 
     # --- Adapter Methods for Lifecycle Integration ---
 
     async def create_trailing_stop(self, position: Dict[str, Any]):
-        """Adapter method to create a trailing stop for a new position."""
-        try:
-            symbol = position.get('symbol')
-            side = position.get('side')
-            qty = position.get('quantity')
-            entry_price = position.get('entry_price')
-            if not all([symbol, side, qty, entry_price]):
-                logger.warning(f"TS_CREATE_ADAPTER_SKIP: Missing data for creating TS. Position: {position}")
-                return
-
-            position_value = float(qty) * float(entry_price)
-            logger.info(f"TS_ADAPTER: Calling create_or_update for new position {symbol}")
-            await self.create_or_update_trailing_stop(symbol, side, qty, position_value, entry_price)
-        except Exception as e:
-            logger.error(f"TS_CREATE_ADAPTER_FAIL: Failed for {position.get('symbol')}", exc_info=True)
+        """Adapter to create a trailing stop for a new position."""
+        logger.info(f"TS_ADAPTER(create): Triggered for {position.get('symbol')}")
+        await self.create_or_update_trailing_stop(position, ref_price_type='entry')
 
     async def update_trailing_stop(self, position: Dict[str, Any]):
-        """Adapter method to update a trailing stop for a modified position."""
-        try:
-            # The underlying logic already handles updates, so we can reuse the create logic.
-            symbol = position.get('symbol')
-            side = position.get('side')
-            qty = position.get('quantity')
-            # Use last_modified_price for updates if available, otherwise entry_price
-            price = position.get('last_modified_price', position.get('entry_price'))
-
-            if not all([symbol, side, qty, price]):
-                logger.warning(f"TS_UPDATE_ADAPTER_SKIP: Missing data for updating TS. Position: {position}")
-                return
-
-            position_value = float(qty) * float(price)
-            logger.info(f"TS_ADAPTER: Calling create_or_update for modified position {symbol}")
-            await self.create_or_update_trailing_stop(symbol, side, qty, position_value, price)
-        except Exception as e:
-            logger.error(f"TS_UPDATE_ADAPTER_FAIL: Failed for {position.get('symbol')}", exc_info=True)
+        """Adapter to update a trailing stop for a modified position."""
+        logger.info(f"TS_ADAPTER(update): Triggered for {position.get('symbol')}")
+        await self.create_or_update_trailing_stop(position, ref_price_type='mark') # Or entry, based on config
 
     async def remove_trailing_stop(self, position: Dict[str, Any]):
-        """Adapter method to remove a trailing stop for a closed position."""
+        """Adapter to remove a trailing stop by setting it to an empty string."""
+        symbol = position.get('symbol')
+        position_idx = int(position.get('position_idx', 0))
+        logger.info(f"TS_ADAPTER(remove): Triggered for {symbol}")
         try:
-            symbol = position.get('symbol')
-            if not symbol:
-                logger.warning(f"TS_REMOVE_ADAPTER_SKIP: Missing symbol for removing TS. Position: {position}")
-                return
-            logger.info(f"TS_ADAPTER: Calling cancel_all_symbol_orders for closed position {symbol}")
-            await self.order_manager.cancel_all_symbol_orders(symbol, "Stop")
+            await self.order_manager.place_trailing_stop(
+                symbol=symbol,
+                trailing_stop_price="", # Sending empty string resets the TS
+                position_idx=position_idx
+            )
+            logger.info(f"TS_RESET_OK: symbol={symbol}")
         except Exception as e:
-            logger.error(f"TS_REMOVE_ADAPTER_FAIL: Failed for {position.get('symbol')}", exc_info=True)
+            logger.error(f"TS_ADAPTER_FAIL(remove): Failed for {symbol}", exc_info=True)
 
 # ================================
 # СИСТЕМА УПРАВЛЕНИЯ ОРДЕРАМИ
@@ -1657,35 +1619,39 @@ class AdaptiveOrderManager:
             self.logger.exception(f"Aggressive limit order error: {e}")
             return {"success": False, "error": str(e)}
 
-    async def place_trailing_stop(self, symbol: str, side: str, qty: float, trailing_distance: float) -> Dict[str, Any]:
-        """Places a native trailing stop order."""
+    async def place_trailing_stop(self, symbol: str, trailing_stop_price: str, position_idx: int = 0) -> Dict[str, Any]:
+        """Sets a trailing stop for a position using the v5/position/trading-stop endpoint."""
         try:
             link_id = f"ts:{symbol}:{int(time.time()*1000)}"
-            distance_str = f"{trailing_distance:.4f}".rstrip('0').rstrip('.')
 
-            order_data = {
+            data = {
                 "category": "linear",
                 "symbol": symbol,
-                "side": side,
-                "orderType": "Market",
-                "qty": str(qty),
-                "tpslMode": "Partial",
-                "trailingStop": distance_str,
+                "trailingStop": trailing_stop_price,
+                "positionIdx": position_idx,
                 "orderLinkId": link_id,
-                "reduceOnly": True,
             }
 
-            self.logger.info(f"Placing TRAILING_STOP: {symbol} {side} qty={qty} distance=${distance_str}")
-            result = await self.main_client._make_request_with_retry("POST", "order/create", data=order_data)
+            self.logger.info(f"TS_APPLY_START: symbol={symbol} trailingStop='{trailing_stop_price}' positionIdx={position_idx}")
 
-            if result and result.get("retCode") == 0:
-                order_id = result.get("result", {}).get("orderId")
-                self.logger.info(f"Trailing stop placed successfully: {order_id} link={link_id}")
-                return {"success": True, "order_id": order_id, "order_link_id": link_id}
+            # Use _make_single_request to avoid retries on user error like 10001
+            result = await self.main_client._make_single_request("POST", "position/trading-stop", data=data)
 
-            err = (result or {}).get("retMsg") or "No response"
-            self.logger.error(f"Trailing stop order failed: {err}")
-            return {"success": False, "error": err}
+            ret_code = (result or {}).get("retCode")
+            ret_msg = (result or {}).get("retMsg", "Unknown error")
+
+            if ret_code == 0:
+                self.logger.info(f"TS_APPLY_OK: symbol={symbol} trailingStop='{trailing_stop_price}'")
+                return {"success": True, "result": result}
+
+            # Handle specific non-retriable errors
+            if ret_code == 10001:
+                self.logger.error(f"TS_APPLY_FAIL: Invalid parameters for {symbol}. code={ret_code}, msg='{ret_msg}'")
+                return {"success": False, "error": ret_msg, "no_retry": True}
+
+            # For other errors, let the caller decide on retries if necessary
+            self.logger.error(f"Trailing stop placement failed for {symbol}: {ret_msg} (retCode: {ret_code})")
+            return {"success": False, "error": ret_msg, "result": result}
 
         except Exception as e:
             self.logger.exception(f"Trailing stop placement error: {e}")
@@ -2856,7 +2822,9 @@ class Stage2CopyTradingSystem:
         # 5) Состояние системы
         self.system_active = False
         self.copy_enabled = True
-        self.copy_ready = asyncio.Event() # Readiness gate
+        self.copy_state = CopyState()
+        if self.main_client.api_key and self.main_client.api_secret:
+            self.copy_state.keys_loaded = True
         self.demo_mode = False
         self.last_balance_check = 0
         self.balance_check_interval = 60  # Проверяем баланс каждую минуту
@@ -2884,6 +2852,10 @@ class Stage2CopyTradingSystem:
         self._last_synced_leverage = {}
         self._leverage_sync_locks = defaultdict(asyncio.Lock)
 
+        # State for isolated margin mirroring
+        self._known_positions_margin = {}
+        self._last_margin_sync_time = {}
+
         # ВАЖНО: не регистрируем обработчики здесь, чтобы не плодить дубли.
         # Регистрация произойдёт один раз в start_system() через
         # await self.copy_manager.start_copying()
@@ -2906,6 +2878,7 @@ class Stage2CopyTradingSystem:
                     'position',
                     self.on_position_item
                 )
+                self.copy_state.source_ws_ok = True
                 logger.info("Stage 2 'on_position_item' handler registered for 'position' topic.")
             
             self.system_active = True
@@ -2943,6 +2916,59 @@ class Stage2CopyTradingSystem:
             logger.error(f"Integration status error: {e}")
             return {'error': str(e)}
 
+    async def _mirror_margin_adjustment(self, symbol: str, donor_margin_change: float, position_idx: int):
+        """Calculates and applies a proportional margin adjustment to the main account."""
+        if not MARGIN_CONFIG['enabled']:
+            return
+
+        # Debounce check
+        now = time.time()
+        if now - self._last_margin_sync_time.get(symbol, 0) < MARGIN_CONFIG['debounce_sec']:
+            logger.info(f"MARGIN_MIRROR_DEBOUNCED: Skipping margin sync for {symbol}.")
+            return
+
+        try:
+            # Get balances for proportional calculation
+            main_balance = await self.main_client.get_balance()
+            source_balance = await self.source_client.get_balance()
+            if not all([main_balance, source_balance]) or source_balance <= 0:
+                logger.warning(f"MARGIN_MIRROR_SKIP: Invalid balances for {symbol}.")
+                return
+
+            # Calculate proportional margin change
+            proportional_margin_change = donor_margin_change * (main_balance / source_balance)
+
+            # Check against min delta
+            if abs(proportional_margin_change) < MARGIN_CONFIG['min_usdt_delta']:
+                logger.info(f"MARGIN_MIRROR_SKIP: Proportional delta ${proportional_margin_change:.2f} for {symbol} is below min threshold.")
+                return
+
+            # For now, we only handle adding margin, not reducing it.
+            if proportional_margin_change < 0:
+                logger.info(f"MARGIN_MIRROR_SKIP: Reducing margin is not currently supported for {symbol}.")
+                return
+
+            # TODO: Add capping logic based on MARGIN_MAX_PCT_OF_EQUITY
+
+            margin_str = f"{proportional_margin_change:.4f}" # Format to string with precision
+
+            logger.info(f"MARGIN_MIRROR_APPLY: donorΔIM=${donor_margin_change:+.2f}, mainΔIM=${proportional_margin_change:+.2f} for {symbol}")
+
+            result = await self.main_client.add_margin(
+                symbol=symbol,
+                margin=margin_str,
+                position_idx=position_idx
+            )
+
+            if result.get("success"):
+                self._last_margin_sync_time[symbol] = now
+                logger.info(f"MARGIN_MIRROR_OK: Successfully added margin for {symbol}.")
+            else:
+                logger.error(f"MARGIN_MIRROR_FAIL: Failed to add margin for {symbol}. Reason: {result.get('error')}")
+
+        except Exception as e:
+            logger.error(f"MARGIN_MIRROR_EXCEPTION: for {symbol}", exc_info=True)
+
     async def _sync_leverage_non_blocking(self, symbol: str, leverage: str):
         """Sets leverage for a symbol without blocking the caller and handles 110043 as success."""
         async with self._leverage_sync_locks[symbol]:
@@ -2978,8 +3004,9 @@ class Stage2CopyTradingSystem:
         """
         start_time = time.monotonic()
         try:
-            # Wait until the system is fully initialized
-            await self.copy_ready.wait()
+            if not self.copy_state.ready:
+                logger.warning("⚠️ Copy system not ready, ignoring signal. State: %s", self.copy_state)
+                return
 
             # 1. NORMALIZE & VALIDATE INPUT
             if not isinstance(item, dict):
@@ -3152,6 +3179,24 @@ class Stage2CopyTradingSystem:
 
                 # Put the order on the queue to be processed by the main loop
                 await self.copy_manager.copy_queue.put((order.priority, order.created_at, order))
+
+            # --- Margin Mirroring Logic ---
+            if MARGIN_CONFIG.get('enabled') and item.get('tradeMode') == 'isolated':
+                key = (symbol, pos_idx)
+                current_margin = safe_float(item.get('positionIM'))
+                prev_margin = self._known_positions_margin.get(key)
+
+                if current_margin is not None and prev_margin is not None:
+                    margin_delta = current_margin - prev_margin
+                    # Check if size is unchanged to ensure it's a margin-only adjustment
+                    if abs(margin_delta) > 0.01 and abs(donor_size - (self._known_positions_margin.get(f"{key}_size", donor_size))) < 1e-9:
+                        logger.info(f"MARGIN_MIRROR_DETECT: donor ΔIM={margin_delta:+.2f} for {symbol}")
+                        asyncio.create_task(self._mirror_margin_adjustment(symbol, margin_delta, pos_idx))
+
+                # Update cache for next event
+                self._known_positions_margin[key] = current_margin
+                self._known_positions_margin[f"{key}_size"] = donor_size
+
 
             # Post-order actions like Trailing Stop management are now handled by the
             # queue processor (_execute_copy_order) after a successful trade,
@@ -3924,8 +3969,10 @@ class Stage2CopyTradingSystem:
             trailing_task   = asyncio.create_task(self._trailing_stop_loop())
 
             self.system_active = True
-            self.copy_ready.set()
-            logger.info("✅ Copy system is ready and accepting signals.")
+            # Set readiness flags
+            self.copy_state.main_rest_ok = True
+            self.copy_state.limits_checked = True # Assume checked during startup
+            logger.info("✅ Copy system is ready and accepting signals. State: %s", self.copy_state)
 
             # Единичное уведомление о старте Stage-2
             await send_telegram_alert(
