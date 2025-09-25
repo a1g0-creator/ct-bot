@@ -108,10 +108,6 @@ TRAILING_CONFIG = {
     'min_notional_for_ts': 100.0, # $100
     # Deprecated/internal - use mode
     'use_atr': True,
-    # New settings for retry logic
-    'short_wait_ms': 200,
-    'retry_delay_ms': 1500,
-    'max_retries': 1,
 }
 
 # Контроль рисков
@@ -1079,7 +1075,6 @@ class DynamicTrailingStopManager:
         """
         symbol = position_data.get('symbol')
         position_idx = int(position_data.get('position_idx', 0))
-        size = safe_float(position_data.get('size', 0))
 
         try:
             # 1. Debounce check
@@ -1118,42 +1113,39 @@ class DynamicTrailingStopManager:
             filters = await self.main_client.get_symbol_filters(symbol, category="linear")
             tick_size = float(filters.get("tick_size", 0.01))
 
-            # v5 (linear): trailingStop = callback percent (string), activePrice = trigger price (tick-quantized)
-            callback_frac = float(self.cfg.get('step_pct', 0.002))
-            callback_frac = max(callback_frac, 0.0001)
-            new_ts_pct = callback_frac * 100.0
-            new_ts_pct_str = f"{new_ts_pct:.3f}".rstrip('0').rstrip('.')
+            # Calculate new trailing stop distance
+            ts_pct = self.cfg.get('activation_pct', 0.015)
+            new_ts_dist = self._round_to_tick(ref_price * ts_pct, tick_size)
 
-            activation_frac = float(self.cfg.get('activation_pct', 0.015))
-            base_price = float(current_pos.get('markPrice', entry_price)) or entry_price
-
+            # Calculate new activation price
+            activation_pct = self.cfg.get('activation_pct', 0.015)
+            price_change_for_activation = ref_price * activation_pct
             if side == 'Buy':
-                activation_price = self._round_to_tick(base_price * (1.0 + activation_frac), tick_size)
-            else:
-                activation_price = self._round_to_tick(base_price * (1.0 - activation_frac), tick_size)
-
-            logger.info(f"TS_PARAM_RESOLVED{{ts_pct='{new_ts_pct_str}%', activation_price={activation_price}, from='percent', price_ref='{base_price}'}}")
+                new_active_price = self._round_to_tick(entry_price + price_change_for_activation, tick_size)
+            else: # Sell
+                new_active_price = self._round_to_tick(entry_price - price_change_for_activation, tick_size)
 
             # 4. Compare with existing values (with tolerance)
-            is_ts_same = abs(safe_float(current_ts, 0.0) - new_ts_pct) < 1e-3
-            is_active_price_same = abs(safe_float(current_active_price, 0.0) - activation_price) < (tick_size / 2)
+            is_ts_same = abs(new_ts_dist - current_ts) < (tick_size / 2)
+            is_active_price_same = abs(new_active_price - current_active_price) < (tick_size / 2)
 
             # If active price is not set yet, we should not consider it "the same"
-            if current_active_price == 0 and activation_price > 0:
+            if current_active_price == 0 and new_active_price > 0:
                 is_active_price_same = False
 
             if is_ts_same and is_active_price_same:
-                logger.info(f"TS_ALREADY_SET: Trailing stop for {symbol} with same parameters exists.")
+                logger.info(f"TS_SKIP_IDEMPOTENT: Trailing stop for {symbol} is already set correctly. "
+                            f"Current: ts={current_ts}, active={current_active_price}. "
+                            f"New: ts={new_ts_dist}, active={new_active_price}.")
                 return
 
             # 5. Set the trailing stop if values differ
             await self.order_manager.place_trailing_stop(
                 symbol=symbol,
-                trailing_stop_price=new_ts_pct_str,
-                active_price=str(activation_price) if not is_active_price_same else "",
+                trailing_stop_price=str(new_ts_dist),
+                active_price=str(new_active_price) if not is_active_price_same else "", # Only send activePrice if not set
                 position_idx=position_idx
             )
-            logger.info(f"TS_APPLY_SUCCESS{{symbol={symbol}, qty_used={size}, ts_pct='{new_ts_pct_str}%', activation_price={activation_price}}}")
 
         except Exception as e:
             logger.error(f"TS_FAIL(create_or_update): Failed for {symbol}", exc_info=True)
@@ -1171,18 +1163,16 @@ class DynamicTrailingStopManager:
         await self.create_or_update_trailing_stop(position, ref_price_type='mark') # Or entry, based on config
 
     async def remove_trailing_stop(self, position: Dict[str, Any]):
-        """Adapter to remove a trailing stop: skip API if position size == 0."""
+        """Adapter to remove a trailing stop by setting it to an empty string."""
         symbol = position.get('symbol')
         position_idx = int(position.get('position_idx', 0))
         logger.info(f"TS_ADAPTER(remove): Triggered for {symbol}")
         try:
-            positions = await self.main_client.get_positions(category="linear", symbol=symbol)
-            pos = next((p for p in positions if int(p.get('positionIdx', -1)) == position_idx), None)
-            size_now = safe_float(pos.get('size', 0.0)) if pos else 0.0
-            if size_now <= 0:
-                logger.info(f"TS_RESET_SKIP: {symbol} size=0, skip trading-stop reset")
-                return
-            await self.order_manager.place_trailing_stop(symbol=symbol, trailing_stop_price="", position_idx=position_idx)
+            await self.order_manager.place_trailing_stop(
+                symbol=symbol,
+                trailing_stop_price="", # Sending empty string resets the TS
+                position_idx=position_idx
+            )
             logger.info(f"TS_RESET_OK: symbol={symbol}")
         except Exception as e:
             logger.error(f"TS_ADAPTER_FAIL(remove): Failed for {symbol}", exc_info=True)
@@ -1709,16 +1699,15 @@ class AdaptiveOrderManager:
                 self.logger.info(f"TS_APPLY_OK: symbol={symbol}, trailingStop='{trailing_stop_price}'")
                 return {"success": True, "result": result}
 
+            # Bybit v5: 34040 == "not modified" — treat as idempotent success
+            if ret_code == 34040:
+                self.logger.info(f"TS_ALREADY_SET{{symbol={symbol}, reason='not_modified_34040'}}")
+                return {"success": True, "already_set": True, "result": result}
+
             # Handle specific non-retriable errors like invalid parameters
             if ret_code == 10001:
                 self.logger.error(f"TS_APPLY_FAIL: Invalid parameters for {symbol}. code={ret_code}, msg='{ret_msg}', payload={json.dumps(data)}")
                 return {"success": False, "error": ret_msg, "no_retry": True}
-
-            # Not modified is not an error, just info.
-            if ret_code == 34040:
-                self.logger.info(f"TS_APPLY_INFO: Not modified for {symbol}. code={ret_code}, msg='{ret_msg}'")
-                return {"success": True, "already_set": True, "result": result}
-
 
             # For other errors, let the caller decide on retries if necessary
             self.logger.error(f"Trailing stop placement failed for {symbol}: {ret_msg} (retCode: {ret_code})")
@@ -1902,100 +1891,8 @@ class PositionCopyManager:
         self._recent_copy_window = 5  # сек — антидубль для force_copy и фонового сканера
         self._recent_copies: dict[tuple[str, str], float] = {}  # (symbol, side) -> ts
 
-        # For robust trailing stop application
-        self._ts_apply_locks = defaultdict(asyncio.Lock)
-        self._last_executed_qty = {}
-
-    async def _retry_apply_trailing(self, symbol, side, exec_qty, exec_price, position_idx, delay):
-        """Scheduled retry for applying trailing stop."""
-        await asyncio.sleep(delay)
-        logger.info(f"TS_RETRY_EXEC: Executing scheduled retry for {symbol}")
-        # On retry, we are confident the position exists and use the known executed quantity.
-        position_data_for_ts = {
-            'symbol': symbol,
-            'side': side,
-            'size': str(exec_qty),
-            'entryPrice': str(exec_price),
-            'position_idx': position_idx,
-        }
-        try:
-            # We call the manager directly, bypassing the checks in _apply_trailing_if_needed
-            await self.trailing_manager.create_or_update_trailing_stop(position_data_for_ts)
-        except Exception as e:
-            logger.error(f"TS_RETRY_FAIL{{symbol={symbol}, error='{e}'}}", exc_info=True)
-
-    async def _apply_trailing_if_needed(self, symbol: str, side: str, exec_qty: float, exec_price: float, position_idx: int, mode: str = 'create'):
-        """
-        Robustly finds the current position size and applies a trailing stop.
-        This method uses a lock to prevent race conditions for the same symbol.
-        """
-        async with self._ts_apply_locks[symbol]:
-            source = "unknown"
-            final_size = 0.0
-
-            # 1. Quick cache check
-            cached_pos = self.active_positions.get(symbol)
-            if cached_pos:
-                final_size = safe_float(cached_pos.get('quantity', 0.0))
-                if final_size > 0:
-                    source = "cache"
-
-            # 2. Short wait + cache check again
-            if final_size == 0:
-                wait_ms = TRAILING_CONFIG.get('short_wait_ms', 200)
-                await asyncio.sleep(wait_ms / 1000.0)
-                cached_pos = self.active_positions.get(symbol)
-                if cached_pos:
-                    final_size = safe_float(cached_pos.get('quantity', 0.0))
-                    if final_size > 0:
-                        source = "cache+short_wait"
-
-            # 3. REST API check
-            if final_size == 0:
-                try:
-                    positions = await self.main_client.get_positions(category="linear", symbol=symbol)
-                    rest_pos = next((p for p in positions if int(p.get('positionIdx', -1)) == position_idx), None)
-                    rest_size = safe_float(rest_pos.get('size')) if rest_pos else 0.0
-                    if rest_size > 0:
-                        source = "rest"
-                        final_size = rest_size
-                        # Gently update cache
-                        if symbol not in self.active_positions: self.active_positions[symbol] = {}
-                        self.active_positions[symbol].update({
-                            'quantity': rest_size, 'size': rest_size,
-                            'entry_price': safe_float(rest_pos.get('entryPrice')),
-                            'side': rest_pos.get('side'), 'last_update': time.time(),
-                        })
-                except Exception as e:
-                    logger.warning(f"TS_APPLY_WARN: REST check for {symbol} failed: {e}")
-
-            # 4. Fallback to last known executed quantity from the copy order
-            if final_size == 0:
-                last_exec_qty = self._last_executed_qty.get(symbol, 0.0)
-                if last_exec_qty > 0:
-                    source = "executed_qty_fallback"
-                    final_size = last_exec_qty
-
-            logger.info(f"TS_APPLY_ATTEMPT{{symbol={symbol}, qty_used={final_size}, source={source}, mode={mode}}}")
-
-            if final_size > 0:
-                position_data_for_ts = {
-                    'symbol': symbol, 'side': side, 'size': str(final_size),
-                    'entryPrice': str(exec_price), 'position_idx': position_idx,
-                }
-                try:
-                    await self.trailing_manager.create_or_update_trailing_stop(position_data_for_ts)
-                except Exception as e:
-                    logger.error(f"TS_APPLY_FAIL{{symbol={symbol}, error='{e}', attempt_source={source}}}", exc_info=True)
-            else:
-                # 5. Schedule a single retry if all attempts failed
-                max_retries = TRAILING_CONFIG.get('max_retries', 1)
-                if max_retries > 0: # Check if retries are enabled
-                    retry_delay_ms = TRAILING_CONFIG.get('retry_delay_ms', 1500)
-                    logger.warning(f"TS_APPLY_RETRY{{symbol={symbol}, reason='size_is_zero', next_in_ms={retry_delay_ms}}}")
-                    asyncio.create_task(self._retry_apply_trailing(
-                        symbol, side, exec_qty, exec_price, position_idx, retry_delay_ms / 1000.0
-                    ))
+        self._copy_success_lock = asyncio.Lock()
+        self._processed_link_ids: set[str] = set()
 
     async def _mark_copy_success(self, order_link_id: str) -> bool:
         """
@@ -2130,9 +2027,6 @@ class PositionCopyManager:
             
             # 2) Update order log with the result
             if result.get('success'):
-                # Store the executed quantity for the trailing stop fallback logic
-                self._last_executed_qty[copy_order.target_symbol] = safe_float(result.get('qty', 0.0))
-
                 orders_logger.log_order(
                     account_id=1,
                     symbol=copy_order.target_symbol,
@@ -2156,24 +2050,16 @@ class PositionCopyManager:
                     elif copy_order.source_signal.signal_type == SignalType.POSITION_CLOSE:
                         await self._cleanup_position_tracking(copy_order, result)
 
-                    # 4) Manage Trailing Stop using the new robust method
+                    # 4) Manage Trailing Stop
                     try:
                         signal_type = copy_order.source_signal.signal_type
-                        if signal_type in [SignalType.POSITION_OPEN, SignalType.POSITION_MODIFY]:
-                            await self._apply_trailing_if_needed(
-                                symbol=copy_order.target_symbol,
-                                side=copy_order.target_side,
-                                exec_qty=safe_float(result.get('qty', 0.0)),
-                                exec_price=safe_float(result.get('price', 0.0)),
-                                position_idx=copy_order.source_signal.metadata.get('pos_idx', 0),
-                                mode='create' if signal_type == SignalType.POSITION_OPEN else 'update'
-                            )
+                        position_state = self.active_positions.get(copy_order.target_symbol)
+                        if signal_type == SignalType.POSITION_OPEN and position_state:
+                            await self.trailing_manager.create_trailing_stop(position_state)
+                        elif signal_type == SignalType.POSITION_MODIFY and position_state:
+                            await self.trailing_manager.update_trailing_stop(position_state)
                         elif signal_type == SignalType.POSITION_CLOSE:
-                            # For close, we still call remove directly as no size check is needed.
-                            await self.trailing_manager.remove_trailing_stop({
-                                'symbol': copy_order.target_symbol,
-                                'position_idx': copy_order.source_signal.metadata.get('pos_idx', 0)
-                            })
+                            await self.trailing_manager.remove_trailing_stop({'symbol': copy_order.target_symbol})
                     except Exception as e:
                         logger.error(f"TS_LIFECYCLE_FAIL: Unhandled exception in trailing stop management for {copy_order.target_symbol}", exc_info=True)
 
@@ -2996,6 +2882,7 @@ class Stage2CopyTradingSystem:
         # 5) Состояние системы
         self.system_active = False
         self.copy_enabled = True
+        self._copy_ready = False  # Unified readiness flag
         self.copy_state = CopyState()
         if self.main_client.api_key and self.main_client.api_secret:
             self.copy_state.keys_loaded = True
@@ -3436,13 +3323,8 @@ class Stage2CopyTradingSystem:
                 )
                 return
 
-            if not self.copy_enabled:
-                logger.warning("Copy disabled - ignoring signal")
-                await send_telegram_alert(
-                    f"⚠️ **КОПИРОВАНИЕ ОТКЛЮЧЕНО**\n"
-                    f"Пропущен сигнал: {symbol} {side}\n"
-                    "Включите копирование в настройках"
-                )
+            if not self._is_copy_ready():
+                logger.warning("Copy system not ready - ignoring signal")
                 return
 
             # 1) Глобальный gate от контроллера риска (только для открытия позиций)
@@ -3899,9 +3781,29 @@ class Stage2CopyTradingSystem:
             logger.error(f"Position copy close error: {e}")
             await send_telegram_alert(f"❌ **ОШИБКА КОПИРОВАНИЯ ЗАКРЫТИЯ**: {str(e)}")
 
+    def _is_copy_ready(self) -> bool:
+        """
+        Копирование разрешено, если:
+        - включён режим копирования
+        - инициализированы REST клиенты MAIN/SOURCE
+        - ключи/лимиты загружены (минимум — не None)
+        """
+        if not self.copy_enabled:
+            return False
+        # Базовые проверки (адаптируйте под ваши поля и init):
+        if not getattr(self, "main_client", None):
+            return False
+        if not getattr(self, "source_client", None):
+            return False
+        return bool(self._copy_ready)
+
     async def _handle_position_modify_for_copy(self, signal):
         """Обработка изменения позиции для копирования"""
         try:
+            if not self._is_copy_ready():
+                logger.warning("⚠️ Copy system not ready - modify skipped")
+                return
+
             logger.info(f"🟡 COPYING POSITION MODIFY: {signal.symbol}")
 
             # Находим активную позицию
@@ -4144,6 +4046,7 @@ class Stage2CopyTradingSystem:
 
             self.system_active = True
             # Set readiness flags
+            self._copy_ready = True
             self.copy_state.main_rest_ok = True
             self.copy_state.limits_checked = True # Assume checked during startup
             logger.info("✅ Copy system is ready and accepting signals. State: %s", self.copy_state)

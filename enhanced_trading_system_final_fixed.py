@@ -3053,11 +3053,6 @@ class EnhancedBybitClient:
                                 for coin in accounts[0].get('coin', []):
                                     if coin.get('coin') == 'USDT':
                                         balance = safe_float(coin.get('walletBalance', 0))
-                                        if balance in (None, 0.0):
-                                            eq = safe_float(coin.get('equity') or coin.get('totalEquity'))
-                                            upnl = safe_float(coin.get('unrealisedPnl') or coin.get('unrealizedPnl') or 0.0)
-                                            if eq is not None:
-                                                balance = max(eq - (upnl or 0.0), 0.0)
                                         logger.info(f"{self.name} - Balance: {balance:.2f} USDT")
                                         self.request_stats['successful_requests'] += 1
                                         return balance
@@ -3999,12 +3994,10 @@ class FinalFixedWebSocketManager:
             if handlers:
                 for position_item in items:
                     for handler in handlers:
-                        async def _run(h, item):
-                            try:
-                                await h(item)
-                            except Exception as e:
-                                logger.error(f"Position handler error for item {item.get('symbol')}: {e}", exc_info=True)
-                        asyncio.create_task(_run(handler, position_item))
+                        try:
+                            await handler(position_item)
+                        except Exception as e:
+                            logger.error(f"Position handler error for item {position_item.get('symbol')}: {e}", exc_info=True)
             else:
                 logger.debug(f"[{self.name}] No handler for position topic.")
 
@@ -4669,16 +4662,6 @@ class FinalFixedWebSocketManager:
             return 0
         except (AttributeError, RuntimeError):
             return 0
-
-    async def reconcile_positions_from_rest(self):
-        """Compatibility method for integrated_launch_system"""
-        try:
-            if hasattr(self, 'monitor') and self.monitor:
-                await self.monitor.run_reconciliation_cycle()
-            else:
-                logger.debug("reconcile_positions_from_rest: no monitor attached")
-        except Exception as e:
-            logger.error(f"reconcile_positions_from_rest error: {e}", exc_info=True)
 
 # ================================
 # ИСПРАВЛЕННАЯ СИСТЕМА ОБРАБОТКИ СИГНАЛОВ (без изменений)
