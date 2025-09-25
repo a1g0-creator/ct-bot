@@ -1135,7 +1135,7 @@ class DynamicTrailingStopManager:
                 is_active_price_same = False
 
             if is_ts_same and is_active_price_same:
-                logger.info(f"TS_SKIP_IDEMPOTENT: Trailing stop for {symbol} is already set correctly.")
+                logger.info(f"TS_SKIP_IDENTICAL: symbol={symbol} activePrice={current_active_price} trailingStop={current_ts}")
                 return
 
             # 4.5 Bybit constraint check
@@ -1723,9 +1723,9 @@ class AdaptiveOrderManager:
                 self.logger.info(f"{log_msg}: symbol={symbol}, trailingStop='{trailing_stop_price}'")
                 return {"success": True, "result": result}
 
-            # Idempotency: "Not modified" is a success.
+            # Idempotency: "Not modified" is a success for any TS operation.
             if ret_code == 34040:
-                self.logger.debug(f"TS_RESET_NOOP: {symbol} already reset.")
+                self.logger.info(f"TS_NOOP: symbol={symbol} ret=34040 (not modified)")
                 return {"success": True, "already_set": True, "result": result}
 
             # Idempotency: For REMOVAL requests, 10001 implies the stop is already gone.
@@ -2945,6 +2945,11 @@ class Stage2CopyTradingSystem:
         self._known_positions_margin = {}
         self._last_margin_sync_time = {}
 
+        # Deferred modification queue
+        self._pending_modify = deque()
+        self._max_pending_modify = 100
+        self.copy_connected = False
+
         # ВАЖНО: не регистрируем обработчики здесь, чтобы не плодить дубли.
         # Регистрация произойдёт один раз в start_system() через
         # await self.copy_manager.start_copying()
@@ -3059,29 +3064,47 @@ class Stage2CopyTradingSystem:
             logger.error(f"MARGIN_MIRROR_EXCEPTION: for {symbol}", exc_info=True)
 
     async def _sync_leverage_non_blocking(self, symbol: str, leverage: str):
-        """Sets leverage for a symbol without blocking the caller and handles 110043 as success."""
+        """
+        Sets leverage for a symbol without blocking the caller.
+        Checks current leverage first and handles '110043' (not modified) as a success.
+        """
         async with self._leverage_sync_locks[symbol]:
-            # Double-check cache inside the lock in case another task just finished
+            # Quick check from local cache
             if self._last_synced_leverage.get(symbol) == leverage:
                 return
 
             try:
+                # 1. Pre-check current leverage from the exchange to avoid unnecessary API calls.
+                positions = await self.main_client.get_positions(category="linear", symbol=symbol)
+                if positions:
+                    # Leverage is set per symbol, so we can take it from the first position entry.
+                    current_leverage_str = positions[0].get('leverage')
+                    if current_leverage_str and current_leverage_str == leverage:
+                        logger.info(f"LEVERAGE_SKIP_SAME: symbol={symbol} current={current_leverage_str} target={leverage}")
+                        self._last_synced_leverage[symbol] = leverage
+                        return
+
+                # 2. If leverage differs or is unknown, attempt to set it.
                 logger.info(f"LEVERAGE_SYNC_START: Attempting to set leverage for {symbol} to {leverage}x.")
-                # The underlying set_leverage will be modified to handle 110043 as success
+
                 result = await self.main_client.set_leverage(
                     category="linear",
                     symbol=symbol,
                     leverage=leverage
                 )
 
-                # This assumes the client method is updated to return a dict with success status
-                # even for retCode 110043.
-                if result and result.get('success'):
+                # 3. Handle the response based on Bybit's retCode.
+                ret_code = (result or {}).get("retCode")
+                if ret_code == 0:
                     logger.info(f"LEVERAGE_SYNC_SUCCESS: Leverage for {symbol} set to {leverage}x.")
                     self._last_synced_leverage[symbol] = leverage
+                elif ret_code == 110043:
+                    logger.info(f"LEVERAGE_NOOP: symbol={symbol} ret=110043")
+                    # The state is confirmed to be the target state, so we update the cache.
+                    self._last_synced_leverage[symbol] = leverage
                 else:
-                    error_msg = result.get('error', 'Unknown error')
-                    logger.error(f"LEVERAGE_SYNC_FAILED: for {symbol} to {leverage}x. Reason: {error_msg}")
+                    error_msg = (result or {}).get('retMsg', 'Unknown error')
+                    logger.error(f"LEVERAGE_SYNC_FAILED: for {symbol} to {leverage}x. Reason: {error_msg} (retCode: {ret_code})")
 
             except Exception as e:
                 logger.error(f"LEVERAGE_SYNC_EXCEPTION: for {symbol} to {leverage}x.", exc_info=True)
@@ -3224,6 +3247,19 @@ class Stage2CopyTradingSystem:
 
                 is_opening = current_target_size == 0 and final_target_size > 0
                 is_closing = final_target_size == 0 and current_target_size > 0
+                is_modifying = not is_opening and not is_closing
+
+                # If a modify signal comes in before we are connected, queue it.
+                if is_modifying and not self.copy_connected:
+                    if len(self._pending_modify) < self._max_pending_modify:
+                        self._pending_modify.append(item)
+                        logger.info(
+                            f"⏸️ MODIFY_DEFERRED: symbol={symbol} side={donor_side} size={donor_size} "
+                            f"(queue_len={len(self._pending_modify)}/{self._max_pending_modify})"
+                        )
+                    else:
+                        logger.warning(f"Pending modify queue is full. Dropping signal for {symbol}.")
+                    return
 
                 # Hysteresis check: skip tiny modifications, but NEVER skip a full close.
                 if not is_closing and abs(size_delta) < min_qty:
@@ -3238,7 +3274,6 @@ class Stage2CopyTradingSystem:
                 order_side = 'Buy' if size_delta > 0 else 'Sell'
                 order_qty = abs(size_delta)
 
-                is_modifying = not is_opening and not is_closing
                 reason = "ws_open" if is_opening else "ws_close" if is_closing else "ws_modify"
 
                 logger.info(f"COPY_ACTION: {reason.upper()} for {symbol} | Qty: {order_qty:.4f} | Side: {order_side}")
@@ -4081,6 +4116,17 @@ class Stage2CopyTradingSystem:
             self._copy_ready = True
             self.copy_state.main_rest_ok = True
             self.copy_state.limits_checked = True # Assume checked during startup
+
+            # --- Deferred Modify Flush ---
+            self.copy_connected = True
+            logger.info("✅ Copy system is now connected.")
+            if self._pending_modify:
+                logger.info(f"▶️ MODIFY_FLUSHED: count={len(self._pending_modify)}")
+                while self._pending_modify:
+                    item = self._pending_modify.popleft()
+                    await self.on_position_item(item)
+            # -----------------------------
+
             logger.info("✅ Copy system is ready and accepting signals. State: %s", self.copy_state)
 
             # Единичное уведомление о старте Stage-2
