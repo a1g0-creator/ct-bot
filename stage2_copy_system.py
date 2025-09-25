@@ -1690,19 +1690,17 @@ class AdaptiveOrderManager:
         Sets or resets a trailing stop for a position using the v5/position/trading-stop endpoint.
         Handles Bybit's specific payload and error code requirements for idempotency.
         """
+        data = {
+            "category": "linear",
+            "symbol": symbol,
+            "positionIdx": position_idx,
+        }
         try:
-            data = {
-                "category": "linear",
-                "symbol": symbol,
-                "positionIdx": position_idx,
-            }
-
             # If trailing_stop_price is "0", it's a reset request.
             is_reset = trailing_stop_price == "0"
             if is_reset:
                 self.logger.info(f"TS_RESET_START: symbol={symbol}, positionIdx={position_idx}")
                 data["trailingStop"] = "0"
-                # Sending other params as "0" is good practice for resets to avoid ambiguity
                 data["takeProfit"] = "0"
                 data["stopLoss"] = "0"
             else:
@@ -1711,39 +1709,42 @@ class AdaptiveOrderManager:
                 if active_price:
                     data["activePrice"] = active_price
 
+            # Optional: Pre-check for identical parameters
+            positions = await self.main_client.get_positions(category="linear", symbol=symbol)
+            current_pos = next((p for p in positions if int(p.get('positionIdx', -1)) == position_idx), None)
+            if current_pos:
+                current_ts = safe_float(current_pos.get('trailingStop', 0.0))
+                current_active = safe_float(current_pos.get('activePrice', 0.0))
+
+                target_ts = safe_float(trailing_stop_price, -1)
+                target_active = safe_float(active_price, -1)
+
+                if abs(current_ts - target_ts) < 1e-9 and (not active_price or abs(current_active - target_active) < 1e-9):
+                    self.logger.debug("TS_SKIP_IDENTICAL: symbol=%s", symbol)
+                    return {"success": True, "noop": True}
+
             self.logger.debug(f"TS Payload for {symbol}: {json.dumps(data)}")
             result = await self.main_client._make_single_request("POST", "position/trading-stop", data=data)
 
+            # Preserve original success logic
+            if result and result.get("retCode") == 0:
+                 return {"success": True, "result": result}
+
+            # If we are here, it means the request failed. _make_single_request raises on non-zero retCode.
+            # The only way to get here with a non-zero retCode is if the exception was caught, which we do below.
+            # This logic preserves the original behavior of returning a failure dictionary.
             ret_code = (result or {}).get("retCode")
             ret_msg = (result or {}).get("retMsg", "Unknown error")
-
-            # --- Success Cases ---
-            if ret_code == 0:
-                log_msg = "TS_RESET_OK" if is_reset else "TS_APPLY_OK"
-                self.logger.info(f"{log_msg}: symbol={symbol}, trailingStop='{trailing_stop_price}'")
-                return {"success": True, "result": result}
-
-            # Idempotency: "Not modified" is a success for any TS operation.
-            if ret_code == 34040:
-                self.logger.info(f"TS_NOOP: symbol={symbol} ret=34040 (not modified)")
-                return {"success": True, "already_set": True, "result": result}
-
-            # Idempotency: For REMOVAL requests, 10001 implies the stop is already gone.
-            if is_reset and ret_code == 10001:
-                self.logger.info(f"TS_ALREADY_REMOVED{{symbol={symbol}, reason='already_removed_10001'}}")
-                return {"success": True, "already_set": True, "result": result}
-
-            # --- Failure Cases ---
-            if ret_code == 10001:
-                self.logger.error(f"TS_APPLY_FAIL: Invalid parameters for {symbol}. code={ret_code}, msg='{ret_msg}', payload={json.dumps(data)}")
-                return {"success": False, "error": ret_msg, "no_retry": True}
-
             self.logger.error(f"Trailing stop placement failed for {symbol}: {ret_msg} (retCode: {ret_code})")
             return {"success": False, "error": ret_msg, "result": result}
 
         except Exception as e:
+            if "34040" in str(e):
+                self.logger.info("TS_NOOP: symbol=%s ret=34040 (not modified)", data.get("symbol"))
+                return {"success": True, "noop": True}
+
             self.logger.exception(f"Trailing stop placement error: {e}")
-            return {"success": False, "error": str(e)}
+            raise
 
     async def cancel_all_symbol_orders(self, symbol: str, order_type_filter: Optional[str] = None) -> Dict[str, Any]:
         """Cancels all open orders for a symbol, optionally filtering by type (e.g., 'Stop')."""
@@ -2945,9 +2946,10 @@ class Stage2CopyTradingSystem:
         self._known_positions_margin = {}
         self._last_margin_sync_time = {}
 
-        # Deferred modification queue
+        # Deferred modify signals
+        from collections import deque
         self._pending_modify = deque()
-        self._max_pending_modify = 100
+        self._max_pending_modify = 200
         self.copy_connected = False
 
         # ВАЖНО: не регистрируем обработчики здесь, чтобы не плодить дубли.
@@ -3063,51 +3065,46 @@ class Stage2CopyTradingSystem:
         except Exception as e:
             logger.error(f"MARGIN_MIRROR_EXCEPTION: for {symbol}", exc_info=True)
 
-    async def _sync_leverage_non_blocking(self, symbol: str, leverage: str):
+    async def _get_current_leverage(self, symbol: str) -> Optional[str]:
+        """Helper to get current leverage for a symbol from the main client."""
+        try:
+            positions = await self.main_client.get_positions(category="linear", symbol=symbol)
+            if positions:
+                return positions[0].get('leverage')
+        except Exception as e:
+            logger.error(f"Failed to get current leverage for {symbol}: {e}")
+        return None
+
+    async def _sync_leverage_non_blocking(self, symbol: str, target_leverage: str):
         """
         Sets leverage for a symbol without blocking the caller.
         Checks current leverage first and handles '110043' (not modified) as a success.
         """
         async with self._leverage_sync_locks[symbol]:
-            # Quick check from local cache
-            if self._last_synced_leverage.get(symbol) == leverage:
-                return
-
             try:
-                # 1. Pre-check current leverage from the exchange to avoid unnecessary API calls.
-                positions = await self.main_client.get_positions(category="linear", symbol=symbol)
-                if positions:
-                    # Leverage is set per symbol, so we can take it from the first position entry.
-                    current_leverage_str = positions[0].get('leverage')
-                    if current_leverage_str and current_leverage_str == leverage:
-                        logger.info(f"LEVERAGE_SKIP_SAME: symbol={symbol} current={current_leverage_str} target={leverage}")
-                        self._last_synced_leverage[symbol] = leverage
-                        return
+                current = await self._get_current_leverage(symbol)
+                if str(current) == str(target_leverage):
+                    self.logger.info("LEVERAGE_SKIP_SAME: symbol=%s current=%s target=%s", symbol, current, target_leverage)
+                    self._last_synced_leverage[symbol] = target_leverage
+                    return
 
-                # 2. If leverage differs or is unknown, attempt to set it.
-                logger.info(f"LEVERAGE_SYNC_START: Attempting to set leverage for {symbol} to {leverage}x.")
-
-                result = await self.main_client.set_leverage(
+                logger.info(f"LEVERAGE_SYNC_START: Attempting to set leverage for {symbol} to {target_leverage}x.")
+                await self.main_client.set_leverage(
                     category="linear",
                     symbol=symbol,
-                    leverage=leverage
+                    leverage=str(target_leverage)
                 )
-
-                # 3. Handle the response based on Bybit's retCode.
-                ret_code = (result or {}).get("retCode")
-                if ret_code == 0:
-                    logger.info(f"LEVERAGE_SYNC_SUCCESS: Leverage for {symbol} set to {leverage}x.")
-                    self._last_synced_leverage[symbol] = leverage
-                elif ret_code == 110043:
-                    logger.info(f"LEVERAGE_NOOP: symbol={symbol} ret=110043")
-                    # The state is confirmed to be the target state, so we update the cache.
-                    self._last_synced_leverage[symbol] = leverage
-                else:
-                    error_msg = (result or {}).get('retMsg', 'Unknown error')
-                    logger.error(f"LEVERAGE_SYNC_FAILED: for {symbol} to {leverage}x. Reason: {error_msg} (retCode: {ret_code})")
+                self._last_synced_leverage[symbol] = target_leverage
+                logger.info(f"LEVERAGE_SYNC_SUCCESS: Leverage for {symbol} set to {target_leverage}x.")
 
             except Exception as e:
-                logger.error(f"LEVERAGE_SYNC_EXCEPTION: for {symbol} to {leverage}x.", exc_info=True)
+                if "110043" in str(e):
+                    self.logger.info("LEVERAGE_NOOP: symbol=%s ret=110043 (not modified)", symbol)
+                    self._last_synced_leverage[symbol] = target_leverage
+                    return
+
+                logger.error(f"LEVERAGE_SYNC_EXCEPTION: for {symbol} to {target_leverage}x.", exc_info=True)
+                raise
 
     async def on_position_item(self, item: dict):
         """
@@ -3331,155 +3328,57 @@ class Stage2CopyTradingSystem:
             logger.error(f"on_position_item failed: {e}", exc_info=True)
 
 
+    async def handle_position_modify_signal(self, symbol, side, size, price, **kwargs):
+        if not self.copy_connected:
+            if len(self._pending_modify) >= self._max_pending_modify:
+                self._pending_modify.popleft()
+            self._pending_modify.append((symbol, side, size, price, kwargs))
+            self.logger.info("⏸️ MODIFY_DEFERRED: symbol=%s side=%s size=%s (queue_len=%d/%d)",
+                             symbol, side, size, len(self._pending_modify), self._max_pending_modify)
+            return
+        await self._handle_position_modify_internal(symbol, side, size, price, **kwargs)
+
+    async def _handle_position_modify_internal(self, symbol, side, size, price, **kwargs):
+        """This method contains the actual business logic for handling a position modification."""
+        signal = TradingSignal(
+            signal_type=SignalType.POSITION_MODIFY,
+            symbol=symbol,
+            side=side,
+            size=size,
+            price=price,
+            timestamp=time.time(),
+            metadata=kwargs
+        )
+        await self._handle_position_modify_for_copy(signal)
+
     async def process_copy_signal(self, signal: TradingSignal):
         """
         Compatibility wrapper: старый pipeline -> новый on_position_item().
         Не удаляем метод, чтобы сохранить обратную совместимость.
         """
-        try:
-            handler = getattr(self, "on_position_item", None)
-            if handler is None:
-                logger.warning("process_copy_signal: on_position_item() is missing; signal ignored: %s", signal)
-                return
-
-            # Нормализация: собрать минимальный item, который ожидает on_position_item(...)
-            side = getattr(signal, "side", "Buy")
-            side = side.name if hasattr(side, "name") else str(side)
-
-            item = {
-                "symbol": getattr(signal, "symbol", "") or "",
-                "side": side or "",
-                "size": str(getattr(signal, "size", 0) or 0),
-                "entryPrice": str(getattr(signal, "price", 0) or 0),
-            "positionIdx": int(signal.metadata.get("position_idx", 0) if hasattr(signal, 'metadata') and signal.metadata else 0),
-            }
-
-            return await handler(item)
-
-        except Exception as e:
-            logger.error("process_copy_signal failed: %s", e, exc_info=True)
-
-
-    async def process_copy_signal_legacy(self, signal: TradingSignal):
-        """
-        Обработчик сигналов копирования для Stage2CopyTradingSystem.
-        Добавлен реальный bypass для /force_copy (metadata.force_copy=True),
-        глобальный gate от контроллера риска применяется только если НЕ force_copy.
-        Делегирует выполнение в PositionCopyManager.
-        """
-        try:
-            # ---- извлекаем основные поля и флаг форс-режима
-            symbol = getattr(signal, 'symbol', None)
-            side   = getattr(signal, 'side', None)
-            size   = float(getattr(signal, 'size', 0) or 0)
-            is_force = bool((getattr(signal, "metadata", {}) or {}).get("force_copy", False))
-
-            logger.info("🔄 COPY SIGNAL RECEIVED: %s %s %s", symbol, side, size)
-
-            # 0) Проверяем готовность системы
-            if not self.system_active:
-                logger.warning("Copy system not active - ignoring signal")
-                await send_telegram_alert(
-                    f"⚠️ **СИСТЕМА КОПИРОВАНИЯ НЕАКТИВНА**\n"
-                    f"Пропущен сигнал: {symbol} {side}\n"
-                    "Активируйте систему для копирования"
-                )
-                return
-
-            if not self._is_copy_ready():
-                logger.warning("Copy system not ready - ignoring signal")
-                return
-
-            # 1) Глобальный gate от контроллера риска (только для открытия позиций)
-            #    Применяем ТОЛЬКО если НЕ force_copy.
-            if signal.signal_type == SignalType.POSITION_OPEN and not is_force:
-                if hasattr(self, 'drawdown_controller') and hasattr(self.drawdown_controller, 'can_open_positions'):
-                    if not self.drawdown_controller.can_open_positions():
-                        mode = getattr(getattr(self.drawdown_controller, 'supervisor', None), 'mode', None)
-                        mode_name = getattr(mode, 'value', str(mode)) if mode is not None else 'unknown'
-                    
-                        # НОВОЕ: Логируем в risk_events
-                        risk_events_logger.log_position_rejection(
-                            account_id=2,
-                            symbol=symbol,
-                            requested_size=size,
-                            reason=f"Blocked by risk manager: {mode_name} mode"
-                        )
-                    
-                        logger.warning("Cannot open new positions: system in %s mode", mode_name)
-                        await send_telegram_alert(
-                            "🛡️ **РИСК-МЕНЕДЖМЕНТ: БЛОКИРОВКА ОТКРЫТИЯ**\n"
-                            f"Сигнал: {symbol} {side}\n"
-                            f"Режим: {mode_name}"
-                        )
-                        return
-
-            # Если пришёл принудительный сигнал — явно логируем и уведомляем
-            if is_force:
-                logger.warning("FORCED COPY OVERRIDE: proceeding to open %s %s %s", symbol, side, size)
-                try:
-                    await send_telegram_alert(
-                        f"⚡️ **FORCED COPY**: исполняем {symbol} {side} {size} (обход DD-гейта)"
-                    )
-                except Exception:
-                    pass
-
-            # 2) Подробная проверка лимитов риска (твоя существующая логика)
-            #    Блокируем только если НЕ force_copy.
-            if hasattr(self, 'drawdown_controller'):
-                try:
-                    risk_check = await self.drawdown_controller.check_risk_limits()
-                    if signal.signal_type == SignalType.POSITION_OPEN and not is_force \
-                        and not risk_check.get('can_open_position', True):
-                    
-                        # НОВОЕ: Логируем в risk_events
-                        risk_events_logger.log_position_rejection(
-                            account_id=2,
-                            symbol=symbol,
-                            requested_size=size,
-                            reason=risk_check.get('reason', 'Risk limits exceeded')
-                        )
-                    
-                        logger.warning("Risk limits prevent copying: %s", risk_check.get('reason', 'Unknown'))
-                        await send_telegram_alert(
-                            "🛡️ **РИСК-МЕНЕДЖМЕНТ БЛОКИРОВАЛ КОПИРОВАНИЕ**\n"
-                            f"Сигнал: {symbol} {side}\n"
-                            f"Причина: {risk_check.get('reason', 'Risk limits')}"
-                        )
-                        return
-                except Exception as e:
-                    logger.warning(f"Risk check error: {e}")
-                    # продолжаем с предупреждением
-
-            # 3) Делегируем в copy_manager, где находятся нужные методы
-            if signal.signal_type == SignalType.POSITION_OPEN:
-                await self._handle_position_open_for_copy(signal)
-            elif signal.signal_type == SignalType.POSITION_CLOSE:
-                await self._handle_position_close_for_copy(signal)
-            elif signal.signal_type == SignalType.POSITION_MODIFY:
-                await self._handle_position_modify_for_copy(signal)
-            else:
-                logger.warning(f"Unknown signal type: {signal.signal_type}")
-                return
-
-            # 4) Обновляем статистику
-            self.system_stats['total_signals_processed'] += 1
-            self.system_stats['successful_copies'] += 1
-
-            # 5) Отправляем уведомление об обработке
-            forced_note = " (FORCED)" if is_force else ""
-            await send_telegram_alert(
-                "✅ **СИГНАЛ ОБРАБОТАН**\n"
-                f"Action: {signal.signal_type.value}{forced_note}\n"
-                f"Symbol: {symbol}\n"
-                f"Size: {size:.6f}\n"
-                "Status: Делегировано в PositionCopyManager"
+        if signal.signal_type == SignalType.POSITION_MODIFY:
+            await self.handle_position_modify_signal(
+                signal.symbol, signal.side, signal.size, signal.price, **signal.metadata
             )
+        else:
+            try:
+                handler = getattr(self, "on_position_item", None)
+                if handler is None:
+                    logger.warning("process_copy_signal: on_position_item() is missing; signal ignored: %s", signal)
+                    return
 
-        except Exception as e:
-            logger.error(f"Copy signal processing error: {e}")
-            self.system_stats['failed_copies'] += 1
-            await send_telegram_alert(f"❌ **ОШИБКА КОПИРОВАНИЯ**: {str(e)}")
+                side = getattr(signal, "side", "Buy")
+                side = side.name if hasattr(side, "name") else str(side)
+                item = {
+                    "symbol": getattr(signal, "symbol", "") or "",
+                    "side": side or "",
+                    "size": str(getattr(signal, "size", 0) or 0),
+                    "entryPrice": str(getattr(signal, "price", 0) or 0),
+                    "positionIdx": int(signal.metadata.get("position_idx", 0) if hasattr(signal, 'metadata') and signal.metadata else 0),
+                }
+                return await handler(item)
+            except Exception as e:
+                logger.error("process_copy_signal failed: %s", e, exc_info=True)
 
     async def _handle_position_open_for_copy(self, signal):
         """Обработка открытия позиции для копирования - ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ"""
@@ -4086,6 +3985,24 @@ class Stage2CopyTradingSystem:
         except Exception as e:
             logger.error(f"Copy signal handler registration error: {e}")
     
+    async def _mark_system_ready(self):
+        if self.copy_connected:
+            return
+        self.copy_connected = True
+        await self._process_pending_modify()
+
+    async def _process_pending_modify(self):
+        if not self._pending_modify:
+            return
+        cnt = len(self._pending_modify)
+        self.logger.info("▶️ MODIFY_FLUSHED: count=%d", cnt)
+        while self._pending_modify:
+            symbol, side, size, price, kwargs = self._pending_modify.popleft()
+            try:
+                await self._handle_position_modify_internal(symbol, side, size, price, **kwargs)
+            except Exception as e:
+                self.logger.error("MODIFY_REPLAY_FAIL: %s %s %s -> %s", symbol, side, size, e)
+
     async def start_system(self):
         """Идемпотентный запуск Stage-2 без повторного старта Stage-1"""
         if getattr(self, "_started", False):
@@ -4096,10 +4013,6 @@ class Stage2CopyTradingSystem:
         try:
             logger.info("🚀 Starting Stage 2 Copy Trading System...")
             self.system_stats['start_time'] = time.time()
-
-            # ⚠️ НЕ стартуем Stage-1 здесь. Он запускается оркестратором.
-            # if not getattr(self.base_monitor, "_started", False):
-            #     await self.base_monitor.start()
 
             # Регистрируем обработчики копирования один раз
             if not self._handlers_registered:
@@ -4117,15 +4030,7 @@ class Stage2CopyTradingSystem:
             self.copy_state.main_rest_ok = True
             self.copy_state.limits_checked = True # Assume checked during startup
 
-            # --- Deferred Modify Flush ---
-            self.copy_connected = True
-            logger.info("✅ Copy system is now connected.")
-            if self._pending_modify:
-                logger.info(f"▶️ MODIFY_FLUSHED: count={len(self._pending_modify)}")
-                while self._pending_modify:
-                    item = self._pending_modify.popleft()
-                    await self.on_position_item(item)
-            # -----------------------------
+            await self._mark_system_ready()
 
             logger.info("✅ Copy system is ready and accepting signals. State: %s", self.copy_state)
 
