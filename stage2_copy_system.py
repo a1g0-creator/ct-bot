@@ -2927,8 +2927,9 @@ class Stage2CopyTradingSystem:
 
         # Deferred modification queue
         self._pending_modify = deque()
-        self._max_pending_modify = 100
+        self._max_pending_modify = 200
         self.copy_connected = False
+        self._handlers_ready = False  # система готова к обработке modify
 
         # ВАЖНО: не регистрируем обработчики здесь, чтобы не плодить дубли.
         # Регистрация произойдёт один раз в start_system() через
@@ -3067,27 +3068,25 @@ class Stage2CopyTradingSystem:
                 # 2. If leverage differs or is unknown, attempt to set it.
                 logger.info(f"LEVERAGE_SYNC_START: Attempting to set leverage for {symbol} to {leverage}x.")
 
-                result = await self.main_client.set_leverage(
+                # ВАЖНО: main_client._make_single_request кидает на retCode != 0,
+                # поэтому сюда мы попадаем ТОЛЬКО при успехе.
+                await self.main_client.set_leverage(
                     category="linear",
                     symbol=symbol,
                     leverage=leverage
                 )
-
-                # 3. Handle the response based on Bybit's retCode.
-                ret_code = (result or {}).get("retCode")
-                if ret_code == 0:
-                    logger.info(f"LEVERAGE_SYNC_SUCCESS: Leverage for {symbol} set to {leverage}x.")
-                    self._last_synced_leverage[symbol] = leverage
-                elif ret_code == 110043:
-                    logger.info(f"LEVERAGE_NOOP: symbol={symbol} ret=110043")
-                    # The state is confirmed to be the target state, so we update the cache.
-                    self._last_synced_leverage[symbol] = leverage
-                else:
-                    error_msg = (result or {}).get('retMsg', 'Unknown error')
-                    logger.error(f"LEVERAGE_SYNC_FAILED: for {symbol} to {leverage}x. Reason: {error_msg} (retCode: {ret_code})")
+                self._last_synced_leverage[symbol] = leverage
+                logger.info(f"LEVERAGE_SYNC_SUCCESS: Leverage for {symbol} set to {leverage}x.")
 
             except Exception as e:
-                logger.error(f"LEVERAGE_SYNC_EXCEPTION: for {symbol} to {leverage}x.", exc_info=True)
+                es = str(e)
+                # Idempotency: 110043 "leverage not modified" → трактуем как NOOP
+                if "110043" in es:
+                    logger.info("LEVERAGE_NOOP: symbol=%s ret=110043 (not modified)", symbol)
+                    self._last_synced_leverage[symbol] = leverage
+                    return
+                logger.error("LEVERAGE_SYNC_EXCEPTION: for %s to %sx.", symbol, leverage, exc_info=True)
+                raise
 
     async def on_position_item(self, item: dict):
         """
@@ -3311,6 +3310,54 @@ class Stage2CopyTradingSystem:
             logger.error(f"on_position_item failed: {e}", exc_info=True)
 
 
+    async def _handle_position_modify_internal(self, signal: TradingSignal):
+        """Единая 'боевая' логика modify. Делегирует в существующий обработчик для copy."""
+        # Если у тебя уже есть специализированный метод обработки modify — дерни его здесь.
+        # В противном случае нормализуй как в process_copy_signal и отдай в on_position_item.
+        side = getattr(signal, "side", "Buy")
+        side = side.name if hasattr(side, "name") else str(side)
+        item = {
+            "symbol": getattr(signal, "symbol", ""),
+            "side": side or "",
+            "size": str(getattr(signal, "size", 0) or 0),
+            "entryPrice": str(getattr(signal, "price", 0) or 0),
+            "positionIdx": int(signal.metadata.get("position_idx", 0) if hasattr(signal, 'metadata') and signal.metadata else 0),
+        }
+        handler = getattr(self, "on_position_item")
+        return await handler(item)
+
+    async def handle_position_modify_signal(self, signal: TradingSignal):
+        # Если copy-система ещё не готова — откладываем
+        if not self.copy_connected or not self._handlers_ready:
+            if len(self._pending_modify) >= self._max_pending_modify:
+                self._pending_modify.popleft()
+            self._pending_modify.append(signal)
+            self.logger.info("⏸️ MODIFY_DEFERRED: symbol=%s side=%s size=%s (queue_len=%d/%d)",
+                             signal.symbol, signal.side, signal.size,
+                             len(self._pending_modify), self._max_pending_modify)
+            return
+        return await self._handle_position_modify_internal(signal)
+
+    async def _process_pending_modify(self):
+        if not self._pending_modify:
+            return
+        cnt = len(self._pending_modify)
+        self.logger.info("▶️ MODIFY_FLUSHED: count=%d", cnt)
+        while self._pending_modify:
+            sig = self._pending_modify.popleft()
+            try:
+                await self._handle_position_modify_internal(sig)
+            except Exception as e:
+                self.logger.error("MODIFY_REPLAY_FAIL: %s %s %s -> %s",
+                                  sig.symbol, sig.side, sig.size, e)
+
+    async def _mark_system_ready(self):
+        if self._handlers_ready:
+            return
+        self._handlers_ready = True
+        self.copy_connected = True
+        await self._process_pending_modify()
+
     async def process_copy_signal(self, signal: TradingSignal):
         """
         Compatibility wrapper: старый pipeline -> новый on_position_item().
@@ -3322,18 +3369,19 @@ class Stage2CopyTradingSystem:
                 logger.warning("process_copy_signal: on_position_item() is missing; signal ignored: %s", signal)
                 return
 
-            # Нормализация: собрать минимальный item, который ожидает on_position_item(...)
+            # Отдельная ветка для POSITION_MODIFY — через deferral
+            if signal.signal_type == SignalType.POSITION_MODIFY:
+                return await self.handle_position_modify_signal(signal)
+            # Остальные сигналы — как сейчас
             side = getattr(signal, "side", "Buy")
             side = side.name if hasattr(side, "name") else str(side)
-
             item = {
-                "symbol": getattr(signal, "symbol", "") or "",
+                "symbol": getattr(signal, "symbol", ""),
                 "side": side or "",
                 "size": str(getattr(signal, "size", 0) or 0),
                 "entryPrice": str(getattr(signal, "price", 0) or 0),
-            "positionIdx": int(signal.metadata.get("position_idx", 0) if hasattr(signal, 'metadata') and signal.metadata else 0),
+                "positionIdx": int(signal.metadata.get("position_idx", 0) if hasattr(signal, 'metadata') and signal.metadata else 0),
             }
-
             return await handler(item)
 
         except Exception as e:
@@ -4097,15 +4145,8 @@ class Stage2CopyTradingSystem:
             self.copy_state.main_rest_ok = True
             self.copy_state.limits_checked = True # Assume checked during startup
 
-            # --- Deferred Modify Flush ---
-            self.copy_connected = True
-            logger.info("✅ Copy system is now connected.")
-            if self._pending_modify:
-                logger.info(f"▶️ MODIFY_FLUSHED: count={len(self._pending_modify)}")
-                while self._pending_modify:
-                    item = self._pending_modify.popleft()
-                    await self.on_position_item(item)
-            # -----------------------------
+            # Включаем готовность и флешим отложенные modify
+            asyncio.create_task(self._mark_system_ready())
 
             logger.info("✅ Copy system is ready and accepting signals. State: %s", self.copy_state)
 
