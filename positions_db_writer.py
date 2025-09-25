@@ -410,11 +410,15 @@ class PositionsDBWriter:
         """
         await self.update_position(data, account_id)
 
-    def _upsert_open_position_sync(self, db: Session, norm: Dict[str, Any]) -> None:
+    def _upsert_open_position_sync(self, db: Session, norm: Dict[str, Any], leverage: Optional[Decimal] = None) -> None:
         """
-        Апсерт открытой позиции с COALESCE для сохранения важных полей
+        Upserts an open position, allowing an explicit leverage override.
         """
         try:
+            # If an explicit leverage is passed, it overrides the one in 'norm'.
+            if leverage is not None:
+                norm['leverage'] = leverage
+
             db.execute(text("""
                 INSERT INTO positions_open (
                     account_id, symbol, side, qty,
@@ -432,7 +436,7 @@ class PositionsDBWriter:
                     qty = EXCLUDED.qty,
                     entry_price = COALESCE(EXCLUDED.entry_price, positions_open.entry_price),
                     mark_price = COALESCE(EXCLUDED.mark_price, positions_open.mark_price),
-                    leverage = COALESCE(EXCLUDED.leverage, positions_open.leverage),
+                    leverage = EXCLUDED.leverage, -- Always take the new leverage value
                     margin_mode = COALESCE(EXCLUDED.margin_mode, positions_open.margin_mode),
                     liq_price = COALESCE(EXCLUDED.liq_price, positions_open.liq_price),
                     unreal_pnl = EXCLUDED.unreal_pnl,
@@ -442,21 +446,17 @@ class PositionsDBWriter:
             """), norm)
             
             self.logger.debug(
-                "Upserted open position: account_id=%s, symbol=%s, idx=%s, qty=%s",
+                "Upserted open position: account_id=%s, symbol=%s, idx=%s, qty=%s, leverage=%s",
                 norm.get("account_id"), norm.get("symbol"), 
-                norm.get("position_idx"), norm.get("qty")
+                norm.get("position_idx"), norm.get("qty"), norm.get('leverage')
             )
         except SQLAlchemyError as e:
             self.logger.error(f"Failed to upsert open position: {e}")
             raise
     
-    def _close_position_sync(self, db: Session, data: Dict[str, Any], already_in_tx: bool = False) -> None:
+    def _close_position_sync(self, db: Session, data: Dict[str, Any], already_in_tx: bool = False, leverage: Optional[Decimal] = None) -> None:
         """
-        Корректно переносит позицию из positions_open в positions_closed и заполняет ВСЕ vitals:
-        - exit_price (плотный перебор полей + fallback на open.raw)
-        - realized_pnl (из сырых полей или расчёт от entry/exit)
-        - fees (расширенный набор ключей)
-        - leverage / margin_mode / liq_price (из close.raw с откатом на open)
+        Moves a position from open to closed, allowing an explicit leverage override.
         """
         # 1) читаем текущую open-позицию
         cur = db.execute(text("""
@@ -515,8 +515,10 @@ class PositionsDBWriter:
         ])
 
         # 5) lev/mode/liq с фоллбеком
-        leverage_close   = _first_decimal(raw_close, ["leverage", "leverageE2"])
-        leverage         = leverage_close if leverage_close is not None else safe_decimal(existing.get("leverage"))
+        if leverage is None: # Only if not explicitly provided
+            leverage_close = _first_decimal(raw_close, ["leverage", "leverageE2"])
+            leverage = leverage_close if leverage_close is not None else safe_decimal(existing.get("leverage"))
+
         margin_mode_close = _normalize_margin_mode(
             raw_close.get("marginMode") or raw_close.get("margin_mode") or raw_close.get("tradeMode")
         )
@@ -988,6 +990,45 @@ class PositionsDBWriter:
             self.logger.exception(f"_update_position_sync failed: {e}")
             if not already_in_tx:
                 raise
+
+    async def log_open(self, data: Dict[str, Any], leverage: Optional[int] = None):
+        """Asynchronously logs the opening/modification of a position with a specific leverage."""
+        if not data:
+            self.logger.warning("log_open called with empty data")
+            return
+
+        leverage_decimal = Decimal(str(leverage)) if leverage is not None else None
+
+        def sync_task():
+            with self._session() as db:
+                norm = self.normalize_open(data)
+                self._upsert_open_position_sync(db, norm, leverage=leverage_decimal)
+                self.logger.info(f"DB_LOG_OPEN: Position {norm.get('symbol')} logged to DB with leverage={leverage}.")
+
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, sync_task)
+        except Exception as e:
+            self.logger.error(f"log_open async error: {e}", exc_info=True)
+
+    async def log_close(self, data: Dict[str, Any], leverage: Optional[int] = None):
+        """Asynchronously logs the closing of a position with a specific leverage."""
+        if not data:
+            self.logger.warning("log_close called with empty data")
+            return
+
+        leverage_decimal = Decimal(str(leverage)) if leverage is not None else None
+
+        def sync_task():
+            with self._session() as db:
+                self._close_position_sync(db, data, leverage=leverage_decimal)
+                self.logger.info(f"DB_LOG_CLOSE: Position {data.get('symbol')} closure logged to DB with leverage={leverage}.")
+
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, sync_task)
+        except Exception as e:
+            self.logger.error(f"log_close async error: {e}", exc_info=True)
 
 
 # ===================== GLOBAL INSTANCE =====================

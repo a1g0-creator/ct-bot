@@ -3160,8 +3160,8 @@ class EnhancedBybitClient:
             logger.error(f"{self.name} - Order placement error: {e}", exc_info=True)
             return None
 
-    async def set_leverage(self, category: str, symbol: str, leverage: str) -> dict:
-        """Sets leverage for a symbol, handles 110043 as success without retries."""
+    async def set_leverage(self, category: str, symbol: str, leverage: str, on_success_callback: Optional[Callable] = None) -> dict:
+        """Sets leverage and calls a callback on success."""
         try:
             data = {
                 "category": category,
@@ -3171,23 +3171,23 @@ class EnhancedBybitClient:
             }
             logger.info(f"{self.name} - Setting leverage for {symbol} to {leverage}x")
 
-            # Call single request to bypass the generic retry logic for this specific case
             result = await self._make_single_request("POST", "position/set-leverage", data=data)
 
             ret_code = (result or {}).get("retCode")
+            success = ret_code == 0 or ret_code == 110043
 
-            if ret_code == 0:
-                logger.info(f"{self.name} - Leverage for {symbol} set to {leverage}x successfully.")
-                return {"success": True, "result": result}
-
-            if ret_code == 110043: # Leverage not modified
-                logger.info(f"Leverage for {symbol} was already {leverage}x. Treating as success.")
-                return {"success": True, "already_set": True, "result": result}
-
-            # For any other error, return failure
-            error_msg = result.get('retMsg', 'Unknown error') if result else 'No response'
-            logger.error(f"{self.name} - Failed to set leverage for {symbol}: {error_msg} (retCode: {ret_code})")
-            return {"success": False, "error": error_msg, "result": result}
+            if success:
+                logger.info(f"Leverage for {symbol} is now {leverage}x (retCode: {ret_code}).")
+                if on_success_callback:
+                    try:
+                        on_success_callback(symbol, int(leverage))
+                    except Exception as cb_exc:
+                        logger.error(f"Error in set_leverage on_success_callback: {cb_exc}", exc_info=True)
+                return {"success": True, "already_set": ret_code == 110043, "result": result}
+            else:
+                error_msg = result.get('retMsg', 'Unknown error') if result else 'No response'
+                logger.error(f"{self.name} - Failed to set leverage for {symbol}: {error_msg} (retCode: {ret_code})")
+                return {"success": False, "error": error_msg, "result": result}
 
         except Exception as e:
             logger.error(f"{self.name} - Set leverage error for {symbol}: {e}", exc_info=True)
@@ -4670,11 +4670,13 @@ class FinalFixedWebSocketManager:
 class ProductionSignalProcessor:
     """Промышленная система обработки торговых сигналов"""
     
-    def __init__(self, account_id: int):
+    def __init__(self, account_id: int, monitor: 'FinalTradingMonitor' = None):
         # Состояние позиций
         self.account_id = account_id
+        self.monitor = monitor
         self.known_positions = {}
         self.position_history = deque(maxlen=1000)
+        self._last_set_leverage: dict[str, int] = {}
         
         # Очереди с ограничением размера для backpressure
         self.signal_queue = asyncio.PriorityQueue(maxsize=PRODUCTION_CONFIG['max_queue_size'])
@@ -5085,6 +5087,19 @@ class ProductionSignalProcessor:
         
             # Существующая логика обработки сигналов
             # В зависимости от типа сигнала выполняем соответствующие действия
+            try:
+                from positions_db_writer import positions_writer
+                position_data = signal.metadata.get('position_data', {})
+                position_idx = position_data.get('position_idx', 0)
+                leverage = await self._get_main_leverage_for_log(signal.symbol, position_idx)
+
+                if signal.signal_type in [SignalType.POSITION_OPEN, SignalType.POSITION_MODIFY]:
+                    await positions_writer.log_open(position_data, leverage=leverage)
+                elif signal.signal_type == SignalType.POSITION_CLOSE:
+                    await positions_writer.log_close(position_data, leverage=leverage)
+            except Exception as log_exc:
+                logger.error(f"Failed to log position to DB with leverage: {log_exc}", exc_info=True)
+
             if signal.signal_type == SignalType.POSITION_OPEN:
                 await self._handle_position_open_signal(signal)
             elif signal.signal_type == SignalType.POSITION_CLOSE:
@@ -5215,6 +5230,41 @@ class ProductionSignalProcessor:
         except Exception as e:
             logger.error(f"Position modify signal error: {e}")
             await send_telegram_alert(f"❌ **ОШИБКА ИЗМЕНЕНИЯ ПОЗИЦИИ**: {str(e)}")
+
+    def _remember_leverage(self, symbol: str, lev: int) -> None:
+        """Stores the last successfully set leverage for a symbol."""
+        self._last_set_leverage[symbol] = int(lev)
+        logger.info(f"Leverage for {symbol} remembered: {lev}x")
+
+    async def _get_main_leverage_for_log(self, symbol: str, position_idx: int) -> int | None:
+        """
+        Gets the leverage for a symbol from the main account's position cache or the last-set cache.
+        """
+        lev = None
+        # 1. Try to get from the main account's current positions via API client
+        if self.monitor and hasattr(self.monitor, 'main_client'):
+            try:
+                positions = await self.monitor.main_client.get_positions(category="linear", symbol=symbol)
+                if positions:
+                    for pos in positions:
+                        if int(pos.get('positionIdx', 0)) == position_idx:
+                            lev_str = pos.get('leverage')
+                            if lev_str:
+                                lev = int(float(lev_str))
+                                logger.debug(f"Found live leverage for {symbol} from MAIN position cache: {lev}x")
+                                break
+            except Exception as e:
+                logger.warning(f"Could not fetch live leverage for {symbol}: {e}")
+
+        # 2. Fallback to the last successfully set leverage
+        if lev is None:
+            lev = self._last_set_leverage.get(symbol)
+            if lev is not None:
+                logger.debug(f"Found cached leverage for {symbol} from last set: {lev}x")
+            else:
+                logger.debug(f"No live or cached leverage found for {symbol}, will use None.")
+
+        return lev
     
     def get_stats(self) -> dict:
         """Получить статистику обработки сигналов"""
@@ -5263,7 +5313,7 @@ class FinalTradingMonitor:
             SOURCE_API_KEY, SOURCE_API_SECRET, "SOURCE_WS", copy_state=self.copy_state
         )
         
-        self.signal_processor = ProductionSignalProcessor(account_id=DONOR_ACCOUNT_ID)
+        self.signal_processor = ProductionSignalProcessor(account_id=DONOR_ACCOUNT_ID, monitor=self)
         
         # Состояние системы
         self.running = False

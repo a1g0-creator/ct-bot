@@ -3067,10 +3067,12 @@ class Stage2CopyTradingSystem:
                 # 2. If leverage differs or is unknown, attempt to set it.
                 logger.info(f"LEVERAGE_SYNC_START: Attempting to set leverage for {symbol} to {leverage}x.")
 
+                # Pass the callback to remember the leverage upon success
                 result = await self.main_client.set_leverage(
                     category="linear",
                     symbol=symbol,
-                    leverage=leverage
+                    leverage=leverage,
+                    on_success_callback=self.base_monitor.signal_processor._remember_leverage
                 )
 
                 # 3. Handle the response based on Bybit's retCode.
