@@ -5090,7 +5090,7 @@ class ProductionSignalProcessor:
             try:
                 from positions_db_writer import positions_writer
                 position_data = signal.metadata.get('position_data', {})
-                position_idx = position_data.get('position_idx', 0)
+                position_idx = position_data.get('position_idx', 0) if position_data else 0
                 leverage = await self._get_main_leverage_for_log(signal.symbol, position_idx)
 
                 if signal.signal_type in [SignalType.POSITION_OPEN, SignalType.POSITION_MODIFY]:
@@ -5238,25 +5238,23 @@ class ProductionSignalProcessor:
 
     async def _get_main_leverage_for_log(self, symbol: str, position_idx: int) -> int | None:
         """
-        Gets the leverage for a symbol from the main account's position cache or the last-set cache.
+        Gets the leverage for a symbol using a two-level cache.
+        1. Checks the Main account's position cache (updated by the reconciliation loop).
+        2. Falls back to the last-set leverage cache (updated by set_leverage calls).
         """
         lev = None
-        # 1. Try to get from the main account's current positions via API client
-        if self.monitor and hasattr(self.monitor, 'main_client'):
-            try:
-                positions = await self.monitor.main_client.get_positions(category="linear", symbol=symbol)
-                if positions:
-                    for pos in positions:
-                        if int(pos.get('positionIdx', 0)) == position_idx:
-                            lev_str = pos.get('leverage')
-                            if lev_str:
-                                lev = int(float(lev_str))
-                                logger.debug(f"Found live leverage for {symbol} from MAIN position cache: {lev}x")
-                                break
-            except Exception as e:
-                logger.warning(f"Could not fetch live leverage for {symbol}: {e}")
+        # Level 1: Check the main positions cache from the monitor
+        if self.monitor and hasattr(self.monitor, 'main_positions_cache'):
+            cache_key = f"{symbol}#{position_idx}"
+            cached_pos = self.monitor.main_positions_cache.get(cache_key)
+            if cached_pos and 'leverage' in cached_pos:
+                try:
+                    lev = int(float(cached_pos['leverage']))
+                    logger.debug(f"Found live leverage for {symbol} from MAIN position cache: {lev}x")
+                except (ValueError, TypeError):
+                    pass
 
-        # 2. Fallback to the last successfully set leverage
+        # Level 2: Fallback to the last successfully set leverage
         if lev is None:
             lev = self._last_set_leverage.get(symbol)
             if lev is not None:
@@ -5333,6 +5331,7 @@ class FinalTradingMonitor:
         self._monitor_task = None             # хэндл цикла мониторинга подключений
         self._planned_shutdown_task = None    # отложенная "эскалация" на shutdown (отменяем при ре-коннекте)
         self._system_active = False           # главный флаг "жить" для _run_main_loop()
+        self.main_positions_cache = {}        # NEW: Cache for MAIN account positions
         # === /NEW ===
         
     def set_copy_state_ref(self, state_obj):
@@ -5522,6 +5521,10 @@ class FinalTradingMonitor:
 
             donor_positions = {p['key']: p for p in (self._normalize_rest_position(pos) for pos in donor_positions_raw) if p}
             main_positions = {p['key']: p for p in (self._normalize_rest_position(pos) for pos in main_positions_raw) if p}
+
+            # Update the main positions cache
+            self.main_positions_cache = {p['key']: p for p in main_positions.values()}
+            logger.info(f"Main positions cache updated with {len(self.main_positions_cache)} positions.")
 
             enqueued_signals, to_open, to_close, to_modify = 0, 0, 0, 0
             all_keys = set(donor_positions.keys()) | set(main_positions.keys())
