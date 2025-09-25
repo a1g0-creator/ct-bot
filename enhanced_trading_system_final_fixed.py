@@ -2698,6 +2698,17 @@ class EnhancedBybitClient:
                     return result
                 else:
                     # Специальная обработка критических ошибок
+                    # Special handling for non-critical "errors" that are just NOOPs
+                    if endpoint == "position/set-leverage" and ret_code == 110043:
+                        self.logger.info("LEVERAGE_NOOP: symbol=%s ret=%s", (data or {}).get("symbol"), ret_code)
+                        response_data["noop"] = True
+                        return response_data
+
+                    if endpoint == "position/trading-stop" and ret_code == 34040:
+                        self.logger.info("TS_NOOP: symbol=%s ret=34040 (not modified)", (data or {}).get("symbol"))
+                        response_data["noop"] = True
+                        return response_data
+
                     if ret_code == 10003:  # Invalid signature
                         logger.critical(f"{self.name} - Invalid signature error!")
                         if self.copy_state and self.name == "MAIN": self.copy_state.main_rest_ok = False
@@ -3160,9 +3171,29 @@ class EnhancedBybitClient:
             logger.error(f"{self.name} - Order placement error: {e}", exc_info=True)
             return None
 
+    async def get_current_leverage(self, symbol: str, category: str = "linear") -> Optional[str]:
+        """Gets the current leverage for a symbol."""
+        try:
+            positions = await self.get_positions(category=category, symbol=symbol)
+            if positions:
+                position = positions[0]
+                leverage = position.get('leverage')
+                if leverage:
+                    return str(leverage)
+            return None
+        except Exception as e:
+            logger.error(f"{self.name} - Error getting current leverage for {symbol}: {e}")
+            return None
+
     async def set_leverage(self, category: str, symbol: str, leverage: str) -> dict:
         """Sets leverage for a symbol, handles 110043 as success without retries."""
         try:
+            # 1) Пред-проверка: если уже равно - пропускаем вызов
+            current = await self.get_current_leverage(symbol, category)
+            if str(current) == str(leverage):
+                logger.info("LEVERAGE_SKIP_SAME: symbol=%s current=%s target=%s", symbol, current, leverage)
+                return {"success": True, "skipped": True}
+
             data = {
                 "category": category,
                 "symbol": symbol,
@@ -3175,14 +3206,15 @@ class EnhancedBybitClient:
             result = await self._make_single_request("POST", "position/set-leverage", data=data)
 
             ret_code = (result or {}).get("retCode")
+            noop = (result or {}).get("noop", False)
 
-            if ret_code == 0:
+            if ret_code == 0 or noop:
+                if noop:
+                    # LEVERAGE_NOOP is logged inside _make_single_request
+                    return {"success": True, "already_set": True, "result": result}
+
                 logger.info(f"{self.name} - Leverage for {symbol} set to {leverage}x successfully.")
                 return {"success": True, "result": result}
-
-            if ret_code == 110043: # Leverage not modified
-                logger.info(f"Leverage for {symbol} was already {leverage}x. Treating as success.")
-                return {"success": True, "already_set": True, "result": result}
 
             # For any other error, return failure
             error_msg = result.get('retMsg', 'Unknown error') if result else 'No response'
@@ -4679,6 +4711,12 @@ class ProductionSignalProcessor:
         # Очереди с ограничением размера для backpressure
         self.signal_queue = asyncio.PriorityQueue(maxsize=PRODUCTION_CONFIG['max_queue_size'])
         self.processed_signals = deque(maxlen=500)
+
+        # Deferred modify signals
+        from collections import deque
+        self._pending_modify = deque()
+        self._max_pending_modify = 200  # лимит очереди
+        self.copy_connected = False
         
         # Система фильтрации подозрительных операций
         self.suspicious_patterns = {
@@ -5178,11 +5216,42 @@ class ProductionSignalProcessor:
             logger.error(f"Position close signal error: {e}")
             await send_telegram_alert(f"❌ **ОШИБКА ЗАКРЫТИЯ ПОЗИЦИИ**: {str(e)}")
 
+    async def _mark_system_ready(self):
+        if self.copy_connected: # Idempotency
+            return
+        self.copy_connected = True
+        await self._process_pending_modify()
+
+    async def _process_pending_modify(self):
+        if not self._pending_modify:
+            return
+        cnt = len(self._pending_modify)
+        self.logger.info("▶️ MODIFY_FLUSHED: count=%d", cnt)
+        while self._pending_modify:
+            signal = self._pending_modify.popleft()
+            try:
+                # отправляем в тот же обработчик, который используется для "живых" сигналов:
+                await self._handle_position_modify_internal(signal)
+            except Exception as e:
+                self.logger.error("MODIFY_REPLAY_FAIL: %s %s %s -> %s", signal.symbol, signal.side, signal.size, e)
+
     async def _handle_position_modify_signal(self, signal: TradingSignal):
         """ИСПРАВЛЕННАЯ обработка сигнала изменения позиции"""
+        if not self.copy_connected:
+            # enqueue with cap
+            if len(self._pending_modify) >= self._max_pending_modify:
+                self._pending_modify.popleft()
+            self._pending_modify.append(signal)
+            self.logger.info("⏸️ MODIFY_DEFERRED: symbol=%s side=%s size=%s (queue_len=%d/%d)",
+                             signal.symbol, signal.side, signal.size, len(self._pending_modify), self._max_pending_modify)
+            return
+
+        await self._handle_position_modify_internal(signal)
+
+    async def _handle_position_modify_internal(self, signal: TradingSignal):
         try:
             logger.info(f"🟡 POSITION MODIFY DETECTED: {signal.symbol} {signal.side} {signal.size} @ {signal.price}")
-        
+
             # Отправляем уведомление об изменении позиции
             await send_telegram_alert(
                 f"🟡 **ПОЗИЦИЯ ИЗМЕНЕНА**\n"
@@ -5192,26 +5261,26 @@ class ProductionSignalProcessor:
                 f"Price: ${signal.price:.4f}\n"
                 f"Time: {datetime.now().strftime('%H:%M:%S')}"
             )
-        
+
             # ✅ ИНТЕГРАЦИЯ: Если есть система копирования Этапа 2, передаем сигнал
             if hasattr(self, '_copy_system_callback') and self._copy_system_callback:
                 try:
                     await self._copy_system_callback(signal)
                     logger.info(f"✅ Modify signal forwarded to copy system: {signal.symbol}")
-                
+
                     await send_telegram_alert(
                         f"🔄 **ИЗМЕНЕНИЕ ПЕРЕДАНО В КОПИРОВАНИЕ**\n"
                         f"Symbol: {signal.symbol}\n"
                         f"Action: MODIFY {signal.side}\n"
                         f"New Size: {signal.size:.6f}"
                     )
-                
+
                 except Exception as e:
                     logger.error(f"Copy system modify callback error: {e}")
                     await send_telegram_alert(f"❌ **ОШИБКА ИЗМЕНЕНИЯ КОПИИ**: {str(e)}")
             else:
                 logger.warning("⚠️ Copy system not connected - modify signal not processed")
-            
+
         except Exception as e:
             logger.error(f"Position modify signal error: {e}")
             await send_telegram_alert(f"❌ **ОШИБКА ИЗМЕНЕНИЯ ПОЗИЦИИ**: {str(e)}")
@@ -5927,6 +5996,9 @@ class FinalTradingMonitor:
             if hasattr(copy_system, 'process_copy_signal'):
                 self.signal_processor.register_copy_system_callback(copy_system.process_copy_signal)
                 logger.info("✅ Copy system successfully connected to signal processor")
+
+                # Mark the system as ready to process signals, including deferred ones
+                asyncio.create_task(self.signal_processor._mark_system_ready())
             
                 # Отправляем уведомление об успешном подключении
                 asyncio.create_task(send_telegram_alert(
