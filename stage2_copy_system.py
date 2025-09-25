@@ -1180,6 +1180,14 @@ class DynamicTrailingStopManager:
         position_idx = int(position.get('position_idx', 0))
         logger.info(f"TS_ADAPTER(remove): Triggered for {symbol}")
         try:
+            # Pre-check: only attempt to reset if there is an active position on MAIN.
+            main_positions = await self.main_client.get_positions(category="linear", symbol=symbol)
+            active_pos = next((p for p in main_positions if safe_float(p.get('size', 0)) > 0 and int(p.get('positionIdx', -1)) == position_idx), None)
+
+            if not active_pos:
+                logger.debug(f"TS_RESET_SKIP: {symbol} (no active position)")
+                return
+
             # According to Bybit V5 API, sending "0" resets the trailing stop.
             result = await self.order_manager.place_trailing_stop(
                 symbol=symbol,
@@ -1189,7 +1197,9 @@ class DynamicTrailingStopManager:
             if result.get("success"):
                 logger.info(f"TS_RESET_OK: Trailing stop for {symbol} reset successfully.")
             else:
-                logger.error(f"TS_ADAPTER_FAIL(remove): Failed for {symbol}. Reason: {result.get('error')}")
+                # The place_trailing_stop method already logs detailed errors.
+                logger.error(f"TS_ADAPTER_FAIL(remove): place_trailing_stop failed for {symbol}.")
+
         except Exception as e:
             logger.error(f"TS_ADAPTER_FAIL(remove): Unhandled exception for {symbol}", exc_info=True)
 
@@ -1692,9 +1702,9 @@ class AdaptiveOrderManager:
             if is_reset:
                 self.logger.info(f"TS_RESET_START: symbol={symbol}, positionIdx={position_idx}")
                 data["trailingStop"] = "0"
-                # Sending other params as empty is good practice for resets
-                data["takeProfit"] = ""
-                data["stopLoss"] = ""
+                # Sending other params as "0" is good practice for resets to avoid ambiguity
+                data["takeProfit"] = "0"
+                data["stopLoss"] = "0"
             else:
                 self.logger.info(f"TS_APPLY_START: symbol={symbol}, trailingStop='{trailing_stop_price}', activePrice='{active_price}', positionIdx={position_idx}")
                 data["trailingStop"] = trailing_stop_price
@@ -1715,7 +1725,7 @@ class AdaptiveOrderManager:
 
             # Idempotency: "Not modified" is a success.
             if ret_code == 34040:
-                self.logger.info(f"TS_ALREADY_SET{{symbol={symbol}, reason='not_modified_34040'}}")
+                self.logger.debug(f"TS_RESET_NOOP: {symbol} already reset.")
                 return {"success": True, "already_set": True, "result": result}
 
             # Idempotency: For REMOVAL requests, 10001 implies the stop is already gone.
@@ -2935,11 +2945,6 @@ class Stage2CopyTradingSystem:
         self._known_positions_margin = {}
         self._last_margin_sync_time = {}
 
-        # Deferred modify
-        self._pending_modify = deque()
-        self._max_pending_modify = 100
-        self.copy_connected = False
-
         # ВАЖНО: не регистрируем обработчики здесь, чтобы не плодить дубли.
         # Регистрация произойдёт один раз в start_system() через
         # await self.copy_manager.start_copying()
@@ -3056,26 +3061,30 @@ class Stage2CopyTradingSystem:
     async def _sync_leverage_non_blocking(self, symbol: str, leverage: str):
         """Sets leverage for a symbol without blocking the caller and handles 110043 as success."""
         async with self._leverage_sync_locks[symbol]:
+            # Double-check cache inside the lock in case another task just finished
             if self._last_synced_leverage.get(symbol) == leverage:
                 return
 
             try:
                 logger.info(f"LEVERAGE_SYNC_START: Attempting to set leverage for {symbol} to {leverage}x.")
-                await self.main_client.set_leverage(
+                # The underlying set_leverage will be modified to handle 110043 as success
+                result = await self.main_client.set_leverage(
                     category="linear",
                     symbol=symbol,
                     leverage=leverage
                 )
-                logger.info(f"LEVERAGE_SYNC_SUCCESS: Leverage for {symbol} set to {leverage}x.")
-                self._last_synced_leverage[symbol] = leverage
 
-            except Exception as e:
-                # Bybit returns 110043 if leverage is not modified. Treat this as a success.
-                if "110043" in str(e):
-                    logger.info(f"LEVERAGE_SYNC_SUCCESS: Leverage for {symbol} was already {leverage}x (110043).")
+                # This assumes the client method is updated to return a dict with success status
+                # even for retCode 110043.
+                if result and result.get('success'):
+                    logger.info(f"LEVERAGE_SYNC_SUCCESS: Leverage for {symbol} set to {leverage}x.")
                     self._last_synced_leverage[symbol] = leverage
                 else:
-                    logger.error(f"LEVERAGE_SYNC_EXCEPTION: for {symbol} to {leverage}x.", exc_info=True)
+                    error_msg = result.get('error', 'Unknown error')
+                    logger.error(f"LEVERAGE_SYNC_FAILED: for {symbol} to {leverage}x. Reason: {error_msg}")
+
+            except Exception as e:
+                logger.error(f"LEVERAGE_SYNC_EXCEPTION: for {symbol} to {leverage}x.", exc_info=True)
 
     async def on_position_item(self, item: dict):
         """
@@ -3257,17 +3266,7 @@ class Stage2CopyTradingSystem:
                     metadata={'reason': reason, 'reduceOnly': size_delta < 0}
                 )
 
-                # --- Deferred Modify Logic ---
-                if is_modifying and not self.copy_connected:
-                    logger.info(f"⏸️ MODIFY_DEFERRED: Deferring modify for {symbol} until connected.")
-                    # Deduplicate: remove any older modify for the same symbol
-                    new_pending_list = [o for o in self._pending_modify if o.target_symbol != order.target_symbol]
-                    self._pending_modify = deque(new_pending_list, maxlen=self._max_pending_modify)
-                    # Add the newest one
-                    self._pending_modify.append(order)
-                    return # Stop processing, it's been deferred
-
-                # If not deferred, put the order on the queue to be processed by the main loop
+                # Put the order on the queue to be processed by the main loop
                 await self.copy_manager.copy_queue.put((order.priority, order.created_at, order))
 
             # --- Margin Mirroring Logic ---
@@ -4093,16 +4092,6 @@ class Stage2CopyTradingSystem:
                 "✅ Trailing Stop-Loss включен\n"
                 "✅ Контроль рисков активен"
             )
-
-            # --- Process deferred modifications ---
-            self.copy_connected = True
-            logger.info("Copy system connected. Processing deferred modifications...")
-            while self._pending_modify:
-                deferred_order = self._pending_modify.popleft()
-                logger.info(f"Processing deferred modify for {deferred_order.target_symbol}")
-                await self.copy_manager.copy_queue.put((deferred_order.priority, deferred_order.created_at, deferred_order))
-            logger.info("All deferred modifications processed.")
-
 
             await asyncio.gather(
                 monitoring_task, risk_task, trailing_task,
