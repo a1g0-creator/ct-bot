@@ -1696,7 +1696,6 @@ class AdaptiveOrderManager:
             "positionIdx": position_idx,
         }
         try:
-            # If trailing_stop_price is "0", it's a reset request.
             is_reset = trailing_stop_price == "0"
             if is_reset:
                 self.logger.info(f"TS_RESET_START: symbol={symbol}, positionIdx={position_idx}")
@@ -1709,16 +1708,13 @@ class AdaptiveOrderManager:
                 if active_price:
                     data["activePrice"] = active_price
 
-            # Optional: Pre-check for identical parameters
             positions = await self.main_client.get_positions(category="linear", symbol=symbol)
             current_pos = next((p for p in positions if int(p.get('positionIdx', -1)) == position_idx), None)
             if current_pos:
                 current_ts = safe_float(current_pos.get('trailingStop', 0.0))
                 current_active = safe_float(current_pos.get('activePrice', 0.0))
-
                 target_ts = safe_float(trailing_stop_price, -1)
                 target_active = safe_float(active_price, -1)
-
                 if abs(current_ts - target_ts) < 1e-9 and (not active_price or abs(current_active - target_active) < 1e-9):
                     self.logger.debug("TS_SKIP_IDENTICAL: symbol=%s", symbol)
                     return {"success": True, "noop": True}
@@ -1726,15 +1722,22 @@ class AdaptiveOrderManager:
             self.logger.debug(f"TS Payload for {symbol}: {json.dumps(data)}")
             result = await self.main_client._make_single_request("POST", "position/trading-stop", data=data)
 
-            # Preserve original success logic
-            if result and result.get("retCode") == 0:
-                 return {"success": True, "result": result}
-
-            # If we are here, it means the request failed. _make_single_request raises on non-zero retCode.
-            # The only way to get here with a non-zero retCode is if the exception was caught, which we do below.
-            # This logic preserves the original behavior of returning a failure dictionary.
             ret_code = (result or {}).get("retCode")
             ret_msg = (result or {}).get("retMsg", "Unknown error")
+
+            if ret_code == 0:
+                log_msg = "TS_RESET_OK" if is_reset else "TS_APPLY_OK"
+                self.logger.info(f"{log_msg}: symbol={symbol}, trailingStop='{trailing_stop_price}'")
+                return {"success": True, "result": result}
+
+            if is_reset and ret_code == 10001:
+                self.logger.info(f"TS_ALREADY_REMOVED{{symbol={symbol}, reason='already_removed_10001'}}")
+                return {"success": True, "already_set": True, "result": result}
+
+            if ret_code == 10001:
+                self.logger.error(f"TS_APPLY_FAIL: Invalid parameters for {symbol}. code={ret_code}, msg='{ret_msg}', payload={json.dumps(data)}")
+                return {"success": False, "error": ret_msg, "no_retry": True}
+
             self.logger.error(f"Trailing stop placement failed for {symbol}: {ret_msg} (retCode: {ret_code})")
             return {"success": False, "error": ret_msg, "result": result}
 
@@ -1744,7 +1747,7 @@ class AdaptiveOrderManager:
                 return {"success": True, "noop": True}
 
             self.logger.exception(f"Trailing stop placement error: {e}")
-            raise
+            return {"success": False, "error": str(e)}
 
     async def cancel_all_symbol_orders(self, symbol: str, order_type_filter: Optional[str] = None) -> Dict[str, Any]:
         """Cancels all open orders for a symbol, optionally filtering by type (e.g., 'Stop')."""
@@ -2951,6 +2954,7 @@ class Stage2CopyTradingSystem:
         self._pending_modify = deque()
         self._max_pending_modify = 200
         self.copy_connected = False
+        self._handlers_ready = False
 
         # ВАЖНО: не регистрируем обработчики здесь, чтобы не плодить дубли.
         # Регистрация произойдёт один раз в start_system() через
@@ -3328,57 +3332,49 @@ class Stage2CopyTradingSystem:
             logger.error(f"on_position_item failed: {e}", exc_info=True)
 
 
-    async def handle_position_modify_signal(self, symbol, side, size, price, **kwargs):
-        if not self.copy_connected:
+    async def _handle_position_modify_internal(self, signal: TradingSignal):
+        """This method contains the actual business logic for handling a position modification."""
+        await self._handle_position_modify_for_copy(signal)
+
+    async def handle_position_modify_signal(self, signal: TradingSignal):
+        if not self.copy_connected or not self._handlers_ready:
             if len(self._pending_modify) >= self._max_pending_modify:
                 self._pending_modify.popleft()
-            self._pending_modify.append((symbol, side, size, price, kwargs))
+            self._pending_modify.append(signal)
             self.logger.info("⏸️ MODIFY_DEFERRED: symbol=%s side=%s size=%s (queue_len=%d/%d)",
-                             symbol, side, size, len(self._pending_modify), self._max_pending_modify)
+                             signal.symbol, signal.side, signal.size,
+                             len(self._pending_modify), self._max_pending_modify)
             return
-        await self._handle_position_modify_internal(symbol, side, size, price, **kwargs)
-
-    async def _handle_position_modify_internal(self, symbol, side, size, price, **kwargs):
-        """This method contains the actual business logic for handling a position modification."""
-        signal = TradingSignal(
-            signal_type=SignalType.POSITION_MODIFY,
-            symbol=symbol,
-            side=side,
-            size=size,
-            price=price,
-            timestamp=time.time(),
-            metadata=kwargs
-        )
-        await self._handle_position_modify_for_copy(signal)
+        return await self._handle_position_modify_internal(signal)
 
     async def process_copy_signal(self, signal: TradingSignal):
         """
-        Compatibility wrapper: старый pipeline -> новый on_position_item().
-        Не удаляем метод, чтобы сохранить обратную совместимость.
+        Compatibility wrapper: routes signals to the correct handlers.
         """
-        if signal.signal_type == SignalType.POSITION_MODIFY:
-            await self.handle_position_modify_signal(
-                signal.symbol, signal.side, signal.size, signal.price, **signal.metadata
-            )
-        else:
-            try:
-                handler = getattr(self, "on_position_item", None)
-                if handler is None:
-                    logger.warning("process_copy_signal: on_position_item() is missing; signal ignored: %s", signal)
-                    return
+        try:
+            if signal.signal_type == SignalType.POSITION_MODIFY:
+                return await self.handle_position_modify_signal(signal)
 
-                side = getattr(signal, "side", "Buy")
-                side = side.name if hasattr(side, "name") else str(side)
-                item = {
-                    "symbol": getattr(signal, "symbol", "") or "",
-                    "side": side or "",
-                    "size": str(getattr(signal, "size", 0) or 0),
-                    "entryPrice": str(getattr(signal, "price", 0) or 0),
-                    "positionIdx": int(signal.metadata.get("position_idx", 0) if hasattr(signal, 'metadata') and signal.metadata else 0),
-                }
-                return await handler(item)
-            except Exception as e:
-                logger.error("process_copy_signal failed: %s", e, exc_info=True)
+            # Route other signals to the existing on_position_item handler
+            handler = getattr(self, "on_position_item", None)
+            if handler is None:
+                logger.warning("process_copy_signal: on_position_item() is missing; signal ignored: %s", signal)
+                return
+
+            side = getattr(signal, "side", "Buy")
+            side = side.name if hasattr(side, "name") else str(side)
+
+            item = {
+                "symbol": getattr(signal, "symbol", "") or "",
+                "side": side or "",
+                "size": str(getattr(signal, "size", 0) or 0),
+                "entryPrice": str(getattr(signal, "price", 0) or 0),
+                "positionIdx": int(signal.metadata.get("position_idx", 0) if hasattr(signal, 'metadata') and signal.metadata else 0),
+            }
+            return await handler(item)
+
+        except Exception as e:
+            logger.error("process_copy_signal failed: %s", e, exc_info=True)
 
     async def _handle_position_open_for_copy(self, signal):
         """Обработка открытия позиции для копирования - ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ"""
@@ -3986,8 +3982,9 @@ class Stage2CopyTradingSystem:
             logger.error(f"Copy signal handler registration error: {e}")
     
     async def _mark_system_ready(self):
-        if self.copy_connected:
+        if self._handlers_ready:
             return
+        self._handlers_ready = True
         self.copy_connected = True
         await self._process_pending_modify()
 
@@ -3997,11 +3994,12 @@ class Stage2CopyTradingSystem:
         cnt = len(self._pending_modify)
         self.logger.info("▶️ MODIFY_FLUSHED: count=%d", cnt)
         while self._pending_modify:
-            symbol, side, size, price, kwargs = self._pending_modify.popleft()
+            sig = self._pending_modify.popleft()
             try:
-                await self._handle_position_modify_internal(symbol, side, size, price, **kwargs)
+                await self._handle_position_modify_internal(sig)
             except Exception as e:
-                self.logger.error("MODIFY_REPLAY_FAIL: %s %s %s -> %s", symbol, side, size, e)
+                self.logger.error("MODIFY_REPLAY_FAIL: %s %s %s -> %s",
+                                  sig.symbol, sig.side, sig.size, e)
 
     async def start_system(self):
         """Идемпотентный запуск Stage-2 без повторного старта Stage-1"""
