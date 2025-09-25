@@ -1113,37 +1113,36 @@ class DynamicTrailingStopManager:
             filters = await self.main_client.get_symbol_filters(symbol, category="linear")
             tick_size = float(filters.get("tick_size", 0.01))
 
-            # Calculate new trailing stop distance
-            ts_pct = self.cfg.get('activation_pct', 0.015)
-            new_ts_dist = self._round_to_tick(ref_price * ts_pct, tick_size)
+            # Correct logic: activePrice is absolute, trailingStop is an absolute delta
+            activation_pct = float(self.cfg.get('activation_pct', 0.015))
+            step_pct = float(self.cfg.get('step_pct', 0.002))
 
-            # Calculate new activation price
-            activation_pct = self.cfg.get('activation_pct', 0.015)
-            price_change_for_activation = ref_price * activation_pct
-            if side == 'Buy':
-                new_active_price = self._round_to_tick(entry_price + price_change_for_activation, tick_size)
-            else: # Sell
-                new_active_price = self._round_to_tick(entry_price - price_change_for_activation, tick_size)
+            if side.lower() == "buy":
+                active_price = self._round_to_tick(ref_price * (1.0 + activation_pct), tick_size)
+            else:
+                active_price = self._round_to_tick(ref_price * (1.0 - activation_pct), tick_size)
+
+            trailing_step = self._round_to_tick(ref_price * step_pct, tick_size)
+
+            logger.info(f"TS_PARAM_RESOLVED{{activePrice={active_price}, trailingStop={trailing_step}, from='percent', price_ref='{ref_price}'}}")
 
             # 4. Compare with existing values (with tolerance)
-            is_ts_same = abs(new_ts_dist - current_ts) < (tick_size / 2)
-            is_active_price_same = abs(new_active_price - current_active_price) < (tick_size / 2)
+            is_ts_same = abs(current_ts - trailing_step) < (tick_size / 2) if current_ts is not None else False
+            is_active_price_same = abs(current_active_price - active_price) < (tick_size / 2) if current_active_price is not None else False
 
             # If active price is not set yet, we should not consider it "the same"
             if current_active_price == 0 and new_active_price > 0:
                 is_active_price_same = False
 
             if is_ts_same and is_active_price_same:
-                logger.info(f"TS_SKIP_IDEMPOTENT: Trailing stop for {symbol} is already set correctly. "
-                            f"Current: ts={current_ts}, active={current_active_price}. "
-                            f"New: ts={new_ts_dist}, active={new_active_price}.")
+                logger.info(f"TS_SKIP_IDEMPOTENT: Trailing stop for {symbol} is already set correctly.")
                 return
 
             # 5. Set the trailing stop if values differ
             await self.order_manager.place_trailing_stop(
                 symbol=symbol,
-                trailing_stop_price=str(new_ts_dist),
-                active_price=str(new_active_price) if not is_active_price_same else "", # Only send activePrice if not set
+                trailing_stop_price=str(trailing_step),
+                active_price=str(active_price) if not is_active_price_same else "",
                 position_idx=position_idx
             )
 
@@ -1706,6 +1705,13 @@ class AdaptiveOrderManager:
 
             # Handle specific non-retriable errors like invalid parameters
             if ret_code == 10001:
+                # For REMOVAL requests, 10001 ("TakeProfit, StopLoss or TrailingStop need")
+                # implies the stop is already gone. Treat as idempotent success.
+                is_removal = trailing_stop_price == ""
+                if is_removal:
+                    self.logger.info(f"TS_ALREADY_REMOVED{{symbol={symbol}, reason='already_removed_10001'}}")
+                    return {"success": True, "already_set": True, "result": result}
+
                 self.logger.error(f"TS_APPLY_FAIL: Invalid parameters for {symbol}. code={ret_code}, msg='{ret_msg}', payload={json.dumps(data)}")
                 return {"success": False, "error": ret_msg, "no_retry": True}
 
@@ -3801,7 +3807,11 @@ class Stage2CopyTradingSystem:
         """Обработка изменения позиции для копирования"""
         try:
             if not self._is_copy_ready():
-                logger.warning("⚠️ Copy system not ready - modify skipped")
+                logger.info("COPY_MODIFY_DEFER: system not ready, will retry shortly")
+                async def _retry():
+                    await asyncio.sleep(0.5)
+                    await self._handle_position_modify_for_copy(signal)
+                asyncio.create_task(_retry())
                 return
 
             logger.info(f"🟡 COPYING POSITION MODIFY: {signal.symbol}")
