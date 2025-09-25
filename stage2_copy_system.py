@@ -1175,19 +1175,23 @@ class DynamicTrailingStopManager:
         await self.create_or_update_trailing_stop(position, ref_price_type='mark') # Or entry, based on config
 
     async def remove_trailing_stop(self, position: Dict[str, Any]):
-        """Adapter to remove a trailing stop by setting it to an empty string."""
+        """Adapter to remove a trailing stop by setting it to '0'."""
         symbol = position.get('symbol')
         position_idx = int(position.get('position_idx', 0))
         logger.info(f"TS_ADAPTER(remove): Triggered for {symbol}")
         try:
-            await self.order_manager.place_trailing_stop(
+            # According to Bybit V5 API, sending "0" resets the trailing stop.
+            result = await self.order_manager.place_trailing_stop(
                 symbol=symbol,
-                trailing_stop_price="", # Sending empty string resets the TS
+                trailing_stop_price="0",
                 position_idx=position_idx
             )
-            logger.info(f"TS_RESET_OK: symbol={symbol}")
+            if result.get("success"):
+                logger.info(f"TS_RESET_OK: Trailing stop for {symbol} reset successfully.")
+            else:
+                logger.error(f"TS_ADAPTER_FAIL(remove): Failed for {symbol}. Reason: {result.get('error')}")
         except Exception as e:
-            logger.error(f"TS_ADAPTER_FAIL(remove): Failed for {symbol}", exc_info=True)
+            logger.error(f"TS_ADAPTER_FAIL(remove): Unhandled exception for {symbol}", exc_info=True)
 
 # ================================
 # СИСТЕМА УПРАВЛЕНИЯ ОРДЕРАМИ
@@ -1674,61 +1678,56 @@ class AdaptiveOrderManager:
     async def place_trailing_stop(self, symbol: str, trailing_stop_price: str, active_price: str = "", position_idx: int = 0) -> Dict[str, Any]:
         """
         Sets or resets a trailing stop for a position using the v5/position/trading-stop endpoint.
-        Handles the specific payload requirements for resetting stops to avoid 10001 errors.
+        Handles Bybit's specific payload and error code requirements for idempotency.
         """
         try:
-            link_id = f"ts:{symbol}:{int(time.time()*1000)}"
             data = {
                 "category": "linear",
                 "symbol": symbol,
                 "positionIdx": position_idx,
             }
 
-            # If trailing_stop_price is an empty string, it's a reset request.
-            # Bybit requires at least one of takeProfit, stopLoss, or trailingStop.
-            if trailing_stop_price == "":
+            # If trailing_stop_price is "0", it's a reset request.
+            is_reset = trailing_stop_price == "0"
+            if is_reset:
                 self.logger.info(f"TS_RESET_START: symbol={symbol}, positionIdx={position_idx}")
-                data.update({
-                    "takeProfit": "",
-                    "stopLoss": "",
-                    "trailingStop": ""
-                })
+                data["trailingStop"] = "0"
+                # Sending other params as empty is good practice for resets
+                data["takeProfit"] = ""
+                data["stopLoss"] = ""
             else:
                 self.logger.info(f"TS_APPLY_START: symbol={symbol}, trailingStop='{trailing_stop_price}', activePrice='{active_price}', positionIdx={position_idx}")
                 data["trailingStop"] = trailing_stop_price
                 if active_price:
                     data["activePrice"] = active_price
 
-            # Use _make_single_request to avoid retries on user error like 10001
-            # Log the sanitized payload for debugging
             self.logger.debug(f"TS Payload for {symbol}: {json.dumps(data)}")
             result = await self.main_client._make_single_request("POST", "position/trading-stop", data=data)
 
             ret_code = (result or {}).get("retCode")
             ret_msg = (result or {}).get("retMsg", "Unknown error")
 
+            # --- Success Cases ---
             if ret_code == 0:
-                self.logger.info(f"TS_APPLY_OK: symbol={symbol}, trailingStop='{trailing_stop_price}'")
+                log_msg = "TS_RESET_OK" if is_reset else "TS_APPLY_OK"
+                self.logger.info(f"{log_msg}: symbol={symbol}, trailingStop='{trailing_stop_price}'")
                 return {"success": True, "result": result}
 
-            # Bybit v5: 34040 == "not modified" — treat as idempotent success
+            # Idempotency: "Not modified" is a success.
             if ret_code == 34040:
                 self.logger.info(f"TS_ALREADY_SET{{symbol={symbol}, reason='not_modified_34040'}}")
                 return {"success": True, "already_set": True, "result": result}
 
-            # Handle specific non-retriable errors like invalid parameters
-            if ret_code == 10001:
-                # For REMOVAL requests, 10001 ("TakeProfit, StopLoss or TrailingStop need")
-                # implies the stop is already gone. Treat as idempotent success.
-                is_removal = trailing_stop_price == ""
-                if is_removal:
-                    self.logger.info(f"TS_ALREADY_REMOVED{{symbol={symbol}, reason='already_removed_10001'}}")
-                    return {"success": True, "already_set": True, "result": result}
+            # Idempotency: For REMOVAL requests, 10001 implies the stop is already gone.
+            if is_reset and ret_code == 10001:
+                self.logger.info(f"TS_ALREADY_REMOVED{{symbol={symbol}, reason='already_removed_10001'}}")
+                return {"success": True, "already_set": True, "result": result}
 
+            # --- Failure Cases ---
+            if ret_code == 10001:
                 self.logger.error(f"TS_APPLY_FAIL: Invalid parameters for {symbol}. code={ret_code}, msg='{ret_msg}', payload={json.dumps(data)}")
                 return {"success": False, "error": ret_msg, "no_retry": True}
 
-            # For other errors, let the caller decide on retries if necessary
             self.logger.error(f"Trailing stop placement failed for {symbol}: {ret_msg} (retCode: {ret_code})")
             return {"success": False, "error": ret_msg, "result": result}
 
@@ -3057,30 +3056,26 @@ class Stage2CopyTradingSystem:
     async def _sync_leverage_non_blocking(self, symbol: str, leverage: str):
         """Sets leverage for a symbol without blocking the caller and handles 110043 as success."""
         async with self._leverage_sync_locks[symbol]:
-            # Double-check cache inside the lock in case another task just finished
             if self._last_synced_leverage.get(symbol) == leverage:
                 return
 
             try:
                 logger.info(f"LEVERAGE_SYNC_START: Attempting to set leverage for {symbol} to {leverage}x.")
-                # The underlying set_leverage will be modified to handle 110043 as success
-                result = await self.main_client.set_leverage(
+                await self.main_client.set_leverage(
                     category="linear",
                     symbol=symbol,
                     leverage=leverage
                 )
-
-                # This assumes the client method is updated to return a dict with success status
-                # even for retCode 110043.
-                if result and result.get('success'):
-                    logger.info(f"LEVERAGE_SYNC_SUCCESS: Leverage for {symbol} set to {leverage}x.")
-                    self._last_synced_leverage[symbol] = leverage
-                else:
-                    error_msg = result.get('error', 'Unknown error')
-                    logger.error(f"LEVERAGE_SYNC_FAILED: for {symbol} to {leverage}x. Reason: {error_msg}")
+                logger.info(f"LEVERAGE_SYNC_SUCCESS: Leverage for {symbol} set to {leverage}x.")
+                self._last_synced_leverage[symbol] = leverage
 
             except Exception as e:
-                logger.error(f"LEVERAGE_SYNC_EXCEPTION: for {symbol} to {leverage}x.", exc_info=True)
+                # Bybit returns 110043 if leverage is not modified. Treat this as a success.
+                if "110043" in str(e):
+                    logger.info(f"LEVERAGE_SYNC_SUCCESS: Leverage for {symbol} was already {leverage}x (110043).")
+                    self._last_synced_leverage[symbol] = leverage
+                else:
+                    logger.error(f"LEVERAGE_SYNC_EXCEPTION: for {symbol} to {leverage}x.", exc_info=True)
 
     async def on_position_item(self, item: dict):
         """
@@ -3272,7 +3267,7 @@ class Stage2CopyTradingSystem:
                     self._pending_modify.append(order)
                     return # Stop processing, it's been deferred
 
-                # Put the order on the queue to be processed by the main loop
+                # If not deferred, put the order on the queue to be processed by the main loop
                 await self.copy_manager.copy_queue.put((order.priority, order.created_at, order))
 
             # --- Margin Mirroring Logic ---
