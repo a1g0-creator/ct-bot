@@ -1131,12 +1131,25 @@ class DynamicTrailingStopManager:
             is_active_price_same = abs(current_active_price - active_price) < (tick_size / 2) if current_active_price is not None else False
 
             # If active price is not set yet, we should not consider it "the same"
-            if current_active_price == 0 and new_active_price > 0:
+            if current_active_price == 0 and active_price > 0:
                 is_active_price_same = False
 
             if is_ts_same and is_active_price_same:
                 logger.info(f"TS_SKIP_IDEMPOTENT: Trailing stop for {symbol} is already set correctly.")
                 return
+
+            # 4.5 Bybit constraint check
+            last_price = safe_float(current_pos.get('lastPrice', 0.0))
+            avg_price = safe_float(current_pos.get('sessionAvgPrice', entry_price))
+
+            if side.lower() == "buy":
+                if active_price <= max(avg_price, last_price):
+                    logger.warning(f"TS_SKIP_CONSTRAINT: Long TS active_price ({active_price}) must be > max(sessionAvgPrice, lastPrice) ({max(avg_price, last_price)}) for {symbol}.")
+                    return
+            else: # Short
+                if active_price >= min(avg_price, last_price):
+                    logger.warning(f"TS_SKIP_CONSTRAINT: Short TS active_price ({active_price}) must be < min(sessionAvgPrice, lastPrice) ({min(avg_price, last_price)}) for {symbol}.")
+                    return
 
             # 5. Set the trailing stop if values differ
             await self.order_manager.place_trailing_stop(
@@ -2923,6 +2936,11 @@ class Stage2CopyTradingSystem:
         self._known_positions_margin = {}
         self._last_margin_sync_time = {}
 
+        # Deferred modify
+        self._pending_modify = deque()
+        self._max_pending_modify = 100
+        self.copy_connected = False
+
         # ВАЖНО: не регистрируем обработчики здесь, чтобы не плодить дубли.
         # Регистрация произойдёт один раз в start_system() через
         # await self.copy_manager.start_copying()
@@ -3243,6 +3261,16 @@ class Stage2CopyTradingSystem:
                     priority=0 if is_closing else (1 if is_opening else 2), # Close highest priority
                     metadata={'reason': reason, 'reduceOnly': size_delta < 0}
                 )
+
+                # --- Deferred Modify Logic ---
+                if is_modifying and not self.copy_connected:
+                    logger.info(f"⏸️ MODIFY_DEFERRED: Deferring modify for {symbol} until connected.")
+                    # Deduplicate: remove any older modify for the same symbol
+                    new_pending_list = [o for o in self._pending_modify if o.target_symbol != order.target_symbol]
+                    self._pending_modify = deque(new_pending_list, maxlen=self._max_pending_modify)
+                    # Add the newest one
+                    self._pending_modify.append(order)
+                    return # Stop processing, it's been deferred
 
                 # Put the order on the queue to be processed by the main loop
                 await self.copy_manager.copy_queue.put((order.priority, order.created_at, order))
@@ -4070,6 +4098,16 @@ class Stage2CopyTradingSystem:
                 "✅ Trailing Stop-Loss включен\n"
                 "✅ Контроль рисков активен"
             )
+
+            # --- Process deferred modifications ---
+            self.copy_connected = True
+            logger.info("Copy system connected. Processing deferred modifications...")
+            while self._pending_modify:
+                deferred_order = self._pending_modify.popleft()
+                logger.info(f"Processing deferred modify for {deferred_order.target_symbol}")
+                await self.copy_manager.copy_queue.put((deferred_order.priority, deferred_order.created_at, deferred_order))
+            logger.info("All deferred modifications processed.")
+
 
             await asyncio.gather(
                 monitoring_task, risk_task, trailing_task,

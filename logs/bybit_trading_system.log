@@ -333,3 +333,53 @@
 2025-09-24 08:11:46,701 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.05, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
 2025-09-24 08:11:46,702 [    INFO] bybit_trading_system:1137 - TS_SKIP_IDEMPOTENT: Trailing stop for DOGEUSDT is already set correctly. Current: ts=0.00301, active=0.14139. New: ts=0.003, active=0.1414.
 2025-09-24 08:11:46,706 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.05, 'step_pct': 0.02, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-25 05:06:21,750 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-25 05:06:21,797 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-25 05:06:21,797 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-25 05:06:21,817 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-25 05:07:18,226 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-25 05:07:18,251 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-25 05:07:18,251 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-25 05:07:18,285 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-25 05:07:18,285 [    INFO] bybit_trading_system:2948 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-25 05:08:03,900 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-25 05:08:03,924 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-25 05:08:03,924 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-25 05:08:03,972 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-25 05:08:03,972 [    INFO] bybit_trading_system:2948 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-25 05:08:03,975 [    INFO] bybit_trading_system:3119 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=1.5 entry=50000.0 idx=0
+2025-09-25 05:08:03,976 [    INFO] bybit_trading_system:3161 - TARGET_CALC: Donor Size=1.5000 -> Proportional=1.5000 -> Kelly Rec=1.0000 -> Final Target=1.0000
+2025-09-25 05:08:04,003 [    INFO] bybit_trading_system:3226 - HYSTERESIS_SKIP: Delta 0.000000 for BTCUSDT is smaller than min_qty 0.001. No action.
+2025-09-25 05:08:55,528 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-25 05:08:55,547 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-25 05:08:55,547 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-25 05:08:55,568 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-25 05:08:55,568 [    INFO] bybit_trading_system:2948 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-25 05:08:55,571 [    INFO] bybit_trading_system:3119 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=1.5 entry=50000.0 idx=0
+2025-09-25 05:08:55,571 [    INFO] bybit_trading_system:3161 - TARGET_CALC: Donor Size=1.5000 -> Proportional=1.5000 -> Kelly Rec=1.5000 -> Final Target=1.5000
+2025-09-25 05:08:55,572 [    INFO] bybit_trading_system:3229 - POSITION_MODIFY: symbol=BTCUSDT donor=1.5000 main=1.0000 -> target=1.5000 | delta=0.5000
+2025-09-25 05:08:55,572 [    INFO] bybit_trading_system:3240 - COPY_ACTION: WS_MODIFY for BTCUSDT | Qty: 0.5000 | Side: Buy
+2025-09-25 05:08:55,572 [    INFO] bybit_trading_system:3267 - ⏸️ MODIFY_DEFERRED: Deferring modify for BTCUSDT until connected.
+2025-09-25 05:09:44,376 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-25 05:09:44,400 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-25 05:09:44,401 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-25 05:09:44,448 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-25 05:09:44,448 [    INFO] bybit_trading_system:2948 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-25 05:09:44,451 [    INFO] bybit_trading_system:3119 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=1.5 entry=50000.0 idx=0
+2025-09-25 05:09:44,451 [    INFO] bybit_trading_system:3161 - TARGET_CALC: Donor Size=1.5000 -> Proportional=1.5000 -> Kelly Rec=1.5000 -> Final Target=1.5000
+2025-09-25 05:09:44,452 [    INFO] bybit_trading_system:3229 - POSITION_MODIFY: symbol=BTCUSDT donor=1.5000 main=1.0000 -> target=1.5000 | delta=0.5000
+2025-09-25 05:09:44,452 [    INFO] bybit_trading_system:3240 - COPY_ACTION: WS_MODIFY for BTCUSDT | Qty: 0.5000 | Side: Buy
+2025-09-25 05:09:44,452 [    INFO] bybit_trading_system:3267 - ⏸️ MODIFY_DEFERRED: Deferring modify for BTCUSDT until connected.
+2025-09-25 05:09:44,453 [ WARNING] bybit_trading_system:1103 - TS_WARN: Could not find current position for BTCUSDT to compare.
+2025-09-25 05:10:44,374 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-25 05:10:44,390 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-25 05:10:44,391 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-25 05:10:44,420 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-25 05:10:44,420 [    INFO] bybit_trading_system:2948 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-25 05:10:44,423 [    INFO] bybit_trading_system:3119 - COPY_HANDLER_IN: symbol=BTCUSDT side='Buy' size=1.5 entry=50000.0 idx=0
+2025-09-25 05:10:44,423 [    INFO] bybit_trading_system:3161 - TARGET_CALC: Donor Size=1.5000 -> Proportional=1.5000 -> Kelly Rec=1.5000 -> Final Target=1.5000
+2025-09-25 05:10:44,423 [    INFO] bybit_trading_system:3229 - POSITION_MODIFY: symbol=BTCUSDT donor=1.5000 main=1.0000 -> target=1.5000 | delta=0.5000
+2025-09-25 05:10:44,423 [    INFO] bybit_trading_system:3240 - COPY_ACTION: WS_MODIFY for BTCUSDT | Qty: 0.5000 | Side: Buy
+2025-09-25 05:10:44,423 [    INFO] bybit_trading_system:3267 - ⏸️ MODIFY_DEFERRED: Deferring modify for BTCUSDT until connected.
+2025-09-25 05:10:44,424 [    INFO] bybit_trading_system:1127 - TS_PARAM_RESOLVED{activePrice=50085.01, trailingStop=100.16, from='percent', price_ref='50080.0'}
+2025-09-25 05:10:44,424 [ WARNING] bybit_trading_system:1147 - TS_SKIP_CONSTRAINT: Long TS active_price (50085.01) must be > max(sessionAvgPrice, lastPrice) (50100.0) for BTCUSDT.
