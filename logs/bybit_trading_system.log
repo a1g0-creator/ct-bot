@@ -542,3 +542,613 @@ ConnectionError: Failed to reconnect and authenticate WebSocket.
 2025-09-27 04:50:40,677 [    INFO] bybit_trading_system:5608 - final - Balance: 10000.00 USDT
 2025-09-27 04:50:40,682 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
 2025-09-27 04:50:40,683 [    INFO] bybit_trading_system:1127 - TS_PARAM_RESOLVED{activePrice=1.22, trailingStop=0.0, from='percent', price_ref='1.25'}
+2025-09-27 07:37:44,441 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-27 07:37:44,451 [    INFO] bybit_trading_system:3394 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-27 07:37:44,452 [    INFO] bybit_trading_system:5403 - HOT_RELOAD_START: Beginning credentials hot-reload process... (deferred signals: 0)
+2025-09-27 07:37:44,453 [    INFO] bybit_trading_system:5359 - Pausing system processing...
+2025-09-27 07:37:44,453 [    INFO] bybit_trading_system:5364 - Waiting for in-flight signals to be processed...
+2025-09-27 07:37:44,453 [    INFO] bybit_trading_system:5366 - Signal queue cleared.
+2025-09-27 07:37:44,453 [    INFO] bybit_trading_system:5411 - HOT_RELOAD_WS_DISCONNECT: Closing WebSocket connection...
+2025-09-27 07:37:44,454 [    INFO] bybit_trading_system:5424 - HOT_RELOAD_CREDS: Main client credentials updated.
+2025-09-27 07:37:44,454 [    INFO] bybit_trading_system:5431 - HOT_RELOAD_CREDS: Source client and WebSocket credentials updated.
+2025-09-27 07:37:44,454 [    INFO] bybit_trading_system:5434 - HOT_RELOAD_CACHE_INVALIDATE: Clearing all cached data...
+2025-09-27 07:37:44,455 [    INFO] bybit_trading_system:5123 - SIGNAL_PROCESSOR: Invalidating internal caches...
+2025-09-27 07:37:44,455 [    INFO] bybit_trading_system:5126 - SIGNAL_PROCESSOR: Caches (known_positions, _last_set_leverage) cleared.
+2025-09-27 07:37:44,455 [    INFO] bybit_trading_system:5446 - HOT_RELOAD_WS_RECONNECT: Attempt 1/3 to reconnect WebSocket...
+2025-09-27 07:37:44,455 [    INFO] bybit_trading_system:5449 - HOT_RELOAD_WS_RECONNECTED: WebSocket reconnected and authenticated.
+2025-09-27 07:37:44,456 [    INFO] bybit_trading_system:5463 - HOT_RELOAD_STATE_REFRESH: Fetching current state from REST API...
+2025-09-27 07:37:44,456 [    INFO] bybit_trading_system:5672 - --- Running REST API Reconciliation Cycle ---
+2025-09-27 07:37:44,458 [    INFO] bybit_trading_system:5690 - Main positions cache updated with 0 positions.
+2025-09-27 07:37:44,458 [    INFO] bybit_trading_system:5714 - RECONCILE: fetched donor=0, main=0 | to_open=0, to_close=0, to_modify=0
+2025-09-27 07:37:44,458 [    INFO] bybit_trading_system:5715 - RECONCILE SUMMARY: enqueued=0
+2025-09-27 07:37:44,458 [    INFO] bybit_trading_system:5600 - MAIN_RELOAD - Balance: 50000.00 USDT
+2025-09-27 07:37:44,458 [    INFO] bybit_trading_system:5480 - HOT_RELOAD_SUMMARY: duration_ms=6, deferred_signals_processed=0, ws_topics_re-subscribed=4
+2025-09-27 07:37:44,459 [    INFO] bybit_trading_system:5374 - Resuming system processing...
+2025-09-27 07:37:44,459 [    INFO] bybit_trading_system:5388 - System processing resumed.
+2025-09-27 07:37:44,459 [    INFO] bybit_trading_system:5498 - HOT_RELOAD_FINISH: Reload process finished.
+2025-09-27 07:39:04,139 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-27 07:39:04,149 [    INFO] bybit_trading_system:3394 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-27 07:39:04,149 [    INFO] bybit_trading_system:4777 - Signal processing system started
+2025-09-27 07:39:04,149 [    INFO] bybit_trading_system:5027 - Weekend activity detected for ETHUSDT
+2025-09-27 07:39:04,149 [    INFO] bybit_trading_system:4952 - Signal added to main queue: position_open ETHUSDT Buy 0.1
+2025-09-27 07:39:04,160 [    INFO] bybit_trading_system:5375 - Pausing system processing...
+2025-09-27 07:39:04,160 [    INFO] bybit_trading_system:5380 - Waiting for in-flight signals to complete...
+2025-09-27 07:39:05,151 [    INFO] bybit_trading_system:5085 - Processing signal: position_open ETHUSDT Buy 0.1
+2025-09-27 07:39:05,235 [    INFO] bybit_trading_system:5147 - 🟢 POSITION OPEN DETECTED: ETHUSDT Buy 0.1 @ 3000
+2025-09-27 07:39:05,236 [ WARNING] bybit_trading_system:5176 - ⚠️ Copy system not connected - signal not copied
+2025-09-27 07:39:05,236 [    INFO] bybit_trading_system:5066 - All in-flight signal workers are idle.
+2025-09-27 07:39:05,237 [    INFO] bybit_trading_system:5382 - All in-flight tasks completed. System is fully paused.
+2025-09-27 07:39:05,237 [    INFO] bybit_trading_system:4791 - Signal processing system stopped
+2025-09-27 07:39:05,240 [    INFO] bybit_trading_system:3394 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-27 07:39:05,244 [    INFO] bybit_trading_system:5419 - HOT_RELOAD_START: Beginning credentials hot-reload process... (deferred signals: 0)
+2025-09-27 07:39:05,245 [    INFO] bybit_trading_system:5375 - Pausing system processing...
+2025-09-27 07:39:05,245 [    INFO] bybit_trading_system:5380 - Waiting for in-flight signals to complete...
+2025-09-27 07:39:05,245 [    INFO] bybit_trading_system:5382 - All in-flight tasks completed. System is fully paused.
+2025-09-27 07:39:05,245 [    INFO] bybit_trading_system:5427 - HOT_RELOAD_WS_DISCONNECT: Closing WebSocket connection...
+2025-09-27 07:39:05,245 [    INFO] bybit_trading_system:5440 - HOT_RELOAD_CREDS: Main client credentials updated.
+2025-09-27 07:39:05,245 [    INFO] bybit_trading_system:5447 - HOT_RELOAD_CREDS: Source client and WebSocket credentials updated.
+2025-09-27 07:39:05,246 [    INFO] bybit_trading_system:5450 - HOT_RELOAD_CACHE_INVALIDATE: Clearing all cached data...
+2025-09-27 07:39:05,246 [    INFO] bybit_trading_system:5139 - SIGNAL_PROCESSOR: Invalidating internal caches...
+2025-09-27 07:39:05,246 [    INFO] bybit_trading_system:5142 - SIGNAL_PROCESSOR: Caches (known_positions, _last_set_leverage) cleared.
+2025-09-27 07:39:05,246 [    INFO] bybit_trading_system:5462 - HOT_RELOAD_WS_RECONNECT: Attempt 1/3 to reconnect WebSocket...
+2025-09-27 07:39:05,247 [    INFO] bybit_trading_system:5465 - HOT_RELOAD_WS_RECONNECTED: WebSocket reconnected and authenticated.
+2025-09-27 07:39:05,247 [    INFO] bybit_trading_system:5479 - HOT_RELOAD_STATE_REFRESH: Fetching current state from REST API...
+2025-09-27 07:39:05,247 [    INFO] bybit_trading_system:5688 - --- Running REST API Reconciliation Cycle ---
+2025-09-27 07:39:05,248 [    INFO] bybit_trading_system:5706 - Main positions cache updated with 0 positions.
+2025-09-27 07:39:05,248 [    INFO] bybit_trading_system:5730 - RECONCILE: fetched donor=0, main=0 | to_open=0, to_close=0, to_modify=0
+2025-09-27 07:39:05,248 [    INFO] bybit_trading_system:5731 - RECONCILE SUMMARY: enqueued=0
+2025-09-27 07:39:05,248 [    INFO] bybit_trading_system:5616 - MAIN_RELOAD - Balance: 50000.00 USDT
+2025-09-27 07:39:05,248 [    INFO] bybit_trading_system:5496 - HOT_RELOAD_SUMMARY: duration_ms=4, deferred_signals_processed=0, ws_topics_re-subscribed=4
+2025-09-27 07:39:05,249 [    INFO] bybit_trading_system:5390 - Resuming system processing...
+2025-09-27 07:39:05,249 [    INFO] bybit_trading_system:5404 - System processing resumed.
+2025-09-27 07:39:05,249 [    INFO] bybit_trading_system:5514 - HOT_RELOAD_FINISH: Reload process finished.
+2025-09-27 07:40:19,691 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-27 07:40:19,698 [    INFO] bybit_trading_system:3394 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-27 07:40:19,699 [    INFO] bybit_trading_system:5390 - Pausing system processing...
+2025-09-27 07:40:19,699 [    INFO] bybit_trading_system:5395 - Waiting for in-flight signals to complete...
+2025-09-27 07:40:19,699 [    INFO] bybit_trading_system:5397 - All in-flight tasks completed. System is fully paused.
+2025-09-27 07:40:19,699 [    INFO] bybit_trading_system:4942 - Critical op deferred with key ADAUSDT|1|position_close|1758958819: position_close ADAUSDT
+2025-09-27 07:40:19,699 [    INFO] bybit_trading_system:4942 - Critical op deferred with key ADAUSDT|1|position_close|1758958819: position_close ADAUSDT
+2025-09-27 07:40:19,699 [    INFO] bybit_trading_system:5405 - Resuming system processing...
+2025-09-27 07:40:19,699 [    INFO] bybit_trading_system:5410 - Processing 2 deferred critical operations.
+2025-09-27 07:40:19,699 [    INFO] bybit_trading_system:5033 - Weekend activity detected for ADAUSDT
+2025-09-27 07:40:19,700 [    INFO] bybit_trading_system:4958 - Signal added to main queue: position_close ADAUSDT Sell 100
+2025-09-27 07:40:19,700 [ WARNING] bybit_trading_system:5414 - Skipping duplicate deferred operation: ADAUSDT|1|position_close|1758958819
+2025-09-27 07:40:19,700 [    INFO] bybit_trading_system:5436 - System processing resumed.
+2025-09-27 07:40:19,702 [    INFO] bybit_trading_system:3394 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-27 07:40:19,702 [    INFO] bybit_trading_system:4777 - Signal processing system started
+2025-09-27 07:40:19,702 [    INFO] bybit_trading_system:5033 - Weekend activity detected for ETHUSDT
+2025-09-27 07:40:19,702 [    INFO] bybit_trading_system:4958 - Signal added to main queue: position_open ETHUSDT Buy 0.1
+2025-09-27 07:40:19,713 [    INFO] bybit_trading_system:5390 - Pausing system processing...
+2025-09-27 07:40:19,713 [    INFO] bybit_trading_system:5395 - Waiting for in-flight signals to complete...
+2025-09-27 07:40:20,704 [    INFO] bybit_trading_system:5091 - Processing signal: position_open ETHUSDT Buy 0.1
+2025-09-27 07:40:20,738 [    INFO] bybit_trading_system:5153 - 🟢 POSITION OPEN DETECTED: ETHUSDT Buy 0.1 @ 3000
+2025-09-27 07:40:20,739 [ WARNING] bybit_trading_system:5182 - ⚠️ Copy system not connected - signal not copied
+2025-09-27 07:40:20,739 [    INFO] bybit_trading_system:5072 - All in-flight signal workers are idle.
+2025-09-27 07:40:20,739 [    INFO] bybit_trading_system:5397 - All in-flight tasks completed. System is fully paused.
+2025-09-27 07:40:20,739 [    INFO] bybit_trading_system:4791 - Signal processing system stopped
+2025-09-27 07:40:20,746 [    INFO] bybit_trading_system:3394 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-27 07:40:20,747 [    INFO] bybit_trading_system:5451 - HOT_RELOAD_START: Beginning credentials hot-reload process... (deferred signals: 0)
+2025-09-27 07:40:20,747 [    INFO] bybit_trading_system:5390 - Pausing system processing...
+2025-09-27 07:40:20,747 [    INFO] bybit_trading_system:5395 - Waiting for in-flight signals to complete...
+2025-09-27 07:40:20,748 [    INFO] bybit_trading_system:5397 - All in-flight tasks completed. System is fully paused.
+2025-09-27 07:40:20,748 [    INFO] bybit_trading_system:5459 - HOT_RELOAD_WS_DISCONNECT: Closing WebSocket connection...
+2025-09-27 07:40:20,748 [    INFO] bybit_trading_system:5472 - HOT_RELOAD_CREDS: Main client credentials updated.
+2025-09-27 07:40:20,748 [    INFO] bybit_trading_system:5479 - HOT_RELOAD_CREDS: Source client and WebSocket credentials updated.
+2025-09-27 07:40:20,748 [    INFO] bybit_trading_system:5482 - HOT_RELOAD_CACHE_INVALIDATE: Clearing all cached data...
+2025-09-27 07:40:20,749 [    INFO] bybit_trading_system:5145 - SIGNAL_PROCESSOR: Invalidating internal caches...
+2025-09-27 07:40:20,749 [    INFO] bybit_trading_system:5148 - SIGNAL_PROCESSOR: Caches (known_positions, _last_set_leverage) cleared.
+2025-09-27 07:40:20,749 [    INFO] bybit_trading_system:5494 - HOT_RELOAD_WS_RECONNECT: Attempt 1/3 to reconnect WebSocket...
+2025-09-27 07:40:20,750 [    INFO] bybit_trading_system:5497 - HOT_RELOAD_WS_RECONNECTED: WebSocket reconnected and authenticated.
+2025-09-27 07:40:20,750 [    INFO] bybit_trading_system:5511 - HOT_RELOAD_STATE_REFRESH: Fetching current state from REST API...
+2025-09-27 07:40:20,750 [    INFO] bybit_trading_system:5720 - --- Running REST API Reconciliation Cycle ---
+2025-09-27 07:40:20,752 [    INFO] bybit_trading_system:5738 - Main positions cache updated with 0 positions.
+2025-09-27 07:40:20,752 [    INFO] bybit_trading_system:5762 - RECONCILE: fetched donor=0, main=0 | to_open=0, to_close=0, to_modify=0
+2025-09-27 07:40:20,752 [    INFO] bybit_trading_system:5763 - RECONCILE SUMMARY: enqueued=0
+2025-09-27 07:40:20,752 [    INFO] bybit_trading_system:5648 - MAIN_RELOAD - Balance: 50000.00 USDT
+2025-09-27 07:40:20,752 [    INFO] bybit_trading_system:5528 - HOT_RELOAD_SUMMARY: duration_ms=5, deferred_signals_processed=0, ws_topics_re-subscribed=4
+2025-09-27 07:40:20,753 [    INFO] bybit_trading_system:5405 - Resuming system processing...
+2025-09-27 07:40:20,753 [    INFO] bybit_trading_system:5436 - System processing resumed.
+2025-09-27 07:40:20,753 [    INFO] bybit_trading_system:5546 - HOT_RELOAD_FINISH: Reload process finished.
+2025-09-27 07:41:37,785 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-27 07:41:39,952 [    INFO] bybit_trading_system:3395 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-27 07:41:39,955 [    INFO] bybit_trading_system:5391 - Pausing system processing...
+2025-09-27 07:41:39,955 [    INFO] bybit_trading_system:5396 - Waiting for in-flight signals to complete...
+2025-09-27 07:41:39,956 [    INFO] bybit_trading_system:5398 - All in-flight tasks completed. System is fully paused.
+2025-09-27 07:41:39,956 [    INFO] bybit_trading_system:4943 - Critical op deferred with key ADAUSDT|1|position_close|1758958899: position_close ADAUSDT
+2025-09-27 07:41:39,956 [    INFO] bybit_trading_system:4943 - Critical op deferred with key ADAUSDT|1|position_close|1758958899: position_close ADAUSDT
+2025-09-27 07:41:39,956 [    INFO] bybit_trading_system:5406 - Resuming system processing...
+2025-09-27 07:41:39,956 [    INFO] bybit_trading_system:5411 - Processing 2 deferred critical operations.
+2025-09-27 07:41:39,956 [    INFO] bybit_trading_system:5034 - Weekend activity detected for ADAUSDT
+2025-09-27 07:41:39,956 [    INFO] bybit_trading_system:4959 - Signal added to main queue: position_close ADAUSDT Sell 100
+2025-09-27 07:41:39,956 [ WARNING] bybit_trading_system:5415 - Skipping duplicate deferred operation: ADAUSDT|1|position_close|1758958899
+2025-09-27 07:41:39,957 [    INFO] bybit_trading_system:5437 - System processing resumed.
+2025-09-27 07:41:39,959 [    INFO] bybit_trading_system:3395 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-27 07:41:39,959 [    INFO] bybit_trading_system:4778 - Signal processing system started
+2025-09-27 07:41:39,959 [    INFO] bybit_trading_system:5034 - Weekend activity detected for ETHUSDT
+2025-09-27 07:41:39,959 [    INFO] bybit_trading_system:4959 - Signal added to main queue: position_open ETHUSDT Buy 0.1
+2025-09-27 07:41:39,970 [    INFO] bybit_trading_system:5391 - Pausing system processing...
+2025-09-27 07:41:39,970 [    INFO] bybit_trading_system:5396 - Waiting for in-flight signals to complete...
+2025-09-27 07:41:40,961 [    INFO] bybit_trading_system:5092 - Processing signal: position_open ETHUSDT Buy 0.1
+2025-09-27 07:41:40,998 [    INFO] bybit_trading_system:5154 - 🟢 POSITION OPEN DETECTED: ETHUSDT Buy 0.1 @ 3000
+2025-09-27 07:41:40,999 [ WARNING] bybit_trading_system:5183 - ⚠️ Copy system not connected - signal not copied
+2025-09-27 07:41:40,999 [    INFO] bybit_trading_system:5073 - All in-flight signal workers are idle.
+2025-09-27 07:41:40,999 [    INFO] bybit_trading_system:5398 - All in-flight tasks completed. System is fully paused.
+2025-09-27 07:41:40,999 [    INFO] bybit_trading_system:4792 - Signal processing system stopped
+2025-09-27 07:41:41,004 [    INFO] bybit_trading_system:3395 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-27 07:41:41,006 [    INFO] bybit_trading_system:5452 - HOT_RELOAD_START: Beginning credentials hot-reload process... (deferred signals: 0)
+2025-09-27 07:41:41,006 [    INFO] bybit_trading_system:5391 - Pausing system processing...
+2025-09-27 07:41:41,006 [    INFO] bybit_trading_system:5396 - Waiting for in-flight signals to complete...
+2025-09-27 07:41:41,006 [    INFO] bybit_trading_system:5398 - All in-flight tasks completed. System is fully paused.
+2025-09-27 07:41:41,006 [    INFO] bybit_trading_system:5460 - HOT_RELOAD_WS_DISCONNECT: Closing WebSocket connection...
+2025-09-27 07:41:41,007 [    INFO] bybit_trading_system:5473 - HOT_RELOAD_CREDS: Main client credentials updated.
+2025-09-27 07:41:41,007 [    INFO] bybit_trading_system:5480 - HOT_RELOAD_CREDS: Source client and WebSocket credentials updated.
+2025-09-27 07:41:41,007 [    INFO] bybit_trading_system:5483 - HOT_RELOAD_CACHE_INVALIDATE: Clearing all cached data...
+2025-09-27 07:41:41,007 [    INFO] bybit_trading_system:5146 - SIGNAL_PROCESSOR: Invalidating internal caches...
+2025-09-27 07:41:41,008 [    INFO] bybit_trading_system:5149 - SIGNAL_PROCESSOR: Caches (known_positions, _last_set_leverage) cleared.
+2025-09-27 07:41:41,008 [    INFO] bybit_trading_system:5495 - HOT_RELOAD_WS_RECONNECT: Attempt 1/3 to reconnect WebSocket...
+2025-09-27 07:41:41,008 [    INFO] bybit_trading_system:5498 - HOT_RELOAD_WS_RECONNECTED: WebSocket reconnected and authenticated.
+2025-09-27 07:41:41,009 [    INFO] bybit_trading_system:5512 - HOT_RELOAD_STATE_REFRESH: Fetching current state from REST API...
+2025-09-27 07:41:41,009 [    INFO] bybit_trading_system:5721 - --- Running REST API Reconciliation Cycle ---
+2025-09-27 07:41:41,011 [    INFO] bybit_trading_system:5739 - Main positions cache updated with 0 positions.
+2025-09-27 07:41:41,011 [    INFO] bybit_trading_system:5763 - RECONCILE: fetched donor=0, main=0 | to_open=0, to_close=0, to_modify=0
+2025-09-27 07:41:41,011 [    INFO] bybit_trading_system:5764 - RECONCILE SUMMARY: enqueued=0
+2025-09-27 07:41:41,011 [    INFO] bybit_trading_system:5649 - MAIN_RELOAD - Balance: 50000.00 USDT
+2025-09-27 07:41:41,011 [    INFO] bybit_trading_system:5529 - HOT_RELOAD_SUMMARY: duration_ms=6, deferred_signals_processed=0, ws_topics_re-subscribed=4
+2025-09-27 07:41:41,012 [    INFO] bybit_trading_system:5406 - Resuming system processing...
+2025-09-27 07:41:41,012 [    INFO] bybit_trading_system:5437 - System processing resumed.
+2025-09-27 07:41:41,012 [    INFO] bybit_trading_system:5547 - HOT_RELOAD_FINISH: Reload process finished.
+2025-09-27 07:41:41,018 [    INFO] bybit_trading_system:3395 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-27 07:41:41,019 [    INFO] bybit_trading_system:5649 - initial - Balance: 100.00 USDT
+2025-09-27 07:41:41,019 [    INFO] bybit_trading_system:4946 - Signal deferred due to system pause: position_open BTCUSDT
+2025-09-27 07:41:41,019 [    INFO] bybit_trading_system:5452 - HOT_RELOAD_START: Beginning credentials hot-reload process... (deferred signals: 1)
+2025-09-27 07:41:41,019 [    INFO] bybit_trading_system:5391 - Pausing system processing...
+2025-09-27 07:41:41,019 [    INFO] bybit_trading_system:5396 - Waiting for in-flight signals to complete...
+2025-09-27 07:41:41,019 [    INFO] bybit_trading_system:5398 - All in-flight tasks completed. System is fully paused.
+2025-09-27 07:41:41,019 [    INFO] bybit_trading_system:5460 - HOT_RELOAD_WS_DISCONNECT: Closing WebSocket connection...
+2025-09-27 07:41:41,020 [    INFO] bybit_trading_system:5473 - HOT_RELOAD_CREDS: Main client credentials updated.
+2025-09-27 07:41:41,020 [    INFO] bybit_trading_system:5480 - HOT_RELOAD_CREDS: Source client and WebSocket credentials updated.
+2025-09-27 07:41:41,020 [    INFO] bybit_trading_system:5483 - HOT_RELOAD_CACHE_INVALIDATE: Clearing all cached data...
+2025-09-27 07:41:41,021 [    INFO] bybit_trading_system:5146 - SIGNAL_PROCESSOR: Invalidating internal caches...
+2025-09-27 07:41:41,021 [    INFO] bybit_trading_system:5149 - SIGNAL_PROCESSOR: Caches (known_positions, _last_set_leverage) cleared.
+2025-09-27 07:41:41,021 [    INFO] bybit_trading_system:5495 - HOT_RELOAD_WS_RECONNECT: Attempt 1/3 to reconnect WebSocket...
+2025-09-27 07:41:41,022 [    INFO] bybit_trading_system:5498 - HOT_RELOAD_WS_RECONNECTED: WebSocket reconnected and authenticated.
+2025-09-27 07:41:41,022 [    INFO] bybit_trading_system:3552 - [SOURCE_WS] No topics to resubscribe to.
+2025-09-27 07:41:41,022 [    INFO] bybit_trading_system:5512 - HOT_RELOAD_STATE_REFRESH: Fetching current state from REST API...
+2025-09-27 07:41:41,023 [    INFO] bybit_trading_system:5721 - --- Running REST API Reconciliation Cycle ---
+2025-09-27 07:41:41,026 [    INFO] bybit_trading_system:5739 - Main positions cache updated with 0 positions.
+2025-09-27 07:41:41,026 [    INFO] bybit_trading_system:5763 - RECONCILE: fetched donor=0, main=0 | to_open=0, to_close=0, to_modify=0
+2025-09-27 07:41:41,026 [    INFO] bybit_trading_system:5764 - RECONCILE SUMMARY: enqueued=0
+2025-09-27 07:41:41,026 [    INFO] bybit_trading_system:5649 - MAIN_RELOAD - Balance: 10000.00 USDT
+2025-09-27 07:41:41,026 [    INFO] bybit_trading_system:5529 - HOT_RELOAD_SUMMARY: duration_ms=7, deferred_signals_processed=1, ws_topics_re-subscribed=0
+2025-09-27 07:41:41,027 [    INFO] bybit_trading_system:5406 - Resuming system processing...
+2025-09-27 07:41:41,027 [    INFO] bybit_trading_system:5427 - Processing 1 deferred signals.
+2025-09-27 07:41:41,027 [    INFO] bybit_trading_system:5034 - Weekend activity detected for BTCUSDT
+2025-09-27 07:41:41,027 [    INFO] bybit_trading_system:4959 - Signal added to main queue: position_open BTCUSDT Buy 1
+2025-09-27 07:41:41,027 [    INFO] bybit_trading_system:5437 - System processing resumed.
+2025-09-27 07:41:41,027 [    INFO] bybit_trading_system:5547 - HOT_RELOAD_FINISH: Reload process finished.
+2025-09-27 07:41:41,027 [    INFO] bybit_trading_system:5649 - final - Balance: 10000.00 USDT
+2025-09-27 07:41:41,031 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 07:41:41,031 [    INFO] bybit_trading_system:1127 - TS_PARAM_RESOLVED{activePrice=1.22, trailingStop=0.0, from='percent', price_ref='1.25'}
+2025-09-27 07:41:41,037 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:41:41,037 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:41:41,038 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:41:41,039 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:41:41,067 [    INFO] bybit_trading_system:3029 - MARGIN_MIRROR_APPLY: donorΔIM=$+50.00, mainΔIM=$+25.00 for BTCUSDT
+2025-09-27 07:41:41,067 [    INFO] bybit_trading_system:3039 - MARGIN_MIRROR_OK: Successfully added margin for BTCUSDT.
+2025-09-27 07:41:41,067 [    INFO] bybit_trading_system:3001 - MARGIN_MIRROR_DEBOUNCED: Skipping margin sync for BTCUSDT.
+2025-09-27 07:41:41,075 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:41:41,075 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:41:41,077 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:41:41,077 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:41:41,079 [    INFO] bybit_trading_system:3017 - MARGIN_MIRROR_SKIP: Proportional delta $2.00 for BTCUSDT is below min threshold.
+2025-09-27 07:41:41,082 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:41:41,082 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:41:41,084 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:41:41,084 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:41:41,086 [    INFO] bybit_trading_system:3029 - MARGIN_MIRROR_APPLY: donorΔIM=$+50.00, mainΔIM=$+25.00 for BTCUSDT
+2025-09-27 07:41:41,086 [    INFO] bybit_trading_system:3039 - MARGIN_MIRROR_OK: Successfully added margin for BTCUSDT.
+2025-09-27 07:41:41,089 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:41:41,089 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:41:41,091 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:41:41,091 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:41:41,093 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='' size=0.0 entry=3000.0 idx=0
+2025-09-27 07:41:41,094 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:41:41,108 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=0.0000 main=0.7500 -> target=0.0000 | delta=-0.7500
+2025-09-27 07:41:41,108 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_CLOSE for ETHUSDT | Qty: 0.7500 | Side: Sell
+2025-09-27 07:41:41,108 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:41:41,112 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:41:41,112 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:41:41,113 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:41:41,114 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:41:41,117 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=3.0 entry=3000.0 idx=0
+2025-09-27 07:41:41,117 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:41:41,118 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=3.0000 -> Proportional=1.5000 -> Kelly Rec=1.5000 -> Final Target=1.5000
+2025-09-27 07:41:41,118 [    INFO] bybit_trading_system:3238 - ⏸️ MODIFY_DEFERRED: symbol=ETHUSDT side=Buy size=3.0 (queue_len=1/100)
+2025-09-27 07:41:41,118 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:41:41,122 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:41:41,123 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:41:41,124 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:41:41,124 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:41:41,127 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=1.5 entry=3000.0 idx=0
+2025-09-27 07:41:41,128 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:41:41,128 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=1.5000 -> Proportional=0.7500 -> Kelly Rec=0.7500 -> Final Target=0.7500
+2025-09-27 07:41:41,128 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=1.5000 main=0.0000 -> target=0.7500 | delta=0.7500
+2025-09-27 07:41:41,128 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_OPEN for ETHUSDT | Qty: 0.7500 | Side: Buy
+2025-09-27 07:41:41,129 [    INFO] bybit_trading_system:3068 - LEVERAGE_SYNC_START: Attempting to set leverage for ETHUSDT to 10x.
+2025-09-27 07:41:41,131 [   ERROR] bybit_trading_system:3089 - LEVERAGE_SYNC_FAILED: for ETHUSDT to 10x. Reason: <coroutine object AsyncMockMixin._execute_mock_call at 0x7f630c46c240> (retCode: <coroutine object AsyncMockMixin._execute_mock_call at 0x7f630c46c840>)
+2025-09-27 07:41:41,149 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:41:41,149 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:41:41,150 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:41:41,150 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:41:41,154 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=2.0 entry=3000.0 idx=0
+2025-09-27 07:41:41,154 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:41:41,155 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=2.0000 -> Proportional=1.0000 -> Kelly Rec=1.0000 -> Final Target=1.0000
+2025-09-27 07:41:41,155 [    INFO] bybit_trading_system:3238 - ⏸️ MODIFY_DEFERRED: symbol=ETHUSDT side=Buy size=2.0 (queue_len=1/100)
+2025-09-27 07:41:41,155 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:41:41,159 [    INFO] bybit_trading_system:178 - [live-format] DOGEUSDT: qty_in=37.00000000, price=$0.1000, step=1.0, rule_min_qty=1.0, min_notional=5.0, notional_min_qty=50.00000000, effective_min_qty=50.00000000 -> final_qty=50
+2025-09-27 07:41:41,163 [    INFO] bybit_trading_system:178 - [live-format] SOMECOINUSDT: qty_in=20.90000000, price=$0.4000, step=1.0, rule_min_qty=1.0, min_notional=10.0, notional_min_qty=25.00000000, effective_min_qty=25.00000000 -> final_qty=25
+2025-09-27 07:41:41,166 [    INFO] bybit_trading_system:178 - [live-format] DOGEUSDT: qty_in=55.90000000, price=$0.1000, step=1.0, rule_min_qty=1.0, min_notional=5.0, notional_min_qty=50.00000000, effective_min_qty=50.00000000 -> final_qty=55
+2025-09-27 07:41:41,169 [    INFO] bybit_trading_system:178 - [live-format] ETHUSDT: qty_in=123.45600000, price=$3000.0000, step=0.01, rule_min_qty=0.01, min_notional=5.0, notional_min_qty=0.00166667, effective_min_qty=0.01000000 -> final_qty=123.45
+2025-09-27 07:41:41,172 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 07:41:41,173 [    INFO] bybit_trading_system:1181 - TS_ADAPTER(remove): Triggered for BTCUSDT
+2025-09-27 07:41:41,180 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 07:41:41,183 [ WARNING] bybit_trading_system:1103 - TS_WARN: Could not find current position for BTCUSDT to compare.
+2025-09-27 07:41:41,191 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:41:41,191 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:41:41,192 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:41:41,193 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:44:44,359 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-27 07:44:45,406 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:44:45,407 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:44:45,428 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:44:45,428 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:44:45,433 [    INFO] bybit_trading_system:3029 - MARGIN_MIRROR_APPLY: donorΔIM=$+50.00, mainΔIM=$+25.00 for BTCUSDT
+2025-09-27 07:44:45,433 [    INFO] bybit_trading_system:3039 - MARGIN_MIRROR_OK: Successfully added margin for BTCUSDT.
+2025-09-27 07:44:45,433 [    INFO] bybit_trading_system:3001 - MARGIN_MIRROR_DEBOUNCED: Skipping margin sync for BTCUSDT.
+2025-09-27 07:44:45,437 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:44:45,437 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:44:45,439 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:44:45,439 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:44:45,441 [    INFO] bybit_trading_system:3017 - MARGIN_MIRROR_SKIP: Proportional delta $2.00 for BTCUSDT is below min threshold.
+2025-09-27 07:44:45,444 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:44:45,444 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:44:45,446 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:44:45,446 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:44:45,448 [    INFO] bybit_trading_system:3029 - MARGIN_MIRROR_APPLY: donorΔIM=$+50.00, mainΔIM=$+25.00 for BTCUSDT
+2025-09-27 07:44:45,448 [    INFO] bybit_trading_system:3039 - MARGIN_MIRROR_OK: Successfully added margin for BTCUSDT.
+2025-09-27 07:44:45,451 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:44:45,451 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:44:45,452 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:44:45,452 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:44:45,455 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='' size=0.0 entry=3000.0 idx=0
+2025-09-27 07:44:45,455 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:44:45,458 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=0.0000 main=0.7500 -> target=0.0000 | delta=-0.7500
+2025-09-27 07:44:45,458 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_CLOSE for ETHUSDT | Qty: 0.7500 | Side: Sell
+2025-09-27 07:44:45,459 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:44:45,462 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:44:45,462 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:44:45,463 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:44:45,463 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:44:45,465 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=3.0 entry=3000.0 idx=0
+2025-09-27 07:44:45,466 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:44:45,466 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=3.0000 -> Proportional=1.5000 -> Kelly Rec=1.5000 -> Final Target=1.5000
+2025-09-27 07:44:45,466 [    INFO] bybit_trading_system:3238 - ⏸️ MODIFY_DEFERRED: symbol=ETHUSDT side=Buy size=3.0 (queue_len=1/100)
+2025-09-27 07:44:45,467 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:44:45,470 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:44:45,471 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:44:45,472 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:44:45,472 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:44:45,474 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=1.5 entry=3000.0 idx=0
+2025-09-27 07:44:45,474 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:44:45,475 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=1.5000 -> Proportional=0.7500 -> Kelly Rec=0.7500 -> Final Target=0.7500
+2025-09-27 07:44:45,475 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=1.5000 main=0.0000 -> target=0.7500 | delta=0.7500
+2025-09-27 07:44:45,475 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_OPEN for ETHUSDT | Qty: 0.7500 | Side: Buy
+2025-09-27 07:44:45,475 [    INFO] bybit_trading_system:3068 - LEVERAGE_SYNC_START: Attempting to set leverage for ETHUSDT to 10x.
+2025-09-27 07:44:45,477 [   ERROR] bybit_trading_system:3089 - LEVERAGE_SYNC_FAILED: for ETHUSDT to 10x. Reason: <coroutine object AsyncMockMixin._execute_mock_call at 0x7ff6223f4940> (retCode: <coroutine object AsyncMockMixin._execute_mock_call at 0x7ff6223f4740>)
+2025-09-27 07:44:45,481 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:44:45,481 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:44:45,483 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:44:45,483 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:44:45,485 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=2.0 entry=3000.0 idx=0
+2025-09-27 07:44:45,485 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:44:45,486 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=2.0000 -> Proportional=1.0000 -> Kelly Rec=1.0000 -> Final Target=1.0000
+2025-09-27 07:44:45,486 [    INFO] bybit_trading_system:3238 - ⏸️ MODIFY_DEFERRED: symbol=ETHUSDT side=Buy size=2.0 (queue_len=1/100)
+2025-09-27 07:44:45,486 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:44:45,490 [    INFO] bybit_trading_system:178 - [live-format] DOGEUSDT: qty_in=37.00000000, price=$0.1000, step=1.0, rule_min_qty=1.0, min_notional=5.0, notional_min_qty=50.00000000, effective_min_qty=50.00000000 -> final_qty=50
+2025-09-27 07:44:45,493 [    INFO] bybit_trading_system:178 - [live-format] SOMECOINUSDT: qty_in=20.90000000, price=$0.4000, step=1.0, rule_min_qty=1.0, min_notional=10.0, notional_min_qty=25.00000000, effective_min_qty=25.00000000 -> final_qty=25
+2025-09-27 07:44:45,499 [    INFO] bybit_trading_system:178 - [live-format] DOGEUSDT: qty_in=55.90000000, price=$0.1000, step=1.0, rule_min_qty=1.0, min_notional=5.0, notional_min_qty=50.00000000, effective_min_qty=50.00000000 -> final_qty=55
+2025-09-27 07:44:45,502 [    INFO] bybit_trading_system:178 - [live-format] ETHUSDT: qty_in=123.45600000, price=$3000.0000, step=0.01, rule_min_qty=0.01, min_notional=5.0, notional_min_qty=0.00166667, effective_min_qty=0.01000000 -> final_qty=123.45
+2025-09-27 07:44:45,504 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 07:44:45,506 [    INFO] bybit_trading_system:1181 - TS_ADAPTER(remove): Triggered for BTCUSDT
+2025-09-27 07:44:45,509 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 07:44:45,512 [ WARNING] bybit_trading_system:1103 - TS_WARN: Could not find current position for BTCUSDT to compare.
+2025-09-27 07:44:45,518 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:44:45,518 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:44:45,519 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:44:45,520 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:46:03,507 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-27 07:46:05,116 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:46:05,116 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:46:05,145 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:46:05,145 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:46:05,153 [    INFO] bybit_trading_system:3029 - MARGIN_MIRROR_APPLY: donorΔIM=$+50.00, mainΔIM=$+25.00 for BTCUSDT
+2025-09-27 07:46:05,153 [    INFO] bybit_trading_system:3039 - MARGIN_MIRROR_OK: Successfully added margin for BTCUSDT.
+2025-09-27 07:46:05,153 [    INFO] bybit_trading_system:3001 - MARGIN_MIRROR_DEBOUNCED: Skipping margin sync for BTCUSDT.
+2025-09-27 07:46:05,159 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:46:05,159 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:46:05,160 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:46:05,160 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:46:05,163 [    INFO] bybit_trading_system:3017 - MARGIN_MIRROR_SKIP: Proportional delta $2.00 for BTCUSDT is below min threshold.
+2025-09-27 07:46:05,167 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:46:05,167 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:46:05,168 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:46:05,168 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:46:05,171 [    INFO] bybit_trading_system:3029 - MARGIN_MIRROR_APPLY: donorΔIM=$+50.00, mainΔIM=$+25.00 for BTCUSDT
+2025-09-27 07:46:05,171 [    INFO] bybit_trading_system:3039 - MARGIN_MIRROR_OK: Successfully added margin for BTCUSDT.
+2025-09-27 07:46:05,175 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:46:05,175 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:46:05,176 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:46:05,177 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:46:05,180 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='' size=0.0 entry=3000.0 idx=0
+2025-09-27 07:46:05,180 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:46:05,190 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=0.0000 main=0.7500 -> target=0.0000 | delta=-0.7500
+2025-09-27 07:46:05,190 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_CLOSE for ETHUSDT | Qty: 0.7500 | Side: Sell
+2025-09-27 07:46:05,190 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:46:05,194 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:46:05,194 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:46:05,196 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:46:05,196 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:46:05,199 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=3.0 entry=3000.0 idx=0
+2025-09-27 07:46:05,199 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:46:05,200 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=3.0000 -> Proportional=1.5000 -> Kelly Rec=1.5000 -> Final Target=1.5000
+2025-09-27 07:46:05,200 [    INFO] bybit_trading_system:3238 - ⏸️ MODIFY_DEFERRED: symbol=ETHUSDT side=Buy size=3.0 (queue_len=1/100)
+2025-09-27 07:46:05,201 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:46:05,205 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:46:05,205 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:46:05,206 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:46:05,206 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:46:05,209 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=1.5 entry=3000.0 idx=0
+2025-09-27 07:46:05,210 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:46:05,210 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=1.5000 -> Proportional=0.7500 -> Kelly Rec=0.7500 -> Final Target=0.7500
+2025-09-27 07:46:05,211 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=1.5000 main=0.0000 -> target=0.7500 | delta=0.7500
+2025-09-27 07:46:05,211 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_OPEN for ETHUSDT | Qty: 0.7500 | Side: Buy
+2025-09-27 07:46:05,211 [    INFO] bybit_trading_system:3068 - LEVERAGE_SYNC_START: Attempting to set leverage for ETHUSDT to 10x.
+2025-09-27 07:46:05,214 [   ERROR] bybit_trading_system:3089 - LEVERAGE_SYNC_FAILED: for ETHUSDT to 10x. Reason: <coroutine object AsyncMockMixin._execute_mock_call at 0x7fc3c6474440> (retCode: <coroutine object AsyncMockMixin._execute_mock_call at 0x7fc3c6474140>)
+2025-09-27 07:46:05,220 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:46:05,220 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:46:05,222 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:46:05,222 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:46:05,225 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=2.0 entry=3000.0 idx=0
+2025-09-27 07:46:05,226 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:46:05,226 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=2.0000 -> Proportional=1.0000 -> Kelly Rec=1.0000 -> Final Target=1.0000
+2025-09-27 07:46:05,226 [    INFO] bybit_trading_system:3238 - ⏸️ MODIFY_DEFERRED: symbol=ETHUSDT side=Buy size=2.0 (queue_len=1/100)
+2025-09-27 07:46:05,227 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:46:05,231 [    INFO] bybit_trading_system:178 - [live-format] DOGEUSDT: qty_in=37.00000000, price=$0.1000, step=1.0, rule_min_qty=1.0, min_notional=5.0, notional_min_qty=50.00000000, effective_min_qty=50.00000000 -> final_qty=50
+2025-09-27 07:46:05,234 [    INFO] bybit_trading_system:178 - [live-format] SOMECOINUSDT: qty_in=20.90000000, price=$0.4000, step=1.0, rule_min_qty=1.0, min_notional=10.0, notional_min_qty=25.00000000, effective_min_qty=25.00000000 -> final_qty=25
+2025-09-27 07:46:05,240 [    INFO] bybit_trading_system:178 - [live-format] DOGEUSDT: qty_in=55.90000000, price=$0.1000, step=1.0, rule_min_qty=1.0, min_notional=5.0, notional_min_qty=50.00000000, effective_min_qty=50.00000000 -> final_qty=55
+2025-09-27 07:46:05,244 [    INFO] bybit_trading_system:178 - [live-format] ETHUSDT: qty_in=123.45600000, price=$3000.0000, step=0.01, rule_min_qty=0.01, min_notional=5.0, notional_min_qty=0.00166667, effective_min_qty=0.01000000 -> final_qty=123.45
+2025-09-27 07:46:05,249 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 07:46:05,250 [    INFO] bybit_trading_system:1181 - TS_ADAPTER(remove): Triggered for BTCUSDT
+2025-09-27 07:46:05,254 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 07:46:05,256 [ WARNING] bybit_trading_system:1103 - TS_WARN: Could not find current position for BTCUSDT to compare.
+2025-09-27 07:46:05,262 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:46:05,262 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:46:05,263 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:46:05,264 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:48:27,033 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-27 07:48:28,107 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:48:28,107 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:48:28,129 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:48:28,129 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:48:28,133 [    INFO] bybit_trading_system:3029 - MARGIN_MIRROR_APPLY: donorΔIM=$+50.00, mainΔIM=$+25.00 for BTCUSDT
+2025-09-27 07:48:28,133 [    INFO] bybit_trading_system:3039 - MARGIN_MIRROR_OK: Successfully added margin for BTCUSDT.
+2025-09-27 07:48:28,133 [    INFO] bybit_trading_system:3001 - MARGIN_MIRROR_DEBOUNCED: Skipping margin sync for BTCUSDT.
+2025-09-27 07:48:28,137 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:48:28,138 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:48:28,139 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:48:28,139 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:48:28,142 [    INFO] bybit_trading_system:3017 - MARGIN_MIRROR_SKIP: Proportional delta $2.00 for BTCUSDT is below min threshold.
+2025-09-27 07:48:28,145 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:48:28,145 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:48:28,147 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:48:28,147 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:48:28,149 [    INFO] bybit_trading_system:3029 - MARGIN_MIRROR_APPLY: donorΔIM=$+50.00, mainΔIM=$+25.00 for BTCUSDT
+2025-09-27 07:48:28,150 [    INFO] bybit_trading_system:3039 - MARGIN_MIRROR_OK: Successfully added margin for BTCUSDT.
+2025-09-27 07:48:28,153 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:48:28,153 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:48:28,155 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:48:28,155 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:48:28,158 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='' size=0.0 entry=3000.0 idx=0
+2025-09-27 07:48:28,159 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:48:28,168 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=0.0000 main=0.7500 -> target=0.0000 | delta=-0.7500
+2025-09-27 07:48:28,168 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_CLOSE for ETHUSDT | Qty: 0.7500 | Side: Sell
+2025-09-27 07:48:28,169 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:48:28,172 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:48:28,173 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:48:28,174 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:48:28,174 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:48:28,177 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=3.0 entry=3000.0 idx=0
+2025-09-27 07:48:28,177 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:48:28,178 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=3.0000 -> Proportional=1.5000 -> Kelly Rec=1.5000 -> Final Target=1.5000
+2025-09-27 07:48:28,178 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=3.0000 main=1.0000 -> target=1.5000 | delta=0.5000
+2025-09-27 07:48:28,178 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_MODIFY for ETHUSDT | Qty: 0.5000 | Side: Buy
+2025-09-27 07:48:28,179 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:48:28,182 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:48:28,182 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:48:28,183 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:48:28,184 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:48:28,187 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=1.5 entry=3000.0 idx=0
+2025-09-27 07:48:28,187 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:48:28,188 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=1.5000 -> Proportional=0.7500 -> Kelly Rec=0.7500 -> Final Target=0.7500
+2025-09-27 07:48:28,188 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=1.5000 main=0.0000 -> target=0.7500 | delta=0.7500
+2025-09-27 07:48:28,188 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_OPEN for ETHUSDT | Qty: 0.7500 | Side: Buy
+2025-09-27 07:48:28,189 [    INFO] bybit_trading_system:3068 - LEVERAGE_SYNC_START: Attempting to set leverage for ETHUSDT to 10x.
+2025-09-27 07:48:28,191 [   ERROR] bybit_trading_system:3089 - LEVERAGE_SYNC_FAILED: for ETHUSDT to 10x. Reason: <coroutine object AsyncMockMixin._execute_mock_call at 0x7fd8cbf8ed40> (retCode: <coroutine object AsyncMockMixin._execute_mock_call at 0x7fd8cc10f140>)
+2025-09-27 07:48:28,197 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:48:28,197 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:48:28,198 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:48:28,198 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:48:28,201 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=2.0 entry=3000.0 idx=0
+2025-09-27 07:48:28,202 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:48:28,202 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=2.0000 -> Proportional=1.0000 -> Kelly Rec=1.0000 -> Final Target=1.0000
+2025-09-27 07:48:28,203 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=2.0000 main=2.0000 -> target=1.0000 | delta=-1.0000
+2025-09-27 07:48:28,203 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_MODIFY for ETHUSDT | Qty: 1.0000 | Side: Sell
+2025-09-27 07:48:28,203 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:48:28,207 [    INFO] bybit_trading_system:178 - [live-format] DOGEUSDT: qty_in=37.00000000, price=$0.1000, step=1.0, rule_min_qty=1.0, min_notional=5.0, notional_min_qty=50.00000000, effective_min_qty=50.00000000 -> final_qty=50
+2025-09-27 07:48:28,210 [    INFO] bybit_trading_system:178 - [live-format] SOMECOINUSDT: qty_in=20.90000000, price=$0.4000, step=1.0, rule_min_qty=1.0, min_notional=10.0, notional_min_qty=25.00000000, effective_min_qty=25.00000000 -> final_qty=25
+2025-09-27 07:48:28,213 [    INFO] bybit_trading_system:178 - [live-format] DOGEUSDT: qty_in=55.90000000, price=$0.1000, step=1.0, rule_min_qty=1.0, min_notional=5.0, notional_min_qty=50.00000000, effective_min_qty=50.00000000 -> final_qty=55
+2025-09-27 07:48:28,217 [    INFO] bybit_trading_system:178 - [live-format] ETHUSDT: qty_in=123.45600000, price=$3000.0000, step=0.01, rule_min_qty=0.01, min_notional=5.0, notional_min_qty=0.00166667, effective_min_qty=0.01000000 -> final_qty=123.45
+2025-09-27 07:48:28,219 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 07:48:28,221 [    INFO] bybit_trading_system:1181 - TS_ADAPTER(remove): Triggered for BTCUSDT
+2025-09-27 07:48:28,222 [    INFO] bybit_trading_system:1198 - TS_RESET_OK: Trailing stop for BTCUSDT reset successfully.
+2025-09-27 07:48:28,225 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 07:48:28,227 [    INFO] bybit_trading_system:1127 - TS_PARAM_RESOLVED{activePrice=51510.0, trailingStop=153.0, from='percent', price_ref='51000.0'}
+2025-09-27 07:48:28,235 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:48:28,235 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:48:28,236 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:48:28,237 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:51:13,316 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-27 07:51:14,402 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:51:14,402 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:51:14,422 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:51:14,422 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:51:14,426 [    INFO] bybit_trading_system:3029 - MARGIN_MIRROR_APPLY: donorΔIM=$+50.00, mainΔIM=$+25.00 for BTCUSDT
+2025-09-27 07:51:14,427 [    INFO] bybit_trading_system:3039 - MARGIN_MIRROR_OK: Successfully added margin for BTCUSDT.
+2025-09-27 07:51:14,427 [    INFO] bybit_trading_system:3001 - MARGIN_MIRROR_DEBOUNCED: Skipping margin sync for BTCUSDT.
+2025-09-27 07:51:14,431 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:51:14,431 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:51:14,432 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:51:14,432 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:51:14,434 [    INFO] bybit_trading_system:3017 - MARGIN_MIRROR_SKIP: Proportional delta $2.00 for BTCUSDT is below min threshold.
+2025-09-27 07:51:14,437 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:51:14,437 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:51:14,438 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:51:14,439 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:51:14,440 [    INFO] bybit_trading_system:3029 - MARGIN_MIRROR_APPLY: donorΔIM=$+50.00, mainΔIM=$+25.00 for BTCUSDT
+2025-09-27 07:51:14,441 [    INFO] bybit_trading_system:3039 - MARGIN_MIRROR_OK: Successfully added margin for BTCUSDT.
+2025-09-27 07:51:14,444 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:51:14,444 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:51:14,445 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:51:14,445 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:51:14,447 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='' size=0.0 entry=3000.0 idx=0
+2025-09-27 07:51:14,448 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:51:14,451 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=0.0000 main=0.7500 -> target=0.0000 | delta=-0.7500
+2025-09-27 07:51:14,451 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_CLOSE for ETHUSDT | Qty: 0.7500 | Side: Sell
+2025-09-27 07:51:14,451 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:51:14,454 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:51:14,455 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:51:14,455 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:51:14,456 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:51:14,458 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=3.0 entry=3000.0 idx=0
+2025-09-27 07:51:14,458 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:51:14,459 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=3.0000 -> Proportional=1.5000 -> Kelly Rec=1.5000 -> Final Target=1.5000
+2025-09-27 07:51:14,459 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=3.0000 main=1.0000 -> target=1.5000 | delta=0.5000
+2025-09-27 07:51:14,459 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_MODIFY for ETHUSDT | Qty: 0.5000 | Side: Buy
+2025-09-27 07:51:14,459 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:51:14,462 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:51:14,463 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:51:14,464 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:51:14,464 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:51:14,466 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=1.5 entry=3000.0 idx=0
+2025-09-27 07:51:14,466 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:51:14,467 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=1.5000 -> Proportional=0.7500 -> Kelly Rec=0.7500 -> Final Target=0.7500
+2025-09-27 07:51:14,467 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=1.5000 main=0.0000 -> target=0.7500 | delta=0.7500
+2025-09-27 07:51:14,467 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_OPEN for ETHUSDT | Qty: 0.7500 | Side: Buy
+2025-09-27 07:51:14,467 [    INFO] bybit_trading_system:3068 - LEVERAGE_SYNC_START: Attempting to set leverage for ETHUSDT to 10x.
+2025-09-27 07:51:14,469 [   ERROR] bybit_trading_system:3089 - LEVERAGE_SYNC_FAILED: for ETHUSDT to 10x. Reason: <coroutine object AsyncMockMixin._execute_mock_call at 0x7f2fd468e440> (retCode: <coroutine object AsyncMockMixin._execute_mock_call at 0x7f2fd48de840>)
+2025-09-27 07:51:14,473 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:51:14,473 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:51:14,474 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:51:14,475 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:51:14,479 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=2.0 entry=3000.0 idx=0
+2025-09-27 07:51:14,479 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:51:14,480 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=2.0000 -> Proportional=1.0000 -> Kelly Rec=1.0000 -> Final Target=1.0000
+2025-09-27 07:51:14,480 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=2.0000 main=2.0000 -> target=1.0000 | delta=-1.0000
+2025-09-27 07:51:14,480 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_MODIFY for ETHUSDT | Qty: 1.0000 | Side: Sell
+2025-09-27 07:51:14,480 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:51:14,483 [    INFO] bybit_trading_system:178 - [live-format] DOGEUSDT: qty_in=37.00000000, price=$0.1000, step=1.0, rule_min_qty=1.0, min_notional=5.0, notional_min_qty=50.00000000, effective_min_qty=50.00000000 -> final_qty=50
+2025-09-27 07:51:14,486 [    INFO] bybit_trading_system:178 - [live-format] SOMECOINUSDT: qty_in=20.90000000, price=$0.4000, step=1.0, rule_min_qty=1.0, min_notional=10.0, notional_min_qty=25.00000000, effective_min_qty=25.00000000 -> final_qty=25
+2025-09-27 07:51:14,489 [    INFO] bybit_trading_system:178 - [live-format] DOGEUSDT: qty_in=55.90000000, price=$0.1000, step=1.0, rule_min_qty=1.0, min_notional=5.0, notional_min_qty=50.00000000, effective_min_qty=50.00000000 -> final_qty=55
+2025-09-27 07:51:14,491 [    INFO] bybit_trading_system:178 - [live-format] ETHUSDT: qty_in=123.45600000, price=$3000.0000, step=0.01, rule_min_qty=0.01, min_notional=5.0, notional_min_qty=0.00166667, effective_min_qty=0.01000000 -> final_qty=123.45
+2025-09-27 07:51:14,494 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 07:51:14,495 [    INFO] bybit_trading_system:1181 - TS_ADAPTER(remove): Triggered for BTCUSDT
+2025-09-27 07:51:14,495 [    INFO] bybit_trading_system:1198 - TS_RESET_OK: Trailing stop for BTCUSDT reset successfully.
+2025-09-27 07:51:14,498 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 07:51:14,500 [    INFO] bybit_trading_system:1127 - TS_PARAM_RESOLVED{activePrice=51510.0, trailingStop=153.0, from='percent', price_ref='51000.0'}
+2025-09-27 07:51:14,504 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:51:14,504 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:51:14,505 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:51:14,506 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:52:10,267 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-27 07:52:11,934 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:52:11,934 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:52:11,960 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:52:11,960 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:52:11,968 [    INFO] bybit_trading_system:3029 - MARGIN_MIRROR_APPLY: donorΔIM=$+50.00, mainΔIM=$+25.00 for BTCUSDT
+2025-09-27 07:52:11,968 [    INFO] bybit_trading_system:3039 - MARGIN_MIRROR_OK: Successfully added margin for BTCUSDT.
+2025-09-27 07:52:11,969 [    INFO] bybit_trading_system:3001 - MARGIN_MIRROR_DEBOUNCED: Skipping margin sync for BTCUSDT.
+2025-09-27 07:52:11,973 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:52:11,974 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:52:11,976 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:52:11,976 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:52:11,979 [    INFO] bybit_trading_system:3017 - MARGIN_MIRROR_SKIP: Proportional delta $2.00 for BTCUSDT is below min threshold.
+2025-09-27 07:52:11,983 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:52:11,983 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:52:11,984 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:52:11,984 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:52:11,987 [    INFO] bybit_trading_system:3029 - MARGIN_MIRROR_APPLY: donorΔIM=$+50.00, mainΔIM=$+25.00 for BTCUSDT
+2025-09-27 07:52:11,987 [    INFO] bybit_trading_system:3039 - MARGIN_MIRROR_OK: Successfully added margin for BTCUSDT.
+2025-09-27 07:52:11,991 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:52:11,991 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:52:11,992 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:52:11,992 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:52:11,996 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='' size=0.0 entry=3000.0 idx=0
+2025-09-27 07:52:11,996 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:52:12,006 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=0.0000 main=0.7500 -> target=0.0000 | delta=-0.7500
+2025-09-27 07:52:12,006 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_CLOSE for ETHUSDT | Qty: 0.7500 | Side: Sell
+2025-09-27 07:52:12,007 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:52:12,010 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:52:12,010 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:52:12,012 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:52:12,012 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:52:12,015 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=3.0 entry=3000.0 idx=0
+2025-09-27 07:52:12,016 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:52:12,018 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=3.0000 -> Proportional=1.5000 -> Kelly Rec=1.5000 -> Final Target=1.5000
+2025-09-27 07:52:12,018 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=3.0000 main=1.0000 -> target=1.5000 | delta=0.5000
+2025-09-27 07:52:12,018 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_MODIFY for ETHUSDT | Qty: 0.5000 | Side: Buy
+2025-09-27 07:52:12,018 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:52:12,022 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:52:12,022 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:52:12,024 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:52:12,024 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:52:12,027 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=1.5 entry=3000.0 idx=0
+2025-09-27 07:52:12,027 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:52:12,028 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=1.5000 -> Proportional=0.7500 -> Kelly Rec=0.7500 -> Final Target=0.7500
+2025-09-27 07:52:12,028 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=1.5000 main=0.0000 -> target=0.7500 | delta=0.7500
+2025-09-27 07:52:12,028 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_OPEN for ETHUSDT | Qty: 0.7500 | Side: Buy
+2025-09-27 07:52:12,029 [    INFO] bybit_trading_system:3068 - LEVERAGE_SYNC_START: Attempting to set leverage for ETHUSDT to 10x.
+2025-09-27 07:52:12,032 [   ERROR] bybit_trading_system:3089 - LEVERAGE_SYNC_FAILED: for ETHUSDT to 10x. Reason: <coroutine object AsyncMockMixin._execute_mock_call at 0x7f39b44d6440> (retCode: <coroutine object AsyncMockMixin._execute_mock_call at 0x7f39b46fbb40>)
+2025-09-27 07:52:12,038 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:52:12,038 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:52:12,039 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:52:12,039 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-27 07:52:12,043 [    INFO] bybit_trading_system:3128 - COPY_HANDLER_IN: symbol=ETHUSDT side='Buy' size=2.0 entry=3000.0 idx=0
+2025-09-27 07:52:12,043 [    INFO] bybit_trading_system:3146 - Leverage for ETHUSDT may need update to 10x. Scheduling non-blocking sync.
+2025-09-27 07:52:12,044 [    INFO] bybit_trading_system:3170 - TARGET_CALC: Donor Size=2.0000 -> Proportional=1.0000 -> Kelly Rec=1.0000 -> Final Target=1.0000
+2025-09-27 07:52:12,044 [    INFO] bybit_trading_system:3251 - POSITION_MODIFY: symbol=ETHUSDT donor=2.0000 main=2.0000 -> target=1.0000 | delta=-1.0000
+2025-09-27 07:52:12,044 [    INFO] bybit_trading_system:3261 - COPY_ACTION: WS_MODIFY for ETHUSDT | Qty: 1.0000 | Side: Sell
+2025-09-27 07:52:12,045 [    INFO] bybit_trading_system:3063 - LEVERAGE_SKIP_SAME: symbol=ETHUSDT current=10 target=10
+2025-09-27 07:52:12,048 [    INFO] bybit_trading_system:178 - [live-format] DOGEUSDT: qty_in=37.00000000, price=$0.1000, step=1.0, rule_min_qty=1.0, min_notional=5.0, notional_min_qty=50.00000000, effective_min_qty=50.00000000 -> final_qty=50
+2025-09-27 07:52:12,052 [    INFO] bybit_trading_system:178 - [live-format] SOMECOINUSDT: qty_in=20.90000000, price=$0.4000, step=1.0, rule_min_qty=1.0, min_notional=10.0, notional_min_qty=25.00000000, effective_min_qty=25.00000000 -> final_qty=25
+2025-09-27 07:52:12,057 [    INFO] bybit_trading_system:178 - [live-format] DOGEUSDT: qty_in=55.90000000, price=$0.1000, step=1.0, rule_min_qty=1.0, min_notional=5.0, notional_min_qty=50.00000000, effective_min_qty=50.00000000 -> final_qty=55
+2025-09-27 07:52:12,060 [    INFO] bybit_trading_system:178 - [live-format] ETHUSDT: qty_in=123.45600000, price=$3000.0000, step=0.01, rule_min_qty=0.01, min_notional=5.0, notional_min_qty=0.00166667, effective_min_qty=0.01000000 -> final_qty=123.45
+2025-09-27 07:52:12,063 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 07:52:12,064 [    INFO] bybit_trading_system:1181 - TS_ADAPTER(remove): Triggered for BTCUSDT
+2025-09-27 07:52:12,065 [    INFO] bybit_trading_system:1198 - TS_RESET_OK: Trailing stop for BTCUSDT reset successfully.
+2025-09-27 07:52:12,067 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.01, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 07:52:12,069 [    INFO] bybit_trading_system:1127 - TS_PARAM_RESOLVED{activePrice=51510.0, trailingStop=153.0, from='percent', price_ref='51000.0'}
+2025-09-27 07:52:12,074 [    INFO] bybit_trading_system:372 - Advanced Kelly Calculator initialized with safety limits
+2025-09-27 07:52:12,075 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-27 07:52:12,076 [    INFO] bybit_trading_system:417 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-27 07:52:12,077 [    INFO] bybit_trading_system:2937 - Stage 2 Copy Trading System initialized (monitor=MagicMock)

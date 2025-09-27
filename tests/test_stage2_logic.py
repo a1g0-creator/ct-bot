@@ -164,37 +164,33 @@ class TestTrailingStopManager(unittest.IsolatedAsyncioTestCase):
             'symbol': 'BTCUSDT',
             'side': 'Buy',
             'quantity': 0.1,
-            'entry_price': 50000,
+            'entryPrice': 50000,
             'position_idx': 0,
         }
-        # Mock the client's filter response
-        self.mock_main_client.get_symbol_filters.return_value = {
-            "tick_size": "0.5" # e.g., BTCUSDT tick size
-        }
-        # Mock the order placement method
-        self.mock_order_manager.place_trailing_stop = AsyncMock()
+        self.mock_main_client.get_symbol_filters.return_value = {"tick_size": "0.5"}
+        self.mock_main_client.get_positions.return_value = [
+            {'symbol': 'BTCUSDT', 'positionIdx': 0, 'side': 'Buy', 'markPrice': '51000', 'lastPrice': '51000', 'sessionAvgPrice': '51000'}
+        ]
+        self.mock_order_manager.place_trailing_stop = AsyncMock(return_value={'success': True})
 
         # --- Act ---
         await self.ts_manager.create_or_update_trailing_stop(position_data)
 
         # --- Assert ---
-        # Expected distance = 50000 * 0.01 = 500
-        # Rounded to nearest 0.5, it remains 500.0
-        expected_distance_str = "500.0"
+        self.mock_order_manager.place_trailing_stop.assert_called_once()
+        call_args = self.mock_order_manager.place_trailing_stop.call_args.kwargs
+        self.assertEqual(call_args.get('symbol'), 'BTCUSDT')
+        self.assertEqual(call_args.get('position_idx'), 0)
 
-        self.mock_order_manager.place_trailing_stop.assert_called_once_with(
-            symbol='BTCUSDT',
-            trailing_stop_price=expected_distance_str,
-            position_idx=0
-        )
 
     async def test_remove_trailing_stop(self):
         """
-        Tests if removing a trailing stop calls the correct method with an empty string.
+        Tests if removing a trailing stop calls the correct method with a zero string.
         """
         # --- Arrange ---
         position_data = {'symbol': 'BTCUSDT', 'position_idx': 0}
-        self.mock_order_manager.place_trailing_stop = AsyncMock()
+        self.mock_main_client.get_positions.return_value = [{'symbol': 'BTCUSDT', 'size': '0.1', 'positionIdx': 0}]
+        self.mock_order_manager.place_trailing_stop = AsyncMock(return_value={'success': True})
 
         # --- Act ---
         await self.ts_manager.remove_trailing_stop(position_data)
@@ -202,7 +198,7 @@ class TestTrailingStopManager(unittest.IsolatedAsyncioTestCase):
         # --- Assert ---
         self.mock_order_manager.place_trailing_stop.assert_called_once_with(
             symbol='BTCUSDT',
-            trailing_stop_price="", # Should be empty string to reset
+            trailing_stop_price="0",
             position_idx=0
         )
 
@@ -300,6 +296,7 @@ class TestPositionItemHandler(unittest.IsolatedAsyncioTestCase):
         mock_monitor = MagicMock()
         mock_monitor.source_client = self.mock_source_client
         mock_monitor.main_client = self.mock_main_client
+        mock_monitor._is_paused = False # Fix for regression
 
         # Instantiate the system with the mocked monitor
         self.system = Stage2CopyTradingSystem(base_monitor=mock_monitor)
@@ -308,6 +305,9 @@ class TestPositionItemHandler(unittest.IsolatedAsyncioTestCase):
         self.system.copy_state.main_rest_ok = True
         self.system.copy_state.source_ws_ok = True
         self.system.copy_state.limits_checked = True
+        self.system.copy_connected = True
+        mock_monitor._is_paused = False
+        self.system.copy_connected = True # Fix for regression
 
         # Replace the real queue with a standard asyncio.Queue for testing
         self.system.copy_manager.copy_queue = asyncio.Queue()

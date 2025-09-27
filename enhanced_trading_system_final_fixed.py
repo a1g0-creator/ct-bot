@@ -2506,6 +2506,7 @@ class EnhancedBybitClient:
         Обёртка над /v5/account/wallet-balance (возвращает JSON Bybit как есть).
         Использует общий низкоуровневый стек _make_request_with_retry → _make_single_request.
         """
+        logger.info(f"[{self.name}] Fetching wallet balance for account_type='{account_type}', source=REST")
         params = {"accountType": account_type}
         return await self._make_request_with_retry("GET", "account/wallet-balance", params)
 
@@ -2594,7 +2595,7 @@ class EnhancedBybitClient:
         logger.info(f"[{self.name}] Invalidating all internal caches...")
         if hasattr(self, "instrument_cache"):
             self.instrument_cache.clear()
-            logger.info(f"[{self.name}] Cleared instrument_cache.")
+            logger.info(f"[{self.name}] Cleared instrument_cache (symbol filters).")
         # Add any other caches here in the future
         await asyncio.sleep(0) # Yield control to allow other tasks to run
 
@@ -3350,7 +3351,7 @@ class FinalFixedWebSocketManager:
         self.reconnect_delays = RECONNECT_DELAYS
         
         # Подписки и обработчики
-        self.subscriptions = []
+        self.subscriptions = {} # Карта топиков для переподписки topic -> params
         self.message_handlers = {}
         self.message_buffer = deque(maxlen=1000)
         # Новое с исправлением WebSocket
@@ -3502,61 +3503,71 @@ class FinalFixedWebSocketManager:
     async def _subscribe_to_events(self):
         """Подписка на критически важные события с Performance Logging"""
     
-        # ✅ НОВОЕ: Performance tracking - начало
         start_time = time.time()
         operation_name = "websocket_subscribe_to_events"
         success = False
+
+        topics_to_subscribe = {
+            "position": "position",
+            "wallet": "wallet",
+            "execution": "execution",
+            "order": "order"
+        }
     
         try:
-            # Подписываемся на события согласно Bybit API v5
-            subscriptions = [
-                "position",      # Изменения позиций
-                "wallet",        # Изменения баланса  
-                "execution",     # Исполнение ордеров
-                "order"          # Статус ордеров
-            ]
-        
-            subscribe_message = {
-                "op": "subscribe",
-                "args": subscriptions
-            }
+            args = list(topics_to_subscribe.values())
+            subscribe_message = {"op": "subscribe", "args": args}
         
             if not is_websocket_open(self.ws):
                 raise Exception("WebSocket not open for subscription")
         
             await self.ws.send(json.dumps(subscribe_message))
-            self.subscriptions = subscriptions
+            self.subscriptions.update(topics_to_subscribe)
         
-            logger.info(f"{self.name} - Subscribed to: {subscriptions}")
-            success = True  # ✅ НОВОЕ: Отмечаем успех
+            logger.info(f"{self.name} - Subscribed to: {args}")
+            success = True
         
         except Exception as e:
             logger.error(f"{self.name} - Subscription error: {e}")
-        
-            # ✅ НОВОЕ: Логируем ошибку с производственным логгером
             if 'prod_logger' in globals():
-                prod_logger.log_error(e, {
-                    'component': 'websocket_subscribe_to_events',
-                    'websocket_name': self.name,
-                    'subscriptions': subscriptions if 'subscriptions' in locals() else []
-                }, send_alert=True)
-        
+                prod_logger.log_error(e, {'component': 'websocket_subscribe_to_events', 'websocket_name': self.name, 'subscriptions': args}, send_alert=True)
             raise
         
         finally:
-            # ✅ НОВОЕ: Performance logging
             duration = time.time() - start_time
-        
             if 'prod_logger' in globals():
                 try:
                     prod_logger.log_performance(operation_name, duration, success, {
                         'websocket_name': self.name,
-                        'subscriptions_count': len(subscriptions) if 'subscriptions' in locals() else 0,
-                        'subscriptions': subscriptions if 'subscriptions' in locals() else [],
+                        'subscriptions_count': len(topics_to_subscribe),
+                        'subscriptions': list(topics_to_subscribe.keys()),
                         'subscribe_time_ms': round(duration * 1000, 2)
                     })
                 except Exception as perf_log_error:
                     logger.debug(f"WebSocket subscribe performance logging error: {perf_log_error}")
+
+    async def resubscribe_all(self):
+        """Переподписывается на все ранее сохраненные топики."""
+        if not self.subscriptions:
+            logger.info(f"[{self.name}] No topics to resubscribe to.")
+            return 0
+
+        topics_to_resubscribe = list(self.subscriptions.values())
+        subscribe_message = {"op": "subscribe", "args": topics_to_resubscribe}
+
+        try:
+            if not is_websocket_open(self.ws):
+                raise ConnectionError("Cannot resubscribe, WebSocket is not open.")
+
+            await self.ws.send(json.dumps(subscribe_message))
+
+            num_resubscribed = len(topics_to_resubscribe)
+            logger.info(f"HOT_RELOAD_WS_RESUBSCRIBED: Successfully sent resubscription request for {num_resubscribed} topics: {topics_to_resubscribe}")
+            return num_resubscribed
+
+        except Exception as e:
+            logger.error(f"[{self.name}] HOT_RELOAD_WS_RESUBSCRIBE_FAILED: Failed to resubscribe to topics. Error: {e}", exc_info=True)
+            raise
     
     async def _start_heartbeat(self):
         """Запуск heartbeat механизма"""
@@ -4391,32 +4402,15 @@ class FinalFixedWebSocketManager:
 
     async def _resubscribe(self):
         """
-        Восстанавливает все активные подписки после реконнекта
+        Восстанавливает все активные подписки после реконнекта.
+        Делегирует на новый метод resubscribe_all.
         """
-        if not hasattr(self, 'subscriptions') or not self.subscriptions:
-            logger.info("SOURCE_WS - No subscriptions to restore")
-            return
-        
-        logger.info(f"SOURCE_WS - Restoring {len(self.subscriptions)} subscriptions")
-    
-        for subscription in self.subscriptions:
-            try:
-                # Формат подписки зависит от API Bybit
-                subscribe_msg = {
-                    "op": "subscribe",
-                    "args": [subscription] if isinstance(subscription, str) else subscription
-                }
-            
-                await self.send_message(subscribe_msg)
-                logger.debug(f"SOURCE_WS - Restored subscription: {subscription}")
-            
-                # Небольшая задержка между подписками чтобы не перегрузить
-                await asyncio.sleep(0.1)
-            
-            except Exception as e:
-                logger.error(f"SOURCE_WS - Failed to restore subscription {subscription}: {e}")
-    
-        logger.info("SOURCE_WS - All subscriptions restore attempted")
+        logger.info("SOURCE_WS - Restoring subscriptions via resubscribe_all...")
+        try:
+            await self.resubscribe_all()
+            logger.info("SOURCE_WS - Subscriptions restored.")
+        except Exception as e:
+            logger.error(f"SOURCE_WS - Error restoring subscriptions via resubscribe_all: {e}")
     
     async def _cleanup_tasks(self):
         """Корректное завершение всех задач"""
@@ -4612,7 +4606,7 @@ class FinalFixedWebSocketManager:
         stats.update({
             'status': self.status.value,
             'uptime_seconds': uptime,
-            'subscriptions': self.subscriptions,
+            'subscriptions': list(self.subscriptions.keys()),
             'buffer_size': len(self.message_buffer),
             'queue_size': self._get_queue_size_safe(),
             'active_tasks': len(self.active_tasks),
@@ -4713,6 +4707,9 @@ class ProductionSignalProcessor:
         self.processing_active = False
         self._processor_task = None
         self.should_stop = False
+        self._active_tasks = 0
+        self.workers_idle = asyncio.Event()
+        self.workers_idle.set()  # Initially, no workers are active
 
     async def _ingest_position_to_db(self, position_data: dict):
         """
@@ -4939,8 +4936,14 @@ class ProductionSignalProcessor:
         try:
             # Проверка, находится ли система на паузе
             if self.monitor and self.monitor._is_paused:
-                self.monitor._deferred_queue.append(signal)
-                logger.info(f"Signal deferred due to system pause: {signal.signal_type.value} {signal.symbol}")
+                if signal.signal_type in [SignalType.POSITION_CLOSE, SignalType.POSITION_MODIFY]:
+                    position_idx = signal.metadata.get('position_idx', 0)
+                    idempotency_key = f"{signal.symbol}|{position_idx}|{signal.signal_type.value}|{int(signal.timestamp)}"
+                    self.monitor._deferred_ops_queue.append((idempotency_key, signal))
+                    logger.info(f"Critical op deferred with key {idempotency_key}: {signal.signal_type.value} {signal.symbol}")
+                else:
+                    self.monitor._deferred_signal_queue.append(signal)
+                    logger.info(f"Signal deferred due to system pause: {signal.signal_type.value} {signal.symbol}")
                 return
 
             # Валидация сигнала
@@ -5051,16 +5054,29 @@ class ProductionSignalProcessor:
                         self.signal_queue.get(), timeout=1.0
                     )
                     
-                    # Обрабатываем сигнал
-                    await self._execute_signal_processing(signal)
+                    self._active_tasks += 1
+                    self.workers_idle.clear()
                     
-                    # Добавляем в историю обработанных
-                    self.processed_signals.append(signal)
-                    self.stats['signals_processed'] += 1
-                    
-                    self.signal_queue.task_done()
+                    try:
+                        # Обрабатываем сигнал
+                        await self._execute_signal_processing(signal)
+
+                        # Добавляем в историю обработанных
+                        self.processed_signals.append(signal)
+                        self.stats['signals_processed'] += 1
+
+                        self.signal_queue.task_done()
+                    finally:
+                        self._active_tasks -= 1
+                        if self._active_tasks == 0 and self.signal_queue.empty():
+                            self.workers_idle.set()
+                            logger.info("All in-flight signal workers are idle.")
                     
                 except asyncio.TimeoutError:
+                    if self._active_tasks == 0 and self.signal_queue.empty():
+                        if not self.workers_idle.is_set():
+                            self.workers_idle.set()
+                            logger.info("Signal queue is empty and workers are idle after timeout.")
                     continue  # Периодически проверяем should_stop
                 except Exception as e:
                     logger.error(f"Signal queue processing error: {e}")
@@ -5358,33 +5374,59 @@ class FinalTradingMonitor:
         self._reload_lock = asyncio.Lock()
         self._reloading = False
         self._is_paused = False
-        self._deferred_queue = deque()
+        self._deferred_signal_queue = deque()
+        self._deferred_ops_queue = deque()
+        self._processed_op_keys = set()
         # === /NEW ===
 
-    async def pause_processing(self, timeout: int = 5):
-        """Pauses signal processing and waits for the queue to clear."""
+    @property
+    def _deferred_queue(self):
+        """Provides backward compatibility for tests or other components
+        that might still reference the old queue name.
+        """
+        return self._deferred_signal_queue
+
+    async def pause_processing(self, timeout: int = 10):
+        """Pauses signal processing and waits for all in-flight tasks to complete."""
         logger.info("Pausing system processing...")
         self._is_paused = True
 
         try:
-            if self.signal_processor and hasattr(self.signal_processor, 'signal_queue'):
-                logger.info("Waiting for in-flight signals to be processed...")
-                await asyncio.wait_for(self.signal_processor.signal_queue.join(), timeout=timeout)
-                logger.info("Signal queue cleared.")
+            if self.signal_processor and hasattr(self.signal_processor, 'workers_idle'):
+                logger.info("Waiting for in-flight signals to complete...")
+                await asyncio.wait_for(self.signal_processor.workers_idle.wait(), timeout=timeout)
+                logger.info("All in-flight tasks completed. System is fully paused.")
         except asyncio.TimeoutError:
-            logger.warning(f"Signal queue did not clear within {timeout}s. In-flight tasks may still be running.")
+            logger.warning(f"In-flight tasks did not complete within the {timeout}s timeout. System paused, but some tasks may still be running.")
         except Exception as e:
-            logger.error(f"Error while waiting for signal queue to join: {e}", exc_info=True)
+            logger.error(f"Error while waiting for workers to become idle: {e}", exc_info=True)
 
     async def resume_processing(self):
         """Resumes signal processing and processes any deferred signals."""
         logger.info("Resuming system processing...")
-        self._is_paused = False
+        self._is_paused = False  # Unpause first to allow signals to be added to the main queue
 
-        if self._deferred_queue:
-            logger.info(f"Processing {len(self._deferred_queue)} deferred signals.")
-            while self._deferred_queue:
-                signal = self._deferred_queue.popleft()
+        # Process critical deferred operations first with idempotency
+        if self._deferred_ops_queue:
+            logger.info(f"Processing {len(self._deferred_ops_queue)} deferred critical operations.")
+            while self._deferred_ops_queue:
+                idempotency_key, op_signal = self._deferred_ops_queue.popleft()
+                if idempotency_key in self._processed_op_keys:
+                    logger.warning(f"Skipping duplicate deferred operation: {idempotency_key}")
+                    continue
+
+                try:
+                    if self.signal_processor:
+                        await self.signal_processor.add_signal(op_signal)
+                    self._processed_op_keys.add(idempotency_key)
+                except Exception as e:
+                    logger.error(f"Error processing deferred op {op_signal}: {e}", exc_info=True)
+
+        # Process regular deferred signals
+        if self._deferred_signal_queue:
+            logger.info(f"Processing {len(self._deferred_signal_queue)} deferred signals.")
+            while self._deferred_signal_queue:
+                signal = self._deferred_signal_queue.popleft()
                 try:
                     # Add signal back to the main processing queue
                     if self.signal_processor:
@@ -5454,8 +5496,7 @@ class FinalTradingMonitor:
                             await self.websocket_manager.connect()
                             if self.websocket_manager.ws and self.websocket_manager.status == 'authenticated':
                                 logger.info("HOT_RELOAD_WS_RECONNECTED: WebSocket reconnected and authenticated.")
-                                topics = self.websocket_manager.subscriptions
-                                logger.info(f"HOT_RELOAD_WS_RESUBSCRIBED: Successfully resubscribed to topics: {topics}")
+                                await self.websocket_manager.resubscribe_all()
                                 break  # Success, exit loop
                             else:
                                 raise ConnectionError("WebSocket connected but not authenticated.")

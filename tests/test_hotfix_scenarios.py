@@ -1,6 +1,7 @@
 import asyncio
 import unittest
 import time
+import os
 from unittest.mock import AsyncMock, patch, MagicMock, call
 from collections import deque
 
@@ -26,6 +27,9 @@ patcher_config.start()
 # Now, with patches active, we can import the system components
 from enhanced_trading_system_final_fixed import FinalTradingMonitor, TradingSignal, SignalType
 from stage2_copy_system import Stage2CopyTradingSystem, DynamicTrailingStopManager
+from db_models import Base
+from db_session import engine
+
 
 # Stop the initial patchers as we will use more specific ones inside tests
 patcher_config.stop()
@@ -33,6 +37,16 @@ os_environ_patch.stop()
 
 
 class TestHotfixAndReloadLogic(unittest.TestCase):
+
+    @classmethod
+    def setUpClass(cls):
+        os.environ['DATABASE_URL'] = MOCK_DB_PATH
+        Base.metadata.drop_all(bind=engine) # Ensure a clean slate
+        Base.metadata.create_all(bind=engine)
+
+    @classmethod
+    def tearDownClass(cls):
+        Base.metadata.drop_all(bind=engine)
 
     def setUp(self):
         """Set up a fresh event loop for each test."""
