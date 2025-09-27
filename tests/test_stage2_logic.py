@@ -291,6 +291,8 @@ class TestPositionItemHandler(unittest.IsolatedAsyncioTestCase):
         self.mock_main_client = AsyncMock(spec=EnhancedBybitClient)
         self.mock_main_client.api_key = "main_key"
         self.mock_main_client.api_secret = "main_secret"
+        # FIX: Explicitly mock set_leverage to return a dictionary, not a coroutine.
+        self.mock_main_client.set_leverage = AsyncMock(return_value={'retCode': 0, 'retMsg': 'OK'})
 
         # Mock the base monitor that holds the clients
         mock_monitor = MagicMock()
@@ -316,6 +318,8 @@ class TestPositionItemHandler(unittest.IsolatedAsyncioTestCase):
         self.system.copy_manager.kelly_calculator.calculate_optimal_size = AsyncMock(
             side_effect=lambda symbol, current_size, **kwargs: {"recommended_size": current_size}
         )
+        # FIX: Explicitly mock set_leverage to prevent "coroutine was never awaited" warnings.
+        self.mock_main_client.set_leverage = AsyncMock(return_value={'retCode': 0, 'retMsg': 'OK'})
         # Mock the order manager to get min_qty
         self.system.copy_manager.order_manager.get_min_order_qty = AsyncMock(return_value=0.001)
 

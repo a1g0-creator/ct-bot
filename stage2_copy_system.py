@@ -52,7 +52,8 @@ try:
         FinalTradingMonitor, ProductionSignalProcessor, TradingSignal, SignalType,
         EnhancedBybitClient, FinalFixedWebSocketManager, 
         safe_float, send_telegram_alert, logger, MAIN_API_KEY, MAIN_API_SECRET,
-        MAIN_API_URL, SOURCE_API_KEY, SOURCE_API_SECRET, SOURCE_API_URL
+        MAIN_API_URL, SOURCE_API_KEY, SOURCE_API_SECRET, SOURCE_API_URL,
+        BALANCE_ACCOUNT_TYPE
     )
     print("✅ Успешно импортированы все компоненты Этапа 1")
 except ImportError as e:
@@ -1686,12 +1687,21 @@ class AdaptiveOrderManager:
             return {"success": False, "error": str(e)}
 
     async def place_trailing_stop(self, symbol: str, trailing_stop_price: str, active_price: Optional[str] = None, position_idx: int = 0):
+        input_ts = trailing_stop_price
+
+        # Normalize the input to determine the value to be sent to the API
+        sent_ts = str(trailing_stop_price) if trailing_stop_price not in ["", None] else "0"
+
+        if trailing_stop_price in ["", None, "0"]:
+            self.logger.info(f"TS_REMOVE_NORMALIZED: input='{input_ts}', sent='0'")
+            sent_ts = "0"
+
         data = {
             "category": "linear",
             "symbol": symbol,
             "positionIdx": position_idx,
         }
-        is_reset = trailing_stop_price == "0"
+        is_reset = sent_ts == "0"
         try:
             if is_reset:
                 self.logger.info(f"TS_RESET_START: symbol={symbol}, positionIdx={position_idx}")
@@ -1699,8 +1709,8 @@ class AdaptiveOrderManager:
                 data["takeProfit"] = "0"
                 data["stopLoss"] = "0"
             else:
-                self.logger.info(f"TS_APPLY_START: symbol={symbol}, trailingStop='{trailing_stop_price}', activePrice='{active_price}', positionIdx={position_idx}")
-                data["trailingStop"] = trailing_stop_price
+                self.logger.info(f"TS_APPLY_START: symbol={symbol}, trailingStop='{sent_ts}', activePrice='{active_price}', positionIdx={position_idx}")
+                data["trailingStop"] = sent_ts
                 if active_price:
                     data["activePrice"] = active_price
 
@@ -1708,7 +1718,7 @@ class AdaptiveOrderManager:
             result = await self.main_client._make_single_request("POST", "position/trading-stop", data=data)
             self.logger.info("%s: symbol=%s trailingStop='%s'",
                              "TS_RESET_OK" if is_reset else "TS_APPLY_OK",
-                             symbol, trailing_stop_price)
+                             symbol, sent_ts)
             return {"success": True, "result": result}
 
         except Exception as e:
@@ -3068,7 +3078,7 @@ class Stage2CopyTradingSystem:
                 logger.info(f"LEVERAGE_SYNC_START: Attempting to set leverage for {symbol} to {leverage}x.")
 
                 # Pass the callback to remember the leverage upon success
-                result = await self.main_client.set_leverage(
+                leverage_result = await self.main_client.set_leverage(
                     category="linear",
                     symbol=symbol,
                     leverage=leverage,
@@ -3076,7 +3086,7 @@ class Stage2CopyTradingSystem:
                 )
 
                 # 3. Handle the response based on Bybit's retCode.
-                ret_code = (result or {}).get("retCode")
+                ret_code = (leverage_result or {}).get("retCode")
                 if ret_code == 0:
                     logger.info(f"LEVERAGE_SYNC_SUCCESS: Leverage for {symbol} set to {leverage}x.")
                     self._last_synced_leverage[symbol] = leverage
@@ -3085,7 +3095,7 @@ class Stage2CopyTradingSystem:
                     # The state is confirmed to be the target state, so we update the cache.
                     self._last_synced_leverage[symbol] = leverage
                 else:
-                    error_msg = (result or {}).get('retMsg', 'Unknown error')
+                    error_msg = (leverage_result or {}).get('retMsg', 'Unknown error')
                     logger.error(f"LEVERAGE_SYNC_FAILED: for {symbol} to {leverage}x. Reason: {error_msg} (retCode: {ret_code})")
 
             except Exception as e:
@@ -3167,6 +3177,9 @@ class Stage2CopyTradingSystem:
                 final_target_size = max(COPY_CONFIG['min_copy_size'], final_target_size)
                 final_target_size = min(COPY_CONFIG['max_copy_size'], final_target_size)
 
+                logger.info(
+                    f"SIZING_INFO: Using balance_account_type='{BALANCE_ACCOUNT_TYPE}' for sizing calculation."
+                )
                 logger.info(
                     f"TARGET_CALC: Donor Size={donor_size:.4f} -> Proportional={proportional_size:.4f} "
                     f"-> Kelly Rec={kelly_recommended_size:.4f} -> Final Target={final_target_size:.4f}"

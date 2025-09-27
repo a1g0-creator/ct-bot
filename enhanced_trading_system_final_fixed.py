@@ -83,7 +83,7 @@ if not logger.handlers:
 # ================================
 # 1) безопасные импорты: берём recv_window из старого конфига,
 #    а ключи — только из БД через CredentialsStore (обёртка в config.py)
-from config import get_api_credentials, BYBIT_RECV_WINDOW, DEFAULT_TRADE_ACCOUNT_ID
+from config import get_api_credentials, BYBIT_RECV_WINDOW, DEFAULT_TRADE_ACCOUNT_ID, BALANCE_ACCOUNT_TYPE
 
 log = logging.getLogger(__name__)
 
@@ -3563,6 +3563,7 @@ class FinalFixedWebSocketManager:
 
             num_resubscribed = len(topics_to_resubscribe)
             logger.info(f"HOT_RELOAD_WS_RESUBSCRIBED: Successfully sent resubscription request for {num_resubscribed} topics: {topics_to_resubscribe}")
+            logger.info(f"WS_RESUBSCRIBED: topics={topics_to_resubscribe} count={num_resubscribed}")
             return num_resubscribed
 
         except Exception as e:
@@ -5509,7 +5510,7 @@ class FinalTradingMonitor:
                                 raise ConnectionError("Failed to reconnect and authenticate WebSocket after multiple attempts.")
 
                 # 6. Refresh state from REST API
-                logger.info("HOT_RELOAD_STATE_REFRESH: Fetching current state from REST API...")
+                logger.info(f"HOT_RELOAD_STATE_REFRESH: Fetching current state from REST API using balance_account_type='{BALANCE_ACCOUNT_TYPE}'.")
                 await self.run_reconciliation_cycle(enqueue=False) # Refresh positions without queueing
                 new_main_balance = await self._get_balance_safe(self.main_client, "MAIN_RELOAD")
 

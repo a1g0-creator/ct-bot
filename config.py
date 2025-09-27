@@ -20,3 +20,6 @@ SOURCE_API_URL = "https://api.bybit.com"
 
 TELEGRAM_BOT_TOKEN = "dummy_token"
 TELEGRAM_CHAT_ID = "dummy_chat_id"
+
+# Account type for balance calculations (e.g., "UNIFIED", "DERIVATIVES")
+BALANCE_ACCOUNT_TYPE = "UNIFIED"

@@ -42,11 +42,13 @@ class TestHotfixAndReloadLogic(unittest.TestCase):
     def setUpClass(cls):
         os.environ['DATABASE_URL'] = MOCK_DB_PATH
         Base.metadata.drop_all(bind=engine) # Ensure a clean slate
+        Base.metadata.drop_all(bind=engine) # Ensure a clean slate
         Base.metadata.create_all(bind=engine)
 
     @classmethod
     def tearDownClass(cls):
         Base.metadata.drop_all(bind=engine)
+        engine.dispose()
 
     def setUp(self):
         """Set up a fresh event loop for each test."""
