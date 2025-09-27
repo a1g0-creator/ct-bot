@@ -6,8 +6,9 @@ from typing import Optional
 from enum import Enum
 
 from sqlalchemy import (
-    String, Integer, DateTime, Numeric, Text, UniqueConstraint, Index, ForeignKey, func, JSON, LargeBinary
+    String, Integer, DateTime, Numeric, Text, UniqueConstraint, Index, ForeignKey, func
 )
+from sqlalchemy.dialects.postgresql import BYTEA, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 # --- ДОБАВЛЕНО: совместимое перечисление уровней событий ---
@@ -56,9 +57,9 @@ class ApiCredentials(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     account_id: Mapped[int] = mapped_column(Integer, ForeignKey("accounts.id"), nullable=False, index=True)
-    enc_key: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
-    enc_secret: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
-    nonce: Mapped[bytes] = mapped_column(LargeBinary, nullable=False)
+    enc_key: Mapped[bytes] = mapped_column(BYTEA, nullable=False)
+    enc_secret: Mapped[bytes] = mapped_column(BYTEA, nullable=False)
+    nonce: Mapped[bytes] = mapped_column(BYTEA, nullable=False)
     key_hint: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), server_default=func.now(), nullable=False)
     updated_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=False), nullable=True)
@@ -100,7 +101,7 @@ class SignalsLog(Base):
     ext_id: Mapped[Optional[str]] = mapped_column(String(120), nullable=True)
     # НОВОЕ: поле для дедупликации
     dedup_key: Mapped[str] = mapped_column(String(128), nullable=False, unique=True)
-    parsed_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    parsed_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     received_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), server_default=func.now(), nullable=False)
 
     account = relationship("Accounts", lazy="joined")
@@ -184,7 +185,7 @@ class SysEvents(Base):
     level: Mapped[str] = mapped_column(String(16), nullable=False)       # INFO|WARN|ERROR
     component: Mapped[str] = mapped_column(String(64), nullable=False)
     message: Mapped[str] = mapped_column(String(255), nullable=False)
-    details_json: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    details_json: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=False), server_default=func.now(), nullable=False)
 
     __table_args__ = (
