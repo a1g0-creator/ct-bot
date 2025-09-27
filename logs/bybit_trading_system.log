@@ -400,3 +400,112 @@
 2025-09-26 16:22:54,890 [    INFO] bybit_trading_system:5381 - ✅ Credentials hot-reload complete.
 2025-09-26 16:22:54,892 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
 2025-09-26 16:22:54,893 [    INFO] bybit_trading_system:1127 - TS_PARAM_RESOLVED{activePrice=1.22, trailingStop=0.0, from='percent', price_ref='1.25'}
+2025-09-27 04:21:01,864 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-27 04:21:04,222 [    INFO] bybit_trading_system:3394 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-27 04:21:04,223 [    INFO] bybit_trading_system:5574 - initial - Balance: 100.00 USDT
+2025-09-27 04:22:11,327 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-27 04:22:12,500 [    INFO] bybit_trading_system:3394 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-27 04:22:12,501 [    INFO] bybit_trading_system:5574 - initial - Balance: 100.00 USDT
+2025-09-27 04:22:12,707 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 04:22:12,708 [    INFO] bybit_trading_system:1127 - TS_PARAM_RESOLVED{activePrice=1.22, trailingStop=0.0, from='percent', price_ref='1.25'}
+2025-09-27 04:23:04,410 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-27 04:23:05,579 [    INFO] bybit_trading_system:3394 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-27 04:23:05,580 [    INFO] bybit_trading_system:5574 - initial - Balance: 100.00 USDT
+2025-09-27 04:23:05,580 [    INFO] bybit_trading_system:4943 - Signal deferred due to system pause: position_open BTCUSDT
+2025-09-27 04:23:05,580 [    INFO] bybit_trading_system:5402 - HOT_RELOAD_START: Beginning credentials hot-reload process...
+2025-09-27 04:23:05,580 [    INFO] bybit_trading_system:5359 - Pausing system processing...
+2025-09-27 04:23:05,580 [    INFO] bybit_trading_system:5364 - Waiting for in-flight signals to be processed...
+2025-09-27 04:23:05,580 [    INFO] bybit_trading_system:5366 - Signal queue cleared.
+2025-09-27 04:23:05,580 [    INFO] bybit_trading_system:5410 - HOT_RELOAD_WS_DISCONNECT: Closing WebSocket connection...
+2025-09-27 04:23:05,581 [    INFO] bybit_trading_system:5423 - HOT_RELOAD_CREDS: Main client credentials updated.
+2025-09-27 04:23:05,581 [    INFO] bybit_trading_system:5430 - HOT_RELOAD_CREDS: Source client and WebSocket credentials updated.
+2025-09-27 04:23:05,581 [    INFO] bybit_trading_system:5433 - HOT_RELOAD_CACHE_INVALIDATE: Clearing all cached data...
+2025-09-27 04:23:05,582 [    INFO] bybit_trading_system:5440 - HOT_RELOAD_WS_RECONNECT: Reconnecting WebSocket...
+2025-09-27 04:23:05,582 [CRITICAL] bybit_trading_system:5463 - HOT_RELOAD_FAILED: Failed to reconnect and authenticate WebSocket.
+Traceback (most recent call last):
+  File "/app/enhanced_trading_system_final_fixed.py", line 5443, in reload_credentials_and_reconnect
+    raise ConnectionError("Failed to reconnect and authenticate WebSocket.")
+ConnectionError: Failed to reconnect and authenticate WebSocket.
+2025-09-27 04:23:05,586 [    INFO] bybit_trading_system:5574 - final - Balance: 10000.00 USDT
+2025-09-27 04:23:05,781 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 04:23:05,781 [    INFO] bybit_trading_system:1127 - TS_PARAM_RESOLVED{activePrice=1.22, trailingStop=0.0, from='percent', price_ref='1.25'}
+2025-09-27 04:24:01,796 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-27 04:24:02,981 [    INFO] bybit_trading_system:3394 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-27 04:24:02,982 [    INFO] bybit_trading_system:5574 - initial - Balance: 100.00 USDT
+2025-09-27 04:24:02,982 [    INFO] bybit_trading_system:4943 - Signal deferred due to system pause: position_open BTCUSDT
+2025-09-27 04:24:02,982 [    INFO] bybit_trading_system:5402 - HOT_RELOAD_START: Beginning credentials hot-reload process...
+2025-09-27 04:24:02,982 [    INFO] bybit_trading_system:5359 - Pausing system processing...
+2025-09-27 04:24:02,983 [    INFO] bybit_trading_system:5364 - Waiting for in-flight signals to be processed...
+2025-09-27 04:24:02,983 [    INFO] bybit_trading_system:5366 - Signal queue cleared.
+2025-09-27 04:24:02,983 [    INFO] bybit_trading_system:5410 - HOT_RELOAD_WS_DISCONNECT: Closing WebSocket connection...
+2025-09-27 04:24:02,983 [    INFO] bybit_trading_system:5423 - HOT_RELOAD_CREDS: Main client credentials updated.
+2025-09-27 04:24:02,983 [    INFO] bybit_trading_system:5430 - HOT_RELOAD_CREDS: Source client and WebSocket credentials updated.
+2025-09-27 04:24:02,983 [    INFO] bybit_trading_system:5433 - HOT_RELOAD_CACHE_INVALIDATE: Clearing all cached data...
+2025-09-27 04:24:02,984 [    INFO] bybit_trading_system:5440 - HOT_RELOAD_WS_RECONNECT: Reconnecting WebSocket...
+2025-09-27 04:24:02,984 [CRITICAL] bybit_trading_system:5463 - HOT_RELOAD_FAILED: Failed to reconnect and authenticate WebSocket.
+Traceback (most recent call last):
+  File "/app/enhanced_trading_system_final_fixed.py", line 5443, in reload_credentials_and_reconnect
+    raise ConnectionError("Failed to reconnect and authenticate WebSocket.")
+ConnectionError: Failed to reconnect and authenticate WebSocket.
+2025-09-27 04:24:02,988 [    INFO] bybit_trading_system:5574 - final - Balance: 10000.00 USDT
+2025-09-27 04:24:03,181 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 04:24:03,182 [    INFO] bybit_trading_system:1127 - TS_PARAM_RESOLVED{activePrice=1.22, trailingStop=0.0, from='percent', price_ref='1.25'}
+2025-09-27 04:25:26,136 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-27 04:25:27,855 [    INFO] bybit_trading_system:3394 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-27 04:25:27,856 [    INFO] bybit_trading_system:5574 - initial - Balance: 100.00 USDT
+2025-09-27 04:25:27,856 [    INFO] bybit_trading_system:4943 - Signal deferred due to system pause: position_open BTCUSDT
+2025-09-27 04:25:27,856 [    INFO] bybit_trading_system:5402 - HOT_RELOAD_START: Beginning credentials hot-reload process...
+2025-09-27 04:25:27,856 [    INFO] bybit_trading_system:5359 - Pausing system processing...
+2025-09-27 04:25:27,856 [    INFO] bybit_trading_system:5364 - Waiting for in-flight signals to be processed...
+2025-09-27 04:25:27,856 [    INFO] bybit_trading_system:5366 - Signal queue cleared.
+2025-09-27 04:25:27,856 [    INFO] bybit_trading_system:5410 - HOT_RELOAD_WS_DISCONNECT: Closing WebSocket connection...
+2025-09-27 04:25:27,857 [    INFO] bybit_trading_system:5423 - HOT_RELOAD_CREDS: Main client credentials updated.
+2025-09-27 04:25:27,857 [    INFO] bybit_trading_system:5430 - HOT_RELOAD_CREDS: Source client and WebSocket credentials updated.
+2025-09-27 04:25:27,857 [    INFO] bybit_trading_system:5433 - HOT_RELOAD_CACHE_INVALIDATE: Clearing all cached data...
+2025-09-27 04:25:27,858 [    INFO] bybit_trading_system:5440 - HOT_RELOAD_WS_RECONNECT: Reconnecting WebSocket...
+2025-09-27 04:25:27,859 [    INFO] bybit_trading_system:5444 - HOT_RELOAD_WS_RECONNECTED: WebSocket reconnected and authenticated.
+2025-09-27 04:25:27,859 [    INFO] bybit_trading_system:5447 - HOT_RELOAD_STATE_REFRESH: Fetching current state from REST API...
+2025-09-27 04:25:27,860 [    INFO] bybit_trading_system:5646 - --- Running REST API Reconciliation Cycle ---
+2025-09-27 04:25:27,863 [    INFO] bybit_trading_system:5664 - Main positions cache updated with 0 positions.
+2025-09-27 04:25:27,863 [    INFO] bybit_trading_system:5688 - RECONCILE: fetched donor=0, main=0 | to_open=0, to_close=0, to_modify=0
+2025-09-27 04:25:27,863 [    INFO] bybit_trading_system:5689 - RECONCILE SUMMARY: enqueued=0
+2025-09-27 04:25:27,863 [    INFO] bybit_trading_system:5574 - MAIN_RELOAD - Balance: 10000.00 USDT
+2025-09-27 04:25:27,864 [    INFO] bybit_trading_system:5456 - HOT_RELOAD_DONE: Process completed in 7ms.
+2025-09-27 04:25:27,864 [    INFO] bybit_trading_system:5374 - Resuming system processing...
+2025-09-27 04:25:27,864 [    INFO] bybit_trading_system:5378 - Processing 1 deferred signals.
+2025-09-27 04:25:27,864 [    INFO] bybit_trading_system:5031 - Weekend activity detected for BTCUSDT
+2025-09-27 04:25:27,864 [    INFO] bybit_trading_system:4956 - Signal added to main queue: position_open BTCUSDT Buy 1
+2025-09-27 04:25:27,864 [    INFO] bybit_trading_system:5388 - System processing resumed.
+2025-09-27 04:25:27,865 [    INFO] bybit_trading_system:5574 - final - Balance: 10000.00 USDT
+2025-09-27 04:25:27,870 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 04:25:27,870 [    INFO] bybit_trading_system:1127 - TS_PARAM_RESOLVED{activePrice=1.22, trailingStop=0.0, from='percent', price_ref='1.25'}
+2025-09-27 04:29:50,819 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-27 04:29:51,995 [    INFO] bybit_trading_system:3394 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-27 04:29:51,996 [    INFO] bybit_trading_system:5574 - initial - Balance: 100.00 USDT
+2025-09-27 04:29:51,996 [    INFO] bybit_trading_system:4943 - Signal deferred due to system pause: position_open BTCUSDT
+2025-09-27 04:29:51,996 [    INFO] bybit_trading_system:5402 - HOT_RELOAD_START: Beginning credentials hot-reload process...
+2025-09-27 04:29:51,996 [    INFO] bybit_trading_system:5359 - Pausing system processing...
+2025-09-27 04:29:51,996 [    INFO] bybit_trading_system:5364 - Waiting for in-flight signals to be processed...
+2025-09-27 04:29:51,996 [    INFO] bybit_trading_system:5366 - Signal queue cleared.
+2025-09-27 04:29:51,996 [    INFO] bybit_trading_system:5410 - HOT_RELOAD_WS_DISCONNECT: Closing WebSocket connection...
+2025-09-27 04:29:51,997 [    INFO] bybit_trading_system:5423 - HOT_RELOAD_CREDS: Main client credentials updated.
+2025-09-27 04:29:51,997 [    INFO] bybit_trading_system:5430 - HOT_RELOAD_CREDS: Source client and WebSocket credentials updated.
+2025-09-27 04:29:51,997 [    INFO] bybit_trading_system:5433 - HOT_RELOAD_CACHE_INVALIDATE: Clearing all cached data...
+2025-09-27 04:29:51,998 [    INFO] bybit_trading_system:5440 - HOT_RELOAD_WS_RECONNECT: Reconnecting WebSocket...
+2025-09-27 04:29:51,998 [    INFO] bybit_trading_system:5444 - HOT_RELOAD_WS_RECONNECTED: WebSocket reconnected and authenticated.
+2025-09-27 04:29:51,998 [    INFO] bybit_trading_system:5447 - HOT_RELOAD_STATE_REFRESH: Fetching current state from REST API...
+2025-09-27 04:29:51,998 [    INFO] bybit_trading_system:5646 - --- Running REST API Reconciliation Cycle ---
+2025-09-27 04:29:52,000 [    INFO] bybit_trading_system:5664 - Main positions cache updated with 0 positions.
+2025-09-27 04:29:52,001 [    INFO] bybit_trading_system:5688 - RECONCILE: fetched donor=0, main=0 | to_open=0, to_close=0, to_modify=0
+2025-09-27 04:29:52,001 [    INFO] bybit_trading_system:5689 - RECONCILE SUMMARY: enqueued=0
+2025-09-27 04:29:52,001 [    INFO] bybit_trading_system:5574 - MAIN_RELOAD - Balance: 10000.00 USDT
+2025-09-27 04:29:52,001 [    INFO] bybit_trading_system:5456 - HOT_RELOAD_DONE: Process completed in 5ms.
+2025-09-27 04:29:52,001 [    INFO] bybit_trading_system:5374 - Resuming system processing...
+2025-09-27 04:29:52,001 [    INFO] bybit_trading_system:5378 - Processing 1 deferred signals.
+2025-09-27 04:29:52,001 [    INFO] bybit_trading_system:5031 - Weekend activity detected for BTCUSDT
+2025-09-27 04:29:52,002 [    INFO] bybit_trading_system:4956 - Signal added to main queue: position_open BTCUSDT Buy 1
+2025-09-27 04:29:52,002 [    INFO] bybit_trading_system:5388 - System processing resumed.
+2025-09-27 04:29:52,002 [    INFO] bybit_trading_system:5472 - HOT_RELOAD_FINISH: Reload process finished.
+2025-09-27 04:29:52,002 [    INFO] bybit_trading_system:5574 - final - Balance: 10000.00 USDT
+2025-09-27 04:29:52,006 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-27 04:29:52,006 [    INFO] bybit_trading_system:1127 - TS_PARAM_RESOLVED{activePrice=1.22, trailingStop=0.0, from='percent', price_ref='1.25'}

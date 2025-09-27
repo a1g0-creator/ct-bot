@@ -1,0 +1,10 @@
+2025-09-27 04:23:05,582 [CRITICAL] bybit_trading_system:5463 - HOT_RELOAD_FAILED: Failed to reconnect and authenticate WebSocket.
+Traceback (most recent call last):
+  File "/app/enhanced_trading_system_final_fixed.py", line 5443, in reload_credentials_and_reconnect
+    raise ConnectionError("Failed to reconnect and authenticate WebSocket.")
+ConnectionError: Failed to reconnect and authenticate WebSocket.
+2025-09-27 04:24:02,984 [CRITICAL] bybit_trading_system:5463 - HOT_RELOAD_FAILED: Failed to reconnect and authenticate WebSocket.
+Traceback (most recent call last):
+  File "/app/enhanced_trading_system_final_fixed.py", line 5443, in reload_credentials_and_reconnect
+    raise ConnectionError("Failed to reconnect and authenticate WebSocket.")
+ConnectionError: Failed to reconnect and authenticate WebSocket.

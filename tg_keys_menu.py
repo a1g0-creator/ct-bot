@@ -447,6 +447,23 @@ async def account_callback(update, context: ContextTypes.DEFAULT_TYPE) -> int:
             await _safe_edit_message(query, "⚠️ Нет данных для сохранения и применения")
             return ACCOUNT_MENU
 
+    elif data == "apply_hot":
+        await _safe_edit_message(
+            query,
+            f"⏳ <b>Принудительное применение ключей из БД...</b>\n\n"
+            f"Это перезагрузит все соединения. Пожалуйста, подождите...",
+        )
+        system = context.application.bot_data.get("integrated_system")
+        if system and hasattr(system, "reload_credentials_and_reconnect"):
+            asyncio.create_task(system.reload_credentials_and_reconnect())
+            logger.info(f"[/keys] Manual hot-reload triggered for account {sess.selected_account_id}")
+        else:
+            logger.warning("[/keys] Integrated system not found for manual hot-reload.")
+            await query.message.reply_text("⚠️ Не удалось применить ключи: система не найдена.")
+
+        await asyncio.sleep(3)
+        return await show_account_menu(update, context)
+
     return ACCOUNT_MENU
 
 # ===== ОБРАБОТКА ТЕКСТОВОГО ВВОДА =====
@@ -487,7 +504,7 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         # Добавляем кнопку сохранения если есть оба ключа
         if sess.api_key and sess.api_secret:
-            keyboard.append([InlineKeyboardButton("💾 Сохранить в БД", callback_data="save_creds")])
+            keyboard.append([InlineKeyboardButton("💾 Сохранить и Применить", callback_data="save_creds")])
         
         # Добавляем кнопку применения если есть сохранённые ключи
         api_key_db, api_secret_db = await _load_credentials(sess.selected_account_id)
@@ -547,7 +564,7 @@ async def text_input_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
         
         # Добавляем кнопку сохранения если есть оба ключа
         if sess.api_key and sess.api_secret:
-            keyboard.append([InlineKeyboardButton("💾 Сохранить в БД", callback_data="save_creds")])
+            keyboard.append([InlineKeyboardButton("💾 Сохранить и Применить", callback_data="save_creds")])
         
         # Добавляем кнопку применения если есть сохранённые ключи
         api_key_db, api_secret_db = await _load_credentials(sess.selected_account_id)

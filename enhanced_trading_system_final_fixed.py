@@ -2589,6 +2589,14 @@ class EnhancedBybitClient:
             logger.warning(f"get_symbol_filters failed for {symbol}: {e}")
             return {'min_qty': 0.0, 'qty_step': 0.001, 'tick_size': 0.01, 'min_notional': 0.0}
 
+    async def invalidate_caches(self):
+        """Clears all internal caches to force re-fetching of data."""
+        logger.info(f"[{self.name}] Invalidating all internal caches...")
+        if hasattr(self, "instrument_cache"):
+            self.instrument_cache.clear()
+            logger.info(f"[{self.name}] Cleared instrument_cache.")
+        # Add any other caches here in the future
+        await asyncio.sleep(0) # Yield control to allow other tasks to run
 
     async def _make_single_request(self, method: str, endpoint: str, params: dict = None, data: dict = None) -> Optional[dict]:
         """
@@ -4927,8 +4935,14 @@ class ProductionSignalProcessor:
 
     
     async def add_signal(self, signal: TradingSignal):
-        """Добавление сигнала в очередь с backpressure"""
+        """Добавление сигнала в очередь с backpressure и учетом паузы."""
         try:
+            # Проверка, находится ли система на паузе
+            if self.monitor and self.monitor._is_paused:
+                self.monitor._deferred_queue.append(signal)
+                logger.info(f"Signal deferred due to system pause: {signal.signal_type.value} {signal.symbol}")
+                return
+
             # Валидация сигнала
             if not await self.validate_signal(signal):
                 logger.warning(f"Signal filtered: {signal.signal_type.value} {signal.symbol}")  
@@ -4939,7 +4953,7 @@ class ProductionSignalProcessor:
             try:
                 # Приоритетная очередь: чем выше priority, тем раньше обработка
                 self.signal_queue.put_nowait((-signal.priority, time.time(), signal))
-                logger.info(f"Signal added: {signal.signal_type.value} {signal.symbol} {signal.side} {signal.size}")
+                logger.info(f"Signal added to main queue: {signal.signal_type.value} {signal.symbol} {signal.side} {signal.size}")
             except asyncio.QueueFull:
                 # Очередь переполнена - удаляем сигнал с низким приоритетом
                 try:
@@ -5332,58 +5346,130 @@ class FinalTradingMonitor:
         self._planned_shutdown_task = None    # отложенная "эскалация" на shutdown (отменяем при ре-коннекте)
         self._system_active = False           # главный флаг "жить" для _run_main_loop()
         self.main_positions_cache = {}        # NEW: Cache for MAIN account positions
+
+        # --- Hot-Reload and Pause Mechanism ---
+        self._reload_lock = asyncio.Lock()
+        self._reloading = False
+        self._is_paused = False
+        self._deferred_queue = deque()
         # === /NEW ===
 
-    async def reload_credentials_and_reconnect(self):
-        """Hot-reloads API credentials and reconnects WebSocket if necessary."""
-        logger.info("Attempting to hot-reload API credentials...")
+    async def pause_processing(self, timeout: int = 5):
+        """Pauses signal processing and waits for the queue to clear."""
+        logger.info("Pausing system processing...")
+        self._is_paused = True
+
         try:
-            # Re-read credentials from the source (e.g., database via config module)
-            from config import get_api_credentials, TARGET_ACCOUNT_ID, DONOR_ACCOUNT_ID
-
-            # Target account
-            target_creds = get_api_credentials(TARGET_ACCOUNT_ID)
-            if target_creds and len(target_creds) == 2:
-                self.main_client.api_key = target_creds[0]
-                self.main_client.api_secret = target_creds[1]
-                if hasattr(self.main_client, 'copy_state') and self.main_client.copy_state:
-                    self.main_client.copy_state.keys_loaded = True
-                logger.info("Main client credentials updated.")
-            else:
-                logger.error("Failed to reload credentials for main client, keys not found or invalid.")
-                if hasattr(self.main_client, 'copy_state') and self.main_client.copy_state:
-                    self.main_client.copy_state.keys_loaded = False
-
-            # Source account
-            source_creds = get_api_credentials(DONOR_ACCOUNT_ID)
-            if source_creds and len(source_creds) == 2:
-                self.source_client.api_key = source_creds[0]
-                self.source_client.api_secret = source_creds[1]
-                logger.info("Source client credentials updated.")
-            else:
-                logger.warning("Could not reload credentials for source client (optional).")
-
-            # The WebSocket connection uses the credentials for authentication.
-            # We need to reconnect it to use the new keys.
-            if self.websocket_manager:
-                logger.info("Reconnecting WebSocket to apply new credentials...")
-                # Update keys on the websocket manager before reconnecting
-                if source_creds and len(source_creds) == 2:
-                    self.websocket_manager.api_key = source_creds[0]
-                    self.websocket_manager.api_secret = source_creds[1]
-
-                # The reconnect method should handle the full cycle of closing and opening a new connection.
-                if hasattr(self.websocket_manager, 'reconnect'):
-                    await self.websocket_manager.reconnect()
-                else:
-                    logger.warning("Websocket manager does not have a reconnect method. Manual restart might be required.")
-
-            logger.info("✅ Credentials hot-reload complete.")
-            await send_telegram_alert("✅ API keys have been updated and applied successfully.")
-
+            if self.signal_processor and hasattr(self.signal_processor, 'signal_queue'):
+                logger.info("Waiting for in-flight signals to be processed...")
+                await asyncio.wait_for(self.signal_processor.signal_queue.join(), timeout=timeout)
+                logger.info("Signal queue cleared.")
+        except asyncio.TimeoutError:
+            logger.warning(f"Signal queue did not clear within {timeout}s. In-flight tasks may still be running.")
         except Exception as e:
-            logger.error(f"Failed to hot-reload credentials: {e}", exc_info=True)
-            await send_telegram_alert(f"❌ Failed to apply new API keys: {e}")
+            logger.error(f"Error while waiting for signal queue to join: {e}", exc_info=True)
+
+    async def resume_processing(self):
+        """Resumes signal processing and processes any deferred signals."""
+        logger.info("Resuming system processing...")
+        self._is_paused = False
+
+        if self._deferred_queue:
+            logger.info(f"Processing {len(self._deferred_queue)} deferred signals.")
+            while self._deferred_queue:
+                signal = self._deferred_queue.popleft()
+                try:
+                    # Add signal back to the main processing queue
+                    if self.signal_processor:
+                        await self.signal_processor.add_signal(signal)
+                except Exception as e:
+                    logger.error(f"Error processing deferred signal {signal}: {e}", exc_info=True)
+
+        logger.info("System processing resumed.")
+
+    async def reload_credentials_and_reconnect(self):
+        """
+        Atomically hot-reloads API credentials, ensuring the system remains
+        in a consistent state throughout the process.
+        """
+        async with self._reload_lock:
+            if self._reloading:
+                logger.warning("Hot-reload already in progress. Skipping.")
+                return
+
+            self._reloading = True
+            start_time = time.time()
+            logger.info("HOT_RELOAD_START: Beginning credentials hot-reload process...")
+
+            try:
+                # 1. Pause system processing
+                await self.pause_processing()
+
+                # 2. Disconnect WebSocket
+                if self.websocket_manager:
+                    logger.info("HOT_RELOAD_WS_DISCONNECT: Closing WebSocket connection...")
+                    if hasattr(self.websocket_manager, 'unsubscribe_all'): # Optional: if implemented
+                         await self.websocket_manager.unsubscribe_all()
+                    await self.websocket_manager.close()
+
+                # 3. Reload and apply new credentials
+                from config import get_api_credentials, TARGET_ACCOUNT_ID, DONOR_ACCOUNT_ID
+
+                target_creds = get_api_credentials(TARGET_ACCOUNT_ID)
+                if not (target_creds and len(target_creds) == 2):
+                    raise ValueError("Failed to load new credentials for TARGET account.")
+
+                self.main_client.api_key, self.main_client.api_secret = target_creds
+                logger.info("HOT_RELOAD_CREDS: Main client credentials updated.")
+
+                source_creds = get_api_credentials(DONOR_ACCOUNT_ID)
+                if source_creds and len(source_creds) == 2:
+                    self.source_client.api_key, self.source_client.api_secret = source_creds
+                    if self.websocket_manager:
+                        self.websocket_manager.api_key, self.websocket_manager.api_secret = source_creds
+                    logger.info("HOT_RELOAD_CREDS: Source client and WebSocket credentials updated.")
+
+                # 4. Invalidate all relevant caches
+                logger.info("HOT_RELOAD_CACHE_INVALIDATE: Clearing all cached data...")
+                self.main_positions_cache.clear()
+                if hasattr(self.main_client, 'invalidate_caches'): await self.main_client.invalidate_caches()
+                if hasattr(self.source_client, 'invalidate_caches'): await self.source_client.invalidate_caches()
+
+                # 5. Reconnect WebSocket and resubscribe
+                if self.websocket_manager:
+                    logger.info("HOT_RELOAD_WS_RECONNECT: Reconnecting WebSocket...")
+                    await self.websocket_manager.connect() # connect handles auth and initial subs
+                    if not self.websocket_manager.ws or self.websocket_manager.status != 'authenticated':
+                         raise ConnectionError("Failed to reconnect and authenticate WebSocket.")
+                    logger.info("HOT_RELOAD_WS_RECONNECTED: WebSocket reconnected and authenticated.")
+
+                # 6. Refresh state from REST API
+                logger.info("HOT_RELOAD_STATE_REFRESH: Fetching current state from REST API...")
+                await self.run_reconciliation_cycle(enqueue=False) # Refresh positions without queueing
+                new_main_balance = await self._get_balance_safe(self.main_client, "MAIN_RELOAD")
+
+                if new_main_balance is None:
+                    raise ValueError("Failed to fetch new balance after reload.")
+
+                # 7. Final health check and logging
+                duration_ms = (time.time() - start_time) * 1000
+                logger.info(f"HOT_RELOAD_DONE: Process completed in {duration_ms:.0f}ms.")
+                await send_telegram_alert(
+                    f"✅ Горячая перезагрузка завершена за {duration_ms:.0f}ms.\n"
+                    f"Новый баланс: {new_main_balance:.2f} USDT"
+                )
+
+                # 8. Resume processing only on success
+                await self.resume_processing()
+
+            except Exception as e:
+                logger.critical(f"HOT_RELOAD_FAILED: {e}", exc_info=True)
+                await send_telegram_alert(f"❌ Горячая перезагрузка не удалась: {e}\nСистема на паузе. Требуется ручное вмешательство.")
+                # Do NOT resume processing on failure. Leave it paused.
+
+            finally:
+                self._reloading = False
+                logger.info("HOT_RELOAD_FINISH: Reload process finished.")
         
     def set_copy_state_ref(self, state_obj):
         """Sets the reference to the shared copy_state object."""
