@@ -383,3 +383,20 @@
 2025-09-25 05:10:44,423 [    INFO] bybit_trading_system:3267 - ⏸️ MODIFY_DEFERRED: Deferring modify for BTCUSDT until connected.
 2025-09-25 05:10:44,424 [    INFO] bybit_trading_system:1127 - TS_PARAM_RESOLVED{activePrice=50085.01, trailingStop=100.16, from='percent', price_ref='50080.0'}
 2025-09-25 05:10:44,424 [ WARNING] bybit_trading_system:1147 - TS_SKIP_CONSTRAINT: Long TS active_price (50085.01) must be > max(sessionAvgPrice, lastPrice) (50100.0) for BTCUSDT.
+2025-09-26 16:21:32,168 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-26 16:21:33,956 [    INFO] bybit_trading_system:5339 - Attempting to hot-reload API credentials...
+2025-09-26 16:21:33,957 [    INFO] bybit_trading_system:5351 - Main client credentials updated.
+2025-09-26 16:21:33,957 [    INFO] bybit_trading_system:5362 - Source client credentials updated.
+2025-09-26 16:21:33,958 [    INFO] bybit_trading_system:5369 - Reconnecting WebSocket to apply new credentials...
+2025-09-26 16:21:33,958 [    INFO] bybit_trading_system:5381 - ✅ Credentials hot-reload complete.
+2025-09-26 16:21:33,960 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-26 16:21:33,960 [    INFO] bybit_trading_system:1127 - TS_PARAM_RESOLVED{activePrice=1.22, trailingStop=0.0, from='percent', price_ref='1.25'}
+2025-09-26 16:21:33,960 [ WARNING] bybit_trading_system:1151 - TS_SKIP_CONSTRAINT: Short TS active_price (1.22) must be < min(sessionAvgPrice, lastPrice) (1.2) for TWTUSDT.
+2025-09-26 16:22:53,852 [    INFO] bybit_trading_system:743 - ✅ Production logging system initialized successfully
+2025-09-26 16:22:54,889 [    INFO] bybit_trading_system:5339 - Attempting to hot-reload API credentials...
+2025-09-26 16:22:54,890 [    INFO] bybit_trading_system:5351 - Main client credentials updated.
+2025-09-26 16:22:54,890 [    INFO] bybit_trading_system:5362 - Source client credentials updated.
+2025-09-26 16:22:54,890 [    INFO] bybit_trading_system:5369 - Reconnecting WebSocket to apply new credentials...
+2025-09-26 16:22:54,890 [    INFO] bybit_trading_system:5381 - ✅ Credentials hot-reload complete.
+2025-09-26 16:22:54,892 [    INFO] bybit_trading_system:945 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-26 16:22:54,893 [    INFO] bybit_trading_system:1127 - TS_PARAM_RESOLVED{activePrice=1.22, trailingStop=0.0, from='percent', price_ref='1.25'}

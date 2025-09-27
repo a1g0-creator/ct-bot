@@ -325,9 +325,7 @@ async def show_account_menu(update, context: ContextTypes.DEFAULT_TYPE) -> int:
         [InlineKeyboardButton("👁 Показать текущие",   callback_data="show_current")],
     ]
     if sess.api_key and sess.api_secret:
-        keyboard.append([InlineKeyboardButton("💾 Сохранить в БД", callback_data="save_creds")])
-    if api_key and api_secret:
-        keyboard.append([InlineKeyboardButton("✅ Применить без рестарта", callback_data="apply_hot")])
+        keyboard.append([InlineKeyboardButton("💾 Сохранить и Применить", callback_data="save_creds")])
     keyboard.append([InlineKeyboardButton("🔙 Назад", callback_data="back_main")])
 
     txt = (
@@ -406,6 +404,7 @@ async def account_callback(update, context: ContextTypes.DEFAULT_TYPE) -> int:
     elif data == "save_creds":
         if sess.api_key and sess.api_secret:
             try:
+                # 1. Save credentials to the database
                 store = CredentialsStore()
                 store.set_account_credentials(
                     sess.selected_account_id,
@@ -417,44 +416,36 @@ async def account_callback(update, context: ContextTypes.DEFAULT_TYPE) -> int:
                 await _safe_edit_message(
                     query,
                     f"✅ <b>Ключи сохранены!</b>\n\n"
-                    f"Аккаунт: {sess.get_display_name()}\n"
-                    f"ID: {sess.selected_account_id}",
+                    f"⏳ Применяю новые ключи и перезапускаю соединения...",
                 )
 
+                # 2. Trigger hot-reload in the main system
+                system = context.application.bot_data.get("integrated_system")
+                if system and hasattr(system, "reload_credentials_and_reconnect"):
+                    # We run this as a background task so it doesn't block the bot
+                    asyncio.create_task(system.reload_credentials_and_reconnect())
+                    logger.info(f"[/keys] Hot-reload triggered for account {sess.selected_account_id}")
+                else:
+                    logger.warning("[/keys] Integrated system not found or has no reload method.")
+                    await query.message.reply_text("⚠️ Ключи сохранены, но не удалось применить их автоматически. Может потребоваться перезапуск.")
+
+                # 3. Clear session and return to menu
                 sess.clear_credentials()
                 context.user_data["keys_sess"] = sess
 
-                await asyncio.sleep(2)
+                await asyncio.sleep(3) # Give user time to read the message
                 return await show_account_menu(update, context)
 
             except Exception as e:
-                logger.error(f"[/keys] Error saving credentials: {e}", exc_info=True)
+                logger.error(f"[/keys] Error saving/applying credentials: {e}", exc_info=True)
                 await _safe_edit_message(
                     query,
-                    f"❌ <b>Ошибка сохранения:</b>\n<code>{str(e)}</code>",
+                    f"❌ <b>Ошибка сохранения или применения:</b>\n<code>{str(e)}</code>",
                 )
                 return ACCOUNT_MENU
         else:
-            await _safe_edit_message(query, "⚠️ Нет данных для сохранения")
+            await _safe_edit_message(query, "⚠️ Нет данных для сохранения и применения")
             return ACCOUNT_MENU
-
-    elif data == "apply_hot":
-        system = context.application.bot_data.get("integrated_system")
-        if system and hasattr(system, "_on_keys_saved"):
-            try:
-                asyncio.create_task(system._on_keys_saved())
-                await _safe_edit_message(
-                    query,
-                    "✅ <b>Ключи применены!</b>\n\n"
-                    "Система перезапускается с новыми ключами...",
-                )
-            except Exception as e:
-                await _safe_edit_message(query, f"⚠️ Ошибка применения: {str(e)}")
-        else:
-            await _safe_edit_message(query, "⚠️ Горячее применение недоступно")
-
-        await asyncio.sleep(2)
-        return await show_account_menu(update, context)
 
     return ACCOUNT_MENU
 

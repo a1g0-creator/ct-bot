@@ -5333,6 +5333,57 @@ class FinalTradingMonitor:
         self._system_active = False           # главный флаг "жить" для _run_main_loop()
         self.main_positions_cache = {}        # NEW: Cache for MAIN account positions
         # === /NEW ===
+
+    async def reload_credentials_and_reconnect(self):
+        """Hot-reloads API credentials and reconnects WebSocket if necessary."""
+        logger.info("Attempting to hot-reload API credentials...")
+        try:
+            # Re-read credentials from the source (e.g., database via config module)
+            from config import get_api_credentials, TARGET_ACCOUNT_ID, DONOR_ACCOUNT_ID
+
+            # Target account
+            target_creds = get_api_credentials(TARGET_ACCOUNT_ID)
+            if target_creds and len(target_creds) == 2:
+                self.main_client.api_key = target_creds[0]
+                self.main_client.api_secret = target_creds[1]
+                if hasattr(self.main_client, 'copy_state') and self.main_client.copy_state:
+                    self.main_client.copy_state.keys_loaded = True
+                logger.info("Main client credentials updated.")
+            else:
+                logger.error("Failed to reload credentials for main client, keys not found or invalid.")
+                if hasattr(self.main_client, 'copy_state') and self.main_client.copy_state:
+                    self.main_client.copy_state.keys_loaded = False
+
+            # Source account
+            source_creds = get_api_credentials(DONOR_ACCOUNT_ID)
+            if source_creds and len(source_creds) == 2:
+                self.source_client.api_key = source_creds[0]
+                self.source_client.api_secret = source_creds[1]
+                logger.info("Source client credentials updated.")
+            else:
+                logger.warning("Could not reload credentials for source client (optional).")
+
+            # The WebSocket connection uses the credentials for authentication.
+            # We need to reconnect it to use the new keys.
+            if self.websocket_manager:
+                logger.info("Reconnecting WebSocket to apply new credentials...")
+                # Update keys on the websocket manager before reconnecting
+                if source_creds and len(source_creds) == 2:
+                    self.websocket_manager.api_key = source_creds[0]
+                    self.websocket_manager.api_secret = source_creds[1]
+
+                # The reconnect method should handle the full cycle of closing and opening a new connection.
+                if hasattr(self.websocket_manager, 'reconnect'):
+                    await self.websocket_manager.reconnect()
+                else:
+                    logger.warning("Websocket manager does not have a reconnect method. Manual restart might be required.")
+
+            logger.info("✅ Credentials hot-reload complete.")
+            await send_telegram_alert("✅ API keys have been updated and applied successfully.")
+
+        except Exception as e:
+            logger.error(f"Failed to hot-reload credentials: {e}", exc_info=True)
+            await send_telegram_alert(f"❌ Failed to apply new API keys: {e}")
         
     def set_copy_state_ref(self, state_obj):
         """Sets the reference to the shared copy_state object."""
