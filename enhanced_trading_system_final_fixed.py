@@ -5124,6 +5124,13 @@ class ProductionSignalProcessor:
         except Exception as e:
             logger.error(f"Signal execution error: {e}")
             self.stats['processing_errors'] += 1
+
+    def invalidate_caches(self):
+        """Clears all internal caches to force re-fetching of data."""
+        logger.info("SIGNAL_PROCESSOR: Invalidating internal caches...")
+        self.known_positions.clear()
+        self._last_set_leverage.clear()
+        logger.info("SIGNAL_PROCESSOR: Caches (known_positions, _last_set_leverage) cleared.")
     
     async def _handle_position_open_signal(self, signal: TradingSignal):
         """ИСПРАВЛЕННАЯ обработка сигнала открытия позиции"""
@@ -5399,7 +5406,8 @@ class FinalTradingMonitor:
 
             self._reloading = True
             start_time = time.time()
-            logger.info("HOT_RELOAD_START: Beginning credentials hot-reload process...")
+            deferred_signals_before = len(self._deferred_queue)
+            logger.info(f"HOT_RELOAD_START: Beginning credentials hot-reload process... (deferred signals: {deferred_signals_before})")
 
             try:
                 # 1. Pause system processing
@@ -5434,14 +5442,30 @@ class FinalTradingMonitor:
                 self.main_positions_cache.clear()
                 if hasattr(self.main_client, 'invalidate_caches'): await self.main_client.invalidate_caches()
                 if hasattr(self.source_client, 'invalidate_caches'): await self.source_client.invalidate_caches()
+                if hasattr(self.signal_processor, 'invalidate_caches'): self.signal_processor.invalidate_caches()
 
-                # 5. Reconnect WebSocket and resubscribe
+                # 5. Reconnect WebSocket with retries
                 if self.websocket_manager:
-                    logger.info("HOT_RELOAD_WS_RECONNECT: Reconnecting WebSocket...")
-                    await self.websocket_manager.connect() # connect handles auth and initial subs
-                    if not self.websocket_manager.ws or self.websocket_manager.status != 'authenticated':
-                         raise ConnectionError("Failed to reconnect and authenticate WebSocket.")
-                    logger.info("HOT_RELOAD_WS_RECONNECTED: WebSocket reconnected and authenticated.")
+                    reconnect_attempts = 3
+                    reconnect_delays = [0.5, 2, 5]
+                    for attempt in range(reconnect_attempts):
+                        try:
+                            logger.info(f"HOT_RELOAD_WS_RECONNECT: Attempt {attempt + 1}/{reconnect_attempts} to reconnect WebSocket...")
+                            await self.websocket_manager.connect()
+                            if self.websocket_manager.ws and self.websocket_manager.status == 'authenticated':
+                                logger.info("HOT_RELOAD_WS_RECONNECTED: WebSocket reconnected and authenticated.")
+                                topics = self.websocket_manager.subscriptions
+                                logger.info(f"HOT_RELOAD_WS_RESUBSCRIBED: Successfully resubscribed to topics: {topics}")
+                                break  # Success, exit loop
+                            else:
+                                raise ConnectionError("WebSocket connected but not authenticated.")
+                        except Exception as e:
+                            logger.warning(f"HOT_RELOAD_WS_RECONNECT_ATTEMPT_FAILED: Attempt {attempt + 1} failed: {e}")
+                            if attempt < reconnect_attempts - 1:
+                                await asyncio.sleep(reconnect_delays[attempt])
+                            else:
+                                logger.critical("HOT_RELOAD_WS_RECONNECT_FAILED: All WebSocket reconnect attempts failed.")
+                                raise ConnectionError("Failed to reconnect and authenticate WebSocket after multiple attempts.")
 
                 # 6. Refresh state from REST API
                 logger.info("HOT_RELOAD_STATE_REFRESH: Fetching current state from REST API...")
@@ -5453,10 +5477,20 @@ class FinalTradingMonitor:
 
                 # 7. Final health check and logging
                 duration_ms = (time.time() - start_time) * 1000
-                logger.info(f"HOT_RELOAD_DONE: Process completed in {duration_ms:.0f}ms.")
+                ws_topics_count = len(self.websocket_manager.subscriptions) if self.websocket_manager else 0
+
+                summary_log = (
+                    f"HOT_RELOAD_SUMMARY: "
+                    f"duration_ms={duration_ms:.0f}, "
+                    f"deferred_signals_processed={deferred_signals_before}, "
+                    f"ws_topics_re-subscribed={ws_topics_count}"
+                )
+                logger.info(summary_log)
+
                 await send_telegram_alert(
                     f"✅ Горячая перезагрузка завершена за {duration_ms:.0f}ms.\n"
-                    f"Новый баланс: {new_main_balance:.2f} USDT"
+                    f"Новый баланс: {new_main_balance:.2f} USDT\n"
+                    f"Обработано отложенных сигналов: {deferred_signals_before}"
                 )
 
                 # 8. Resume processing only on success
