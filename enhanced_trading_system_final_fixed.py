@@ -2647,7 +2647,7 @@ class EnhancedBybitClient:
                 await self.time_sync.sync_server_time(self.api_url)
 
             timestamp = str(self.time_sync.get_server_time())
-            recv_window = "50000"
+            recv_window = str(BYBIT_RECV_WINDOW)
 
             query_string = ""
 
