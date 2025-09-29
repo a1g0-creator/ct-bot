@@ -2735,7 +2735,7 @@ class EnhancedBybitClient:
                         logger.critical(f"{self.name} - Invalid signature error!")
                         if self.copy_state and self.name == "MAIN": self.copy_state.main_rest_ok = False
                         raise Exception(f"Signature error: {ret_msg}")
-                        elif ret_code == 10002: # Request expired
+                    elif ret_code == 10002: # Request expired
                             logger.warning(f"{self.name} - Timestamp error (10002): {ret_msg}")
                             raise Exception(f"API error 10002: {ret_msg}")
                     elif ret_code == 10006:  # Rate limit exceeded
@@ -3044,7 +3044,7 @@ class EnhancedBybitClient:
             timestamp = str(self.time_sync.get_server_timestamp())  # ms
 
             # 2) Увеличаем окно до 20s (устойчиво к сетевому джиттеру)
-            recv_window = "20000"
+            recv_window = str(BYBIT_RECV_WINDOW)
 
             # 3) Детерминированный queryString (сортировка ключей + URL-encoding)
             #    Важно: именно этот string участвует в подписи V5

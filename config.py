@@ -26,3 +26,4 @@ BALANCE_ACCOUNT_TYPE = "UNIFIED"
 
 # Dry run mode for testing without executing real trades
 dry_run = False
+BYBIT_RECV_WINDOW = int(os.getenv("BYBIT_RECV_WINDOW", "50000"))
