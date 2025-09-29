@@ -1619,3 +1619,44 @@ ConnectionError: Failed to reconnect and authenticate WebSocket.
 2025-09-27 08:34:03,562 [    INFO] bybit_trading_system:946 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
 2025-09-27 08:34:03,564 [    INFO] bybit_trading_system:418 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
 2025-09-27 08:34:03,564 [    INFO] bybit_trading_system:2947 - Stage 2 Copy Trading System initialized (monitor=MagicMock)
+2025-09-29 14:42:48,717 [    INFO] bybit_trading_system:745 - ✅ Production logging system initialized successfully
+2025-09-29 14:42:48,889 [    INFO] bybit_trading_system:947 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-29 14:42:48,900 [    INFO] bybit_trading_system:374 - Advanced Kelly Calculator initialized with safety limits
+2025-09-29 14:42:48,900 [    INFO] bybit_trading_system:947 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-29 14:42:48,900 [    INFO] bybit_trading_system:180 - [live-format] SOLUSDT: qty_in=10.00000000, price=$150.0000, step=0.001, rule_min_qty=0.001, min_notional=5.0, notional_min_qty=0.03333333, effective_min_qty=0.03400000 -> final_qty=10
+2025-09-29 14:42:48,914 [    INFO] bybit_trading_system:374 - Advanced Kelly Calculator initialized with safety limits
+2025-09-29 14:42:49,008 [    INFO] bybit_trading_system:672 - Kelly calculation for BTCUSDT: fraction=0.025, size=$249.84
+2025-09-29 14:45:04,698 [    INFO] bybit_trading_system:745 - ✅ Production logging system initialized successfully
+2025-09-29 14:45:04,883 [    INFO] bybit_trading_system:374 - Advanced Kelly Calculator initialized with safety limits
+2025-09-29 14:45:04,883 [    INFO] bybit_trading_system:947 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-29 14:45:04,884 [    INFO] bybit_trading_system:180 - [live-format] SOLUSDT: qty_in=10.00000000, price=$150.0000, step=0.001, rule_min_qty=0.001, min_notional=5.0, notional_min_qty=0.03333333, effective_min_qty=0.03400000 -> final_qty=10
+2025-09-29 14:45:04,895 [    INFO] bybit_trading_system:374 - Advanced Kelly Calculator initialized with safety limits
+2025-09-29 14:45:04,919 [    INFO] bybit_trading_system:672 - Kelly calculation for BTCUSDT: fraction=0.025, size=$249.84
+2025-09-29 14:45:04,919 [    INFO] bybit_trading_system:180 - [live-format] BTCUSDT: qty_in=0.00499680, price=$50000.0000, step=0.001, rule_min_qty=0.001, min_notional=5.0, notional_min_qty=0.00010000, effective_min_qty=0.00100000 -> final_qty=0.004
+2025-09-29 14:46:10,966 [    INFO] bybit_trading_system:745 - ✅ Production logging system initialized successfully
+2025-09-29 14:46:11,071 [    INFO] bybit_trading_system:947 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-29 14:46:11,072 [    INFO] bybit_trading_system:1129 - TS_PARAM_RESOLVED{activePrice=1960.0, trailingStop=6.0, from='percent', price_ref='2000.0'}
+2025-09-29 14:46:11,076 [    INFO] bybit_trading_system:374 - Advanced Kelly Calculator initialized with safety limits
+2025-09-29 14:46:11,076 [    INFO] bybit_trading_system:947 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-29 14:46:11,077 [    INFO] bybit_trading_system:180 - [live-format] SOLUSDT: qty_in=10.00000000, price=$150.0000, step=0.001, rule_min_qty=0.001, min_notional=5.0, notional_min_qty=0.03333333, effective_min_qty=0.03400000 -> final_qty=10
+2025-09-29 14:46:11,238 [    INFO] bybit_trading_system:374 - Advanced Kelly Calculator initialized with safety limits
+2025-09-29 14:46:11,259 [    INFO] bybit_trading_system:672 - Kelly calculation for BTCUSDT: fraction=0.025, size=$249.84
+2025-09-29 14:46:11,259 [    INFO] bybit_trading_system:180 - [live-format] BTCUSDT: qty_in=0.00499680, price=$50000.0000, step=0.001, rule_min_qty=0.001, min_notional=5.0, notional_min_qty=0.00010000, effective_min_qty=0.00100000 -> final_qty=0.004
+2025-09-29 14:47:18,849 [    INFO] bybit_trading_system:745 - ✅ Production logging system initialized successfully
+2025-09-29 14:47:18,961 [    INFO] bybit_trading_system:947 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-29 14:47:18,962 [    INFO] bybit_trading_system:1129 - TS_PARAM_RESOLVED{activePrice=1960.0, trailingStop=6.0, from='percent', price_ref='2000.0'}
+2025-09-29 14:47:18,967 [    INFO] bybit_trading_system:374 - Advanced Kelly Calculator initialized with safety limits
+2025-09-29 14:47:18,968 [    INFO] bybit_trading_system:947 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-29 14:47:18,968 [    INFO] bybit_trading_system:180 - [live-format] SOLUSDT: qty_in=10.00000000, price=$150.0000, step=0.001, rule_min_qty=0.001, min_notional=5.0, notional_min_qty=0.03333333, effective_min_qty=0.03400000 -> final_qty=10
+2025-09-29 14:47:19,133 [    INFO] bybit_trading_system:374 - Advanced Kelly Calculator initialized with safety limits
+2025-09-29 14:47:19,159 [    INFO] bybit_trading_system:672 - Kelly calculation for BTCUSDT: fraction=0.025, size=$249.84
+2025-09-29 14:47:19,159 [    INFO] bybit_trading_system:180 - [live-format] BTCUSDT: qty_in=0.00499680, price=$50000.0000, step=0.001, rule_min_qty=0.001, min_notional=5.0, notional_min_qty=0.00010000, effective_min_qty=0.00100000 -> final_qty=0.004
+2025-09-29 14:48:23,504 [    INFO] bybit_trading_system:745 - ✅ Production logging system initialized successfully
+2025-09-29 14:48:23,602 [    INFO] bybit_trading_system:947 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-29 14:48:23,603 [    INFO] bybit_trading_system:1129 - TS_PARAM_RESOLVED{activePrice=1960.0, trailingStop=6.0, from='percent', price_ref='2000.0'}
+2025-09-29 14:48:23,607 [    INFO] bybit_trading_system:374 - Advanced Kelly Calculator initialized with safety limits
+2025-09-29 14:48:23,607 [    INFO] bybit_trading_system:947 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.02, 'step_pct': 0.003, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 1.5}
+2025-09-29 14:48:23,607 [    INFO] bybit_trading_system:180 - [live-format] SOLUSDT: qty_in=10.00000000, price=$150.0000, step=0.001, rule_min_qty=0.001, min_notional=5.0, notional_min_qty=0.03333333, effective_min_qty=0.03400000 -> final_qty=10
+2025-09-29 14:48:23,762 [    INFO] bybit_trading_system:374 - Advanced Kelly Calculator initialized with safety limits
+2025-09-29 14:48:23,784 [    INFO] bybit_trading_system:672 - Kelly calculation for BTCUSDT: fraction=0.025, size=$249.84
+2025-09-29 14:48:23,784 [    INFO] bybit_trading_system:180 - [live-format] BTCUSDT: qty_in=0.00499680, price=$50000.0000, step=0.001, rule_min_qty=0.001, min_notional=5.0, notional_min_qty=0.00010000, effective_min_qty=0.00100000 -> final_qty=0.004

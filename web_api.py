@@ -37,13 +37,17 @@ DATABASE_URL = os.getenv(
 )
 TARGET_ACCOUNT_ID = int(os.getenv("TARGET_ACCOUNT_ID", "1"))
 
-engine = create_engine(
-    DATABASE_URL,
-    pool_size=10,
-    max_overflow=20,
-    pool_pre_ping=True,
-    pool_recycle=3600,
-)
+# Make engine creation more flexible for testing
+engine_args = {}
+if 'postgresql' in DATABASE_URL:
+    engine_args.update({
+        "pool_size": 10,
+        "max_overflow": 20,
+        "pool_pre_ping": True,
+        "pool_recycle": 3600,
+    })
+
+engine = create_engine(DATABASE_URL, **engine_args)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 # -----------------------------------------------------------------------------

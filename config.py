@@ -1,3 +1,5 @@
+import os
+
 def get_api_credentials(account_id: int):
     if account_id == 1:
         return "main_api_key", "main_api_secret"
