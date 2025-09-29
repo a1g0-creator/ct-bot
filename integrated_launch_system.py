@@ -1648,10 +1648,6 @@ class IntegratedTradingSystem:
                 risk_config=RISK_CONFIG,
             )
 
-            # Link Stage 2 system to Stage 1 monitor
-            if self.stage1_monitor:
-                self.stage1_monitor.stage2_system = self.stage2_system
-
             # 2) Сразу обновим ссылки у Telegram-бота (кнопки/меню используют stage2)
             if hasattr(self, "_refresh_bot_refs"):
                 self._refresh_bot_refs()

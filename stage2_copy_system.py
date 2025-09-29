@@ -55,7 +55,6 @@ try:
         MAIN_API_URL, SOURCE_API_KEY, SOURCE_API_SECRET, SOURCE_API_URL,
         BALANCE_ACCOUNT_TYPE
     )
-    from config import dry_run
     print("✅ Успешно импортированы все компоненты Этапа 1")
 except ImportError as e:
     print(f"❌ Не удалось импортировать компоненты Этапа 1: {e}")
@@ -2909,9 +2908,6 @@ class Stage2CopyTradingSystem:
         self.last_balance_check = 0
         self.balance_check_interval = 60  # Проверяем баланс каждую минуту
 
-        # B. Stage2 Executor Flag
-        self.trade_executor_connected = False
-
         # 6) Статистика системы
         self.system_stats = {
             "start_time": 0,
@@ -3112,8 +3108,8 @@ class Stage2CopyTradingSystem:
         """
         start_time = time.monotonic()
         try:
-            if not self.trade_executor_connected:
-                logger.warning("Copy system not connected. State: trade_executor_connected=False")
+            if not self.copy_state.ready:
+                logger.warning("⚠️ Copy system not ready, ignoring signal. State: %s", self.copy_state)
                 return
 
             # 1. NORMALIZE & VALIDATE INPUT
@@ -4115,13 +4111,6 @@ class Stage2CopyTradingSystem:
             self._copy_ready = True
             self.copy_state.main_rest_ok = True
             self.copy_state.limits_checked = True # Assume checked during startup
-
-            # B. Stage2 Executor Flag
-            self.trade_executor_connected = self.copy_state.ready and not dry_run
-            logger.info(
-                f"COPY_EXECUTOR_READY={self.trade_executor_connected} "
-                f"(dry_run={dry_run}, main_client.ready={self.copy_state.ready})"
-            )
 
             # --- Deferred Modify Flush ---
             self.copy_connected = True

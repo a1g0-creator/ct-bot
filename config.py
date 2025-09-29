@@ -5,7 +5,11 @@ def get_api_credentials(account_id: int):
         return "source_api_key", "source_api_secret"
     return None
 
-BYBIT_RECV_WINDOW = 20000
+import os
+
+import os
+
+BYBIT_RECV_WINDOW = int(os.getenv("BYBIT_RECV_WINDOW", "50000"))
 DEFAULT_TRADE_ACCOUNT_ID = 1
 TARGET_ACCOUNT_ID = 1
 DONOR_ACCOUNT_ID = 2
@@ -23,6 +27,3 @@ TELEGRAM_CHAT_ID = "dummy_chat_id"
 
 # Account type for balance calculations (e.g., "UNIFIED", "DERIVATIVES")
 BALANCE_ACCOUNT_TYPE = "UNIFIED"
-
-# Dry run mode for testing without executing real trades
-dry_run = False
