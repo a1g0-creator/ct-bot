@@ -496,18 +496,21 @@ class PositionsDBWriter:
             return None
 
         # 3) exit_price с фоллбеками
-        exit_price = safe_decimal(data.get("mark_price"))
-        if exit_price is None:
-            exit_price = _first_decimal(raw_close, [
-                "exitPrice", "avgExitPrice", "avgPrice", "markPrice", "lastPrice", "price", "fillPrice",
-                "closePrice", "execPrice"
-            ])
+        is_forced = data.get("source") in ("reconcile_forced", "auto_heal")
+        price_keys = ["price", "close_price", "execPrice", "exitPrice", "mark_price"]
+        exit_price = _first_decimal(raw_close, price_keys)
+
+        price_was_missing = exit_price is None
+
         if exit_price is None:
             exit_price = _first_decimal(raw_open, [
                 "exitPrice", "avgExitPrice", "avgPrice", "markPrice", "lastPrice", "price", "fillPrice"
             ])
         if exit_price is None:
             exit_price = entry_price
+
+        if is_forced and price_was_missing:
+            self.logger.info(f"HARD_CLOSE_APPLIED symbol={existing['symbol']} reason={data.get('source')} price={exit_price}")
 
         # 4) fees
         fees = _first_decimal(raw_close, [
@@ -1029,6 +1032,22 @@ class PositionsDBWriter:
             await loop.run_in_executor(None, sync_task)
         except Exception as e:
             self.logger.error(f"log_close async error: {e}", exc_info=True)
+
+    def get_open_positions(self, account_id: int) -> List[Dict]:
+        """
+        Fetches all open positions for a given account from the database.
+        """
+        try:
+            with self._session() as db:
+                rows = db.execute(text("""
+                    SELECT symbol, position_idx, side, qty, entry_price, mark_price
+                    FROM positions_open
+                    WHERE account_id = :aid
+                """), {"aid": account_id}).mappings().all()
+                return [dict(row) for row in rows]
+        except Exception as e:
+            self.logger.error(f"Failed to get open positions from DB: {e}")
+            return []
 
 
 # ===================== GLOBAL INSTANCE =====================

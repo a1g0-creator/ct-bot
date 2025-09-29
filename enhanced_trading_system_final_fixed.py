@@ -42,9 +42,11 @@ import statistics
 import uuid
 import os, socket
 from decimal import Decimal
+from datetime import timezone
 
 from sys_events_logger import sys_logger
 from signals_logger import signals_logger
+from positions_db_writer import positions_writer
 # from positions_store import positions_store
 
 # Единый системный логгер для всех модулей проекта
@@ -83,7 +85,7 @@ if not logger.handlers:
 # ================================
 # 1) безопасные импорты: берём recv_window из старого конфига,
 #    а ключи — только из БД через CredentialsStore (обёртка в config.py)
-from config import get_api_credentials, BYBIT_RECV_WINDOW, DEFAULT_TRADE_ACCOUNT_ID, BALANCE_ACCOUNT_TYPE
+from config import get_api_credentials, BYBIT_RECV_WINDOW, DEFAULT_TRADE_ACCOUNT_ID, BALANCE_ACCOUNT_TYPE, TARGET_ACCOUNT_ID
 
 log = logging.getLogger(__name__)
 
@@ -1688,6 +1690,9 @@ class HealthCheck:
     message: str
     details: Dict[str, Any] = None
 
+def utc_now_iso():
+    return datetime.now(timezone.utc).isoformat()
+
 def safe_float(value, default=0.0):
     """Безопасное преобразование в float"""
     try:
@@ -2266,6 +2271,7 @@ class AWSTimeSyncPro:
         best_offset = 0.0
         best_source = None
         successful_sources = 0
+        old_offset = self.time_offset
 
         for source_url in self.time_sources:
             try:
@@ -2304,6 +2310,8 @@ class AWSTimeSyncPro:
 
         # Обновляем «старые» публичные поля для совместимости и метрик
         self.time_offset = float(calibrated_offset)
+        if old_offset != self.time_offset:
+            logger.info(f"TIME_OFFSET_UPDATE old={old_offset:.1f} new={self.time_offset:.1f}")
         self.sync_accuracy = float(best_accuracy)
         self.last_sync = time.time()
         self.sync_stats["successful_syncs"] += 1
@@ -2489,7 +2497,7 @@ class EnhancedBybitClient:
         
         # Retry конфигурация
         self.max_retries = 3
-        self.retry_delays = [1, 3, 5]
+        self.retry_delays = [1, 2, 5]
         
         # CRITICAL FIX: Enterprise connection management
         self.enterprise_connector = EnterpriseBybitConnector()
@@ -2523,6 +2531,8 @@ class EnhancedBybitClient:
         
     def _generate_signature(self, timestamp: str, recv_window: str, query_string: str = "", body: str = "") -> str:
         """V5: HMAC-SHA256(timestamp + api_key + recv_window + query/body) → hex"""
+        if not isinstance(recv_window, str):
+            recv_window = str(recv_window)
         signature_payload = f"{timestamp}{self.api_key}{recv_window}{query_string}{body}"
         signature = hmac.new(
             self.api_secret.encode("utf-8"),
@@ -2530,7 +2540,7 @@ class EnhancedBybitClient:
             hashlib.sha256
         ).hexdigest()
         logger.debug(f"{self.name} - Signature payload length: {len(signature_payload)}")
-        return signature  # <-- ВОЗВРАЩАЕМ СТРОКУ
+        return signature
 
     
     async def _make_request_with_retry(self, method: str, endpoint: str, params: dict = None, data: dict = None) -> Optional[dict]:
@@ -2544,13 +2554,22 @@ class EnhancedBybitClient:
                 # Все метрики total/success/fail ведёт _make_single_request
                 return await self._make_single_request(method, endpoint, params, data)
             except Exception as e:
-                logger.warning(f"{self.name} - Request attempt {attempt + 1} failed: {e}")
+                if "API error 10002" in str(e):
+                    req_timestamp = int(data.get('timestamp', 0)) if data else 0
+                    req_delta = (time.time() * 1000) - req_timestamp if req_timestamp else -1
+                    logger.warning(
+                        f"API_10002_RESYNC req_delta={req_delta:.0f}ms offset_before={self.time_sync.time_offset:.1f}"
+                    )
+                    await self.time_sync.sync_server_time(self.api_url)
+                else:
+                    logger.warning(f"{self.name} - Request attempt {attempt + 1} failed: {e}")
+
                 if attempt < self.max_retries:
                     delay = self.retry_delays[min(attempt, len(self.retry_delays) - 1)]
                     logger.info(f"{self.name} - Retrying in {delay}s...")
                     await asyncio.sleep(delay)
                 else:
-                    logger.error(f"{self.name} - All retry attempts failed")
+                    logger.error(f"{self.name} - All retry attempts failed for {endpoint}")
                     self.request_stats['failed_requests'] += 1
                     self.request_stats['last_error'] = str(e)
                     return None
@@ -2622,8 +2641,13 @@ class EnhancedBybitClient:
             session = await self.get_or_create_enterprise_session()
 
             # Подготовка запроса
+            await self.time_sync.ensure_time_sync(self.api_url)
+            if abs(self.time_sync.time_offset) > 400:
+                logger.warning(f"Time offset {self.time_sync.time_offset}ms > 400ms, forcing resync.")
+                await self.time_sync.sync_server_time(self.api_url)
+
             timestamp = str(self.time_sync.get_server_time())
-            recv_window = str(BYBIT_RECV_WINDOW)
+            recv_window = "50000"
 
             query_string = ""
 
@@ -2711,6 +2735,9 @@ class EnhancedBybitClient:
                         logger.critical(f"{self.name} - Invalid signature error!")
                         if self.copy_state and self.name == "MAIN": self.copy_state.main_rest_ok = False
                         raise Exception(f"Signature error: {ret_msg}")
+                        elif ret_code == 10002: # Request expired
+                            logger.warning(f"{self.name} - Timestamp error (10002): {ret_msg}")
+                            raise Exception(f"API error 10002: {ret_msg}")
                     elif ret_code == 10006:  # Rate limit exceeded
                         logger.warning(f"{self.name} - Rate limit exceeded")
                         if self.copy_state and self.name == "MAIN": self.copy_state.main_rest_ok = False
@@ -3379,6 +3406,8 @@ class FinalFixedWebSocketManager:
         
         # Статистика
         self.stats = {
+            'ws_received_total': 0,
+            'ws_processed_private': 0,
             'messages_received': 0,
             'messages_processed': 0,
             'connection_drops': 0,
@@ -3671,6 +3700,7 @@ class FinalFixedWebSocketManager:
                 message = await asyncio.wait_for(self.ws.recv(), timeout=WEBSOCKET_TIMEOUT)
                 
                 # Инкремент счетчика полученных сообщений
+                self.stats['ws_received_total'] = self.stats.get('ws_received_total', 0) + 1
                 self.stats['messages_received'] = self.stats.get('messages_received', 0) + 1
                 self.stats['last_message_time'] = time.time()
                 
@@ -3765,6 +3795,9 @@ class FinalFixedWebSocketManager:
             # === Главная логика ===
             if 'topic' in data:
                 topic = data['topic']
+                if topic in ["position", "wallet", "execution", "order"]:
+                    self.stats['ws_processed_private'] = self.stats.get('ws_processed_private', 0) + 1
+
                 self.stats['topic_counts'][topic]['received'] += 1
                 logger.info(f"[{self.name}] Received message for topic: '{topic}'")
 
@@ -5335,6 +5368,7 @@ class FinalTradingMonitor:
         # Инициализация компонентов
         # State object for cross-component status
         self.copy_state = None
+        self.stage2_system = None
 
         self.source_client = EnhancedBybitClient(
             SOURCE_API_KEY, SOURCE_API_SECRET, SOURCE_API_URL, "SOURCE", copy_state=self.copy_state
@@ -5370,6 +5404,7 @@ class FinalTradingMonitor:
         self._planned_shutdown_task = None    # отложенная "эскалация" на shutdown (отменяем при ре-коннекте)
         self._system_active = False           # главный флаг "жить" для _run_main_loop()
         self.main_positions_cache = {}        # NEW: Cache for MAIN account positions
+        self.reconcile_enqueued_last_minute = deque(maxlen=60)
 
         # --- Hot-Reload and Pause Mechanism ---
         self._reload_lock = asyncio.Lock()
@@ -5750,6 +5785,36 @@ class FinalTradingMonitor:
                     signal_to_add = TradingSignal(signal_type=SignalType.POSITION_OPEN, symbol=donor_pos['symbol'], side=donor_pos['side'], size=donor_pos['size'], price=donor_pos['price'], timestamp=time.time(), metadata={'source': 'reconcile', 'position_idx': donor_pos['position_idx'], 'leverage': donor_pos['leverage']}, priority=1)
                 elif not donor_pos and main_pos:
                     to_close += 1
+                    copy_connected = getattr(self.stage2_system, 'copy_connected', True)
+
+                    if not copy_connected:
+                        logger.info(f"RECONCILE: copy_connected=False. Attempting direct REST close for {main_pos['symbol']}.")
+                        close_side = "Sell" if main_pos['side'] == "Buy" else "Buy"
+                        close_result = await self.main_client.place_order(
+                            category='linear',
+                            symbol=main_pos['symbol'],
+                            side=close_side,
+                            orderType='Market',
+                            qty=str(main_pos['size']),
+                            reduceOnly=True
+                        )
+                        if close_result and close_result.get('orderId'):
+                            exec_price = safe_float(close_result.get('avgPrice', main_pos['price']))
+                            synthetic_payload = {
+                                "symbol": main_pos['symbol'],
+                                "qty": main_pos['size'],
+                                "side": main_pos['side'],
+                                "close_price": exec_price,
+                                "source": "reconcile_forced",
+                                "account_id": TARGET_ACCOUNT_ID,
+                                "ts": utc_now_iso(),
+                            }
+                            await positions_writer.log_close(synthetic_payload)
+                            logger.info(f"RECONCILE_FORCED_CLOSE_OK symbol={main_pos['symbol']} qty={main_pos['size']} price={exec_price}")
+                        else:
+                            logger.error(f"RECONCILE_FORCED_CLOSE_FAIL: Failed to close {main_pos['symbol']} via REST.")
+                        continue # Skip adding to signal queue
+
                     signal_to_add = TradingSignal(signal_type=SignalType.POSITION_CLOSE, symbol=main_pos['symbol'], side=main_pos['side'], size=main_pos['size'], price=main_pos['price'], timestamp=time.time(), metadata={'source': 'reconcile', 'position_idx': main_pos['position_idx']}, priority=1)
                 elif donor_pos and main_pos and (abs(donor_pos['size'] - main_pos['size']) > 1e-9 or donor_pos['side'] != main_pos['side']):
                     to_modify += 1
@@ -5759,6 +5824,7 @@ class FinalTradingMonitor:
                     logger.info(f"RECONCILE: ENQUEUE {signal_to_add.signal_type.name} {key} size={signal_to_add.size} side={signal_to_add.side}")
                     await self.signal_processor.add_signal(signal_to_add)
                     enqueued_signals += 1
+                    self.reconcile_enqueued_last_minute.append(time.time())
 
             summary_log = f"RECONCILE: fetched donor={len(donor_positions)}, main={len(main_positions)} | to_open={to_open}, to_close={to_close}, to_modify={to_modify}"
             logger.info(summary_log)
@@ -5769,6 +5835,43 @@ class FinalTradingMonitor:
         except Exception as e:
             logger.error(f"RECONCILE: Critical error during reconciliation cycle: {e}", exc_info=True)
             await send_telegram_alert(f"🔥 RECONCILE FAILED: {e}")
+
+        # Auto-healer logic
+        try:
+            exchange_positions_raw = await self.main_client.get_positions()
+            db_positions_raw = positions_writer.get_open_positions(TARGET_ACCOUNT_ID)
+
+            exchange_keys = {f"{p.get('symbol')}#{int(p.get('positionIdx', 0))}" for p in exchange_positions_raw if safe_float(p.get('size')) > 0}
+            db_keys = {f"{p.get('symbol')}#{int(p.get('position_idx', 0))}" for p in db_positions_raw}
+
+            to_heal = db_keys - exchange_keys
+            if to_heal:
+                logger.info(f"AUTO_HEAL: Found {len(to_heal)} positions to hard-close in DB.")
+                healed_count = 0
+                for key in to_heal:
+                    symbol, pos_idx_str = key.split('#')
+                    pos_idx = int(pos_idx_str)
+
+                    # Find the corresponding position in the db_positions_raw list
+                    stale_pos = next((p for p in db_positions_raw if p.get('symbol') == symbol and int(p.get('position_idx', 0)) == pos_idx), None)
+                    if stale_pos:
+                        synthetic_payload = {
+                            "symbol": stale_pos['symbol'],
+                            "qty": stale_pos['qty'],
+                            "side": stale_pos['side'],
+                            "close_price": stale_pos.get('mark_price') or stale_pos.get('entry_price'),
+                            "source": "auto_heal",
+                            "account_id": TARGET_ACCOUNT_ID,
+                            "ts": utc_now_iso(),
+                            "position_idx": pos_idx,
+                        }
+                        await positions_writer.log_close(synthetic_payload)
+                        healed_count += 1
+                if healed_count > 0:
+                    logger.info(f"AUTO_HEAL_CLOSED n={healed_count}")
+        except Exception as e:
+            logger.error(f"AUTO_HEAL: Critical error during auto-healing cycle: {e}", exc_info=True)
+
 
     async def _periodic_reconciliation_loop(self, interval_sec: int = 60):
         """Бесконечный цикл, который периодически запускает сверку позиций."""
@@ -6235,18 +6338,34 @@ class FinalTradingMonitor:
             logger.info(f"Uptime: {uptime:.0f}s ({uptime/3600:.1f}h)")
             logger.info(f"Memory usage: {memory_usage:.1f} MB")
             logger.info("")
+
+            logger.info("SYSTEM STATE:")
+            logger.info(f"  Copy Connected: {copy_connected}")
+            logger.info(f"  Trade Executor Connected: {trade_executor_connected}")
+            logger.info(f"  DB Open Positions: {db_open_positions}")
+            logger.info(f"  Exchange Open Positions: {exchange_open_positions}")
+            logger.info(f"  Reconcile Enqueued (last 1m): {reconcile_enqueued_minute}")
+            logger.info("")
             
             logger.info("API CLIENTS:")
             logger.info(f"  Source: {source_stats['success_rate']:.1f}% success, {source_stats['avg_response_time']:.3f}s avg")
             logger.info(f"  Main: {main_stats['success_rate']:.1f}% success, {main_stats['avg_response_time']:.3f}s avg")
             logger.info("")
             
+            copy_connected = getattr(self.stage2_system, 'copy_connected', False)
+            trade_executor_connected = getattr(self.stage2_system, 'trade_executor_connected', False)
+            reconcile_now = time.time()
+            reconcile_enqueued_minute = len([t for t in self.reconcile_enqueued_last_minute if reconcile_now - t <= 60])
+
+            db_open_positions = len(positions_writer.get_open_positions(TARGET_ACCOUNT_ID))
+            exchange_open_positions = len([p for p in await self.main_client.get_positions() if safe_float(p.get('size', 0)) > 0])
+
             logger.info("WEBSOCKET (FINAL FIXED VERSION):")
             logger.info(f"  Status: {ws_stats['status']}")
             logger.info(f"  Open: {ws_stats.get('websocket_open', 'Unknown')}")
             logger.info(f"  Version: websockets {ws_stats.get('websockets_version', 'unknown')}")
             logger.info(f"  Fixes Applied: {ws_stats.get('websocket_fixes_applied', False)} ✅")
-            logger.info(f"  Messages: {ws_stats['messages_received']} received, {ws_stats['messages_processed']} processed")
+            logger.info(f"  Messages: {ws_stats.get('ws_received_total', 0)} received, {ws_stats.get('ws_processed_private', 0)} processed private")
             logger.info(f"  Ping/Pong: {ws_stats.get('ping_pong_success_rate', 0):.1f}% success rate")
             logger.info(f"  Auto Ping: DISABLED ✅ (Fixed)")
             logger.info(f"  Bybit Ping: ENABLED ✅ (Fixed)")

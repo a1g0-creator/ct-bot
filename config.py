@@ -23,3 +23,6 @@ TELEGRAM_CHAT_ID = "dummy_chat_id"
 
 # Account type for balance calculations (e.g., "UNIFIED", "DERIVATIVES")
 BALANCE_ACCOUNT_TYPE = "UNIFIED"
+
+# Dry run mode for testing without executing real trades
+dry_run = False
