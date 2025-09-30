@@ -3300,12 +3300,17 @@ class Stage2CopyTradingSystem:
             order_side = 'Buy' if delta > 0 else 'Sell'
             order_qty = abs(delta)
 
-            # Determine positionIdx based on the side of the order being placed
-            final_position_idx = 1 if order_side == 'Buy' else 2
+            # Correctly determine reduceOnly and positionIdx
+            is_reducing_long = main_signed_qty > 0 and delta < 0
+            is_reducing_short = main_signed_qty < 0 and delta > 0
+            reduce_only_flag = is_reducing_long or is_reducing_short
 
-            # Determine reduceOnly flag. True only if reducing an existing position.
-            is_reducing = (main_signed_qty > 0 and delta < 0) or (main_signed_qty < 0 and delta > 0)
-            reduce_only_flag = is_reducing
+            if reduce_only_flag:
+                # If reducing, use the index of the existing position
+                final_position_idx = 1 if main_signed_qty > 0 else 2
+            else:
+                # If opening/increasing, use the index corresponding to the order's side
+                final_position_idx = 1 if order_side == 'Buy' else 2
 
             # Determine signal type for logging/metadata
             is_opening = main_signed_qty == 0 and donor_signed_qty != 0
