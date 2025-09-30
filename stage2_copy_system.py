@@ -2050,8 +2050,6 @@ class PositionCopyManager:
                 symbol=copy_order.target_symbol,
                 side=copy_order.target_side,
                 qty=copy_order.target_quantity,
-                price=copy_order.target_price,
-                order_type=copy_order.order_strategy.value.upper(),
                 status=OrderStatus.PENDING.value,
                 exchange_order_id=internal_order_id,
                 attempt=copy_order.retry_count + 1,
@@ -2070,8 +2068,6 @@ class PositionCopyManager:
                     symbol=copy_order.target_symbol,
                     side=copy_order.target_side,
                     qty=copy_order.target_quantity,
-                    price=copy_order.target_price,
-                    order_type=copy_order.order_strategy.value.upper(),
                     status=OrderStatus.PLACED.value, # Assuming market order is placed/filled instantly for logging
                     exchange_order_id=result.get('order_id', internal_order_id),
                     latency_ms=latency_ms,
@@ -3277,112 +3273,74 @@ class Stage2CopyTradingSystem:
                 logger.info(f"PIN_TO_MIN: target {final_target_size:.4f} < min_qty {min_qty} for {symbol} -> use min_qty")
                 final_target_size = min_qty
 
-            # 5. CALCULATE DELTA AND EXECUTE
-            is_flip = current_target_side and donor_side and current_target_side != donor_side
-
-            if is_flip:
-                logger.info(f"FLIP DETECTED: {symbol} from {current_target_side} to {donor_side}")
-
-                # Step 1: Close existing position
-                close_side = 'Sell' if current_target_side == 'Buy' else 'Buy'
-                logger.info(f"FLIP_CLOSE: Closing {current_target_size} of {symbol} with a {close_side} order.")
-                close_order = CopyOrder(
-                    source_signal=None,
-                    target_symbol=symbol,
-                    target_side=close_side,
-                    target_quantity=current_target_size,
-                    target_price=entry_price,
-                    order_strategy=OrderStrategy.MARKET,
-                    kelly_fraction=0, # Not applicable for closing
-                    priority=0,
-                    metadata={'reason': 'ws_flip_close', 'reduceOnly': True, 'position_idx': pos_idx}
-                )
-                close_result = await self.copy_manager.order_manager.place_adaptive_order(close_order)
-
-                if not close_result.get('success'):
-                    logger.error(f"FLIP_CLOSE FAILED for {symbol}. Aborting flip.")
-                    return
-
-                logger.info(f"FLIP_CLOSE for {symbol} successful.")
-                await asyncio.sleep(1) # Small delay to allow position to update
-
-                # Step 2: Open new position
-                logger.info(f"FLIP_OPEN: Opening {final_target_size} of {symbol} with a {donor_side} order.")
-                open_order = CopyOrder(
-                    source_signal=None,
-                    target_symbol=symbol,
-                    target_side=donor_side,
-                    target_quantity=final_target_size,
-                    target_price=entry_price,
-                    order_strategy=OrderStrategy.MARKET,
-                    kelly_fraction=kelly_fraction,
-                    priority=1,
-                    metadata={'reason': 'ws_flip_open', 'reduceOnly': False, 'position_idx': pos_idx}
-                )
-                order_result = await self.copy_manager.order_manager.place_adaptive_order(open_order)
-
+            # 5. CALCULATE DELTA AND EXECUTE (SIGNED QUANTITY LOGIC)
+            # donor_signed: + for Buy, - for Sell. If donor has no position, target is 0.
+            if donor_size > 0:
+                donor_signed_qty = final_target_size if donor_side == 'Buy' else -final_target_size
             else:
-                # Original delta logic for non-flip scenarios
-                size_delta = final_target_size - current_target_size
+                donor_signed_qty = 0
 
-                is_opening = current_target_size == 0 and final_target_size > 0
-                is_closing = final_target_size == 0 and current_target_size > 0
-                is_modifying = not is_opening and not is_closing
+            # main_signed: + for Buy, - for Sell
+            main_signed_qty = current_target_size if current_target_side == 'Buy' else -current_target_size
 
-                # If a modify signal comes in before we are connected, queue it.
-                if is_modifying and not self.copy_connected:
-                    if len(self._pending_modify) < self._max_pending_modify:
-                        self._pending_modify.append(item)
-                        logger.info(
-                            f"⏸️ MODIFY_DEFERRED: symbol={symbol} side={donor_side} size={donor_size} "
-                            f"(queue_len={len(self._pending_modify)}/{self._max_pending_modify})"
-                        )
-                    else:
-                        logger.warning(f"Pending modify queue is full. Dropping signal for {symbol}.")
-                    return
+            delta = donor_signed_qty - main_signed_qty
 
-                # Hysteresis check: skip tiny modifications, but NEVER skip a full close.
-                if not is_closing and abs(size_delta) < min_qty:
-                    logger.info(f"HYSTERESIS_SKIP: Delta {size_delta:.6f} for {symbol} is smaller than min_qty {min_qty}. No action.")
-                    return
+            logger.info(
+                f"POSITION_MODIFY: symbol={symbol} donor_signed={donor_signed_qty:.4f} main_signed={main_signed_qty:.4f} -> delta={delta:.4f}"
+            )
 
-                logger.info(
-                    f"POSITION_MODIFY: symbol={symbol} donor={donor_size:.4f} main={current_target_size:.4f} "
-                    f"-> target={final_target_size:.4f} | delta={size_delta:.4f}"
-                )
+            # Hysteresis check: skip tiny modifications, but never a full close
+            if abs(delta) < min_qty and donor_signed_qty != 0:
+                logger.info(f"HYSTERESIS_SKIP: Delta {abs(delta):.6f} for {symbol} is smaller than min_qty {min_qty}. No action.")
+                return
 
-                order_side = 'Buy' if size_delta > 0 else 'Sell'
-                order_qty = abs(size_delta)
+            if abs(delta) < 1e-9: # Effectively zero
+                return
 
-                reason = "ws_open" if is_opening else "ws_close" if is_closing else "ws_modify"
+            order_side = 'Buy' if delta > 0 else 'Sell'
+            order_qty = abs(delta)
 
-                logger.info(f"COPY_ACTION: {reason.upper()} for {symbol} | Qty: {order_qty:.4f} | Side: {order_side}")
+            # Determine positionIdx based on the side of the order being placed
+            final_position_idx = 1 if order_side == 'Buy' else 2
 
-                # Create a synthetic signal to pass to the queue processor
-                synthetic_signal = TradingSignal(
-                    signal_type=SignalType.POSITION_OPEN if is_opening else SignalType.POSITION_CLOSE if is_closing else SignalType.POSITION_MODIFY,
-                    symbol=symbol,
-                    side=donor_side if is_opening or is_modifying else ('Sell' if current_target_side == 'Buy' else 'Buy'),
-                    size=order_qty,
-                    price=entry_price,
-                    timestamp=time.time(),
-                    metadata={'reason': reason, 'reduceOnly': size_delta < 0, 'pos_idx': pos_idx}
-                )
+            # Determine reduceOnly flag. True only if reducing an existing position.
+            is_reducing = (main_signed_qty > 0 and delta < 0) or (main_signed_qty < 0 and delta > 0)
+            reduce_only_flag = is_reducing
 
-                order = CopyOrder(
-                    source_signal=synthetic_signal,
-                    target_symbol=symbol,
-                    target_side=order_side,
-                    target_quantity=order_qty,
-                    target_price=entry_price,
-                    order_strategy=OrderStrategy.MARKET,
-                    kelly_fraction=kelly_fraction,
-                    priority=0 if is_closing else (1 if is_opening else 2), # Close highest priority
-                    metadata={'reason': reason, 'reduceOnly': size_delta < 0, 'position_idx': pos_idx}
-                )
+            # Determine signal type for logging/metadata
+            is_opening = main_signed_qty == 0 and donor_signed_qty != 0
+            is_closing = main_signed_qty != 0 and donor_signed_qty == 0
 
-                # Put the order on the queue to be processed by the main loop
-                await self.copy_manager.copy_queue.put((order.priority, order.created_at, order))
+            reason = "ws_open" if is_opening else "ws_close" if is_closing else "ws_modify"
+            signal_type_enum = SignalType.POSITION_OPEN if is_opening else SignalType.POSITION_CLOSE if is_closing else SignalType.POSITION_MODIFY
+
+            logger.info(f"COPY_ACTION: {reason.upper()} for {symbol} | Qty: {order_qty:.4f} | Side: {order_side} | reduceOnly: {reduce_only_flag} | posIdx: {final_position_idx}")
+
+            # Create a synthetic signal to pass to the queue processor
+            synthetic_signal = TradingSignal(
+                signal_type=signal_type_enum,
+                symbol=symbol,
+                side=order_side, # The side of the order we are placing
+                size=order_qty,
+                price=entry_price,
+                timestamp=time.time(),
+                metadata={'reason': reason, 'reduceOnly': reduce_only_flag, 'pos_idx': final_position_idx}
+            )
+
+            order = CopyOrder(
+                source_signal=synthetic_signal,
+                target_symbol=symbol,
+                target_side=order_side,
+                target_quantity=order_qty,
+                target_price=entry_price,
+                order_strategy=OrderStrategy.MARKET,
+                kelly_fraction=kelly_fraction,
+                priority=0 if is_closing else (1 if is_opening else 2), # Close highest priority
+                metadata={'reason': reason, 'reduceOnly': reduce_only_flag, 'position_idx': final_position_idx}
+            )
+
+            # Put the order on the queue to be processed by the main loop
+            await self.copy_manager.copy_queue.put((order.priority, order.created_at, order))
 
             # --- Margin Mirroring Logic ---
             if MARGIN_CONFIG.get('enabled') and item.get('tradeMode') == 'isolated':

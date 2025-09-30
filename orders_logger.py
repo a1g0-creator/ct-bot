@@ -85,8 +85,8 @@ class OrdersLogger:
                     symbol=symbol,
                     side=side,
                     qty=qty,
-                    price=price,
-                    order_type=order_type,
+                    # price=price, # Removed: not in db_models.py
+                    # order_type=order_type, # Removed: not in db_models.py
                     status=status,
                     exchange_order_id=exchange_order_id or f"pending_{int(time.time()*1000)}",
                     attempt=attempt,

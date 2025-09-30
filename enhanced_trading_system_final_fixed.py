@@ -2619,7 +2619,7 @@ class EnhancedBybitClient:
         # Add any other caches here in the future
         await asyncio.sleep(0) # Yield control to allow other tasks to run
 
-    async def _make_single_request(self, method: str, endpoint: str, params: dict = None, data: dict = None) -> Optional[dict]:
+    async def _make_single_request(self, method: str, endpoint: str, params: dict = None, data: dict = None, allow_ret_codes: list = None) -> Optional[dict]:
         """
         CRITICAL FIX: Unified single request with enterprise connection management and detailed diagnostics.
         ЗАМЕНЯЕТ ОБА СТАРЫХ ПОДХОДА на один оптимизированный.
@@ -2724,8 +2724,8 @@ class EnhancedBybitClient:
 
             # Обработка ответа
             if response.status == 200:
-                if ret_code == 0:
-                    logger.debug(f"{self.name} - Request successful: {endpoint}")
+                if ret_code == 0 or (allow_ret_codes and ret_code in allow_ret_codes):
+                    logger.debug(f"{self.name} - Request successful: {endpoint} (retCode: {ret_code})")
                     result = response_data
                     self.request_stats['successful_requests'] += 1
                     if self.copy_state and self.name == "MAIN": self.copy_state.main_rest_ok = True
@@ -3198,7 +3198,7 @@ class EnhancedBybitClient:
             return None
 
     async def set_leverage(self, category: str, symbol: str, leverage: str, on_success_callback: Optional[Callable] = None) -> dict:
-        """Sets leverage and calls a callback on success."""
+        """Sets leverage and calls a callback on success. Returns the raw API response."""
         try:
             data = {
                 "category": category,
@@ -3208,27 +3208,31 @@ class EnhancedBybitClient:
             }
             logger.info(f"{self.name} - Setting leverage for {symbol} to {leverage}x")
 
-            result = await self._make_single_request("POST", "position/set-leverage", data=data)
+            result = await self._make_single_request(
+                "POST",
+                "position/set-leverage",
+                data=data,
+                allow_ret_codes=[110043]
+            )
 
             ret_code = (result or {}).get("retCode")
-            success = ret_code == 0 or ret_code == 110043
 
-            if success:
-                logger.info(f"Leverage for {symbol} is now {leverage}x (retCode: {ret_code}).")
-                if on_success_callback:
-                    try:
-                        on_success_callback(symbol, int(leverage))
-                    except Exception as cb_exc:
-                        logger.error(f"Error in set_leverage on_success_callback: {cb_exc}", exc_info=True)
-                return {"success": True, "already_set": ret_code == 110043, "result": result}
+            if ret_code == 110043:
+                logger.info(f"Leverage for {symbol} is already {leverage}x (retCode: 110043).")
             else:
-                error_msg = result.get('retMsg', 'Unknown error') if result else 'No response'
-                logger.error(f"{self.name} - Failed to set leverage for {symbol}: {error_msg} (retCode: {ret_code})")
-                return {"success": False, "error": error_msg, "result": result}
+                logger.info(f"Leverage for {symbol} set to {leverage}x (retCode: {ret_code}).")
+
+            if on_success_callback:
+                try:
+                    on_success_callback(symbol, int(leverage))
+                except Exception as cb_exc:
+                    logger.error(f"Error in set_leverage on_success_callback: {cb_exc}", exc_info=True)
+
+            return result
 
         except Exception as e:
             logger.error(f"{self.name} - Set leverage error for {symbol}: {e}", exc_info=True)
-            return {"success": False, "error": str(e)}
+            return {"retCode": -1, "retMsg": str(e), "result": {}}
 
     async def add_margin(self, symbol: str, margin: str, position_idx: int = 0) -> dict:
         """Adds margin to an isolated margin position."""
