@@ -6346,6 +6346,20 @@ class FinalTradingMonitor:
             logger.info("")
 
             logger.info("SYSTEM STATE:")
+
+            # Trailing Stop Status
+            trailing_enabled_str = "N/A"
+            trailing_mode_str = "N/A"
+            if hasattr(self, 'stage2_system') and self.stage2_system and hasattr(self.stage2_system, 'trailing_manager'):
+                try:
+                    # Use the public method to get a safe snapshot of the config
+                    trailing_cfg = self.stage2_system.trailing_manager.get_config_snapshot()
+                    trailing_enabled_str = str(trailing_cfg.get('enabled', 'N/A'))
+                    trailing_mode_str = str(trailing_cfg.get('mode', 'N/A'))
+                except Exception as e:
+                    logger.exception("Could not retrieve trailing_manager config for status report: %s", e)
+            logger.info(f"  Trailing: enabled={trailing_enabled_str}, mode={trailing_mode_str}")
+
             logger.info(f"  Copy Connected: {copy_connected}")
             logger.info(f"  Trade Executor Connected: {trade_executor_connected}")
             logger.info(f"  DB Open Positions: {db_open_positions}")

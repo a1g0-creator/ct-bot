@@ -29,12 +29,24 @@ from typing import Dict, List, Optional, Tuple, Any, Union
 from dataclasses import dataclass, field
 from enum import Enum
 from collections import deque, defaultdict, namedtuple
+import asyncio
+import time
+import json
+import logging
+import numpy as np
+import pandas as pd
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional, Tuple, Any, Union
+from dataclasses import dataclass, field
+from enum import Enum
+from collections import deque, defaultdict, namedtuple
 import math
 import statistics
 from scipy.optimize import minimize_scalar
 from scipy.stats import norm
 import traceback
 import uuid
+import os
 from decimal import Decimal
 import aiohttp
 
@@ -95,9 +107,14 @@ KELLY_CONFIG = {
     'rebalance_threshold': 0.1              # Порог для ребалансировки (10%)
 }
 
+def _parse_bool_env(var_name: str, default: bool) -> bool:
+    """Parses a boolean value from an environment variable."""
+    value = os.getenv(var_name, str(default)).lower()
+    return value in ("1", "true", "yes", "on")
+
 # Trailing Stop-Loss настройки
 TRAILING_CONFIG = {
-    'enabled': True,
+    'enabled': _parse_bool_env('TRAILING_ENABLED', True),
     'mode': 'conservative', # "aggressive" or "conservative"
     'activation_pct': 0.015, # 1.5%
     'step_pct': 0.002, # 0.2%
@@ -1072,8 +1089,8 @@ class DynamicTrailingStopManager:
 
     async def create_or_update_trailing_stop(self, position_data: Dict[str, Any], ref_price_type: str = 'entry'):
         """
-        Calculates and sets a trailing stop using the v5/position/trading-stop endpoint.
-        This method is now idempotent, checks existing values, and includes a debounce mechanism.
+        Calculates and sets a trailing stop for both LONG and SHORT positions using v5/position/trading-stop.
+        This method is idempotent, checks existing values, and includes a debounce mechanism.
         """
         symbol = position_data.get('symbol')
         position_idx = int(position_data.get('position_idx', 0))
@@ -1081,88 +1098,83 @@ class DynamicTrailingStopManager:
         try:
             # 1. Debounce check
             now = time.time()
-            last_update = self._ts_update_timestamps.get(symbol, 0)
+            last_update_key = (symbol, position_idx)
+            last_update = self._ts_update_timestamps.get(last_update_key, 0)
             if now - last_update < 2:  # 2-second debounce
-                logger.info(f"TS_DEBOUNCE: Skipping update for {symbol}, last update was {now - last_update:.1f}s ago.")
+                logger.info(f"TS_DEBOUNCE: Skipping update for {symbol} idx={position_idx}, last update was {now - last_update:.1f}s ago.")
                 return
-            self._ts_update_timestamps[symbol] = now
+            self._ts_update_timestamps[last_update_key] = now
 
             if not self.cfg.get('enabled'):
-                logger.info(f"TS_SKIP: Trailing stops are disabled globally for {symbol}.")
+                logger.info(f"TS_SKIP: Trailing stops are disabled globally for {symbol} idx={position_idx}.")
                 return
 
-            entry_price = float(position_data.get('entryPrice', 0)) # Corrected key
+            entry_price = float(position_data.get('entryPrice', 0))
             position_value = float(position_data.get('size', 0)) * entry_price
             if position_value < self.cfg.get('min_notional_for_ts', 0):
-                logger.info(f"TS_SKIP: Position value ${position_value:.2f} for {symbol} is below threshold.")
+                logger.info(f"TS_SKIP: Position value ${position_value:.2f} for {symbol} idx={position_idx} is below threshold.")
                 return
 
-            # 2. Fetch current position state from Bybit
+            # 2. Fetch current position state from Bybit to get the most up-to-date values
             positions = await self.main_client.get_positions(category="linear", symbol=symbol)
             current_pos = next((p for p in positions if int(p.get('positionIdx', -1)) == position_idx), None)
 
             if not current_pos:
-                logger.warning(f"TS_WARN: Could not find current position for {symbol} to compare.")
+                logger.warning(f"TS_WARN: Could not find current position for {symbol} idx={position_idx} to compare.")
                 return
 
             current_ts = safe_float(current_pos.get('trailingStop', 0.0))
             current_active_price = safe_float(current_pos.get('activePrice', 0.0))
 
-            # 3. Calculate new TS values
-            side = position_data.get('side', 'Buy')
-            ref_price = float(current_pos.get('markPrice', entry_price)) # Prefer mark price for stability
+            # 3. Calculate new TS values based on direction (position_idx)
+            side = "Long" if position_idx == 1 else "Short" if position_idx == 2 else "Unknown"
+            ref_price = float(current_pos.get('markPrice', entry_price))
 
             filters = await self.main_client.get_symbol_filters(symbol, category="linear")
             tick_size = float(filters.get("tick_size", 0.01))
 
-            # Correct logic: activePrice is absolute, trailingStop is an absolute delta
             activation_pct = float(self.cfg.get('activation_pct', 0.015))
             step_pct = float(self.cfg.get('step_pct', 0.002))
 
-            if side.lower() == "buy":
-                active_price = self._round_to_tick(ref_price * (1.0 + activation_pct), tick_size)
+            if side == "Long": # position_idx == 1
+                triggerDirection = 2  # Fall
+                active_price = self._round_to_tick(ref_price * (1 + activation_pct), tick_size)
+            elif side == "Short": # position_idx == 2
+                triggerDirection = 1  # Rise
+                active_price = self._round_to_tick(ref_price * (1 - activation_pct), tick_size)
             else:
-                active_price = self._round_to_tick(ref_price * (1.0 - activation_pct), tick_size)
+                logger.error(f"TS_FAIL: Invalid position_idx ({position_idx}) for {symbol}. Cannot determine direction.")
+                return
 
             trailing_step = self._round_to_tick(ref_price * step_pct, tick_size)
 
-            logger.info(f"TS_PARAM_RESOLVED{{activePrice={active_price}, trailingStop={trailing_step}, from='percent', price_ref='{ref_price}'}}")
+            logger.info(
+                f"Trailing set/updated: symbol={symbol}, position_idx={position_idx}, side={side}, "
+                f"activePrice={active_price}, trailingStop={trailing_step}, triggerDirection={triggerDirection}, source='stage2'"
+            )
 
             # 4. Compare with existing values (with tolerance)
-            is_ts_same = abs(current_ts - trailing_step) < (tick_size / 2) if current_ts is not None else False
-            is_active_price_same = abs(current_active_price - active_price) < (tick_size / 2) if current_active_price is not None else False
+            is_ts_same = abs(current_ts - trailing_step) < (tick_size / 2) if current_ts != 0 else False
+            is_active_price_same = abs(current_active_price - active_price) < (tick_size / 2) if current_active_price != 0 else False
 
-            # If active price is not set yet, we should not consider it "the same"
             if current_active_price == 0 and active_price > 0:
                 is_active_price_same = False
 
             if is_ts_same and is_active_price_same:
-                logger.info(f"TS_SKIP_IDENTICAL: symbol={symbol} activePrice={current_active_price} trailingStop={current_ts}")
+                logger.info(f"TS_SKIP_IDENTICAL: symbol={symbol} idx={position_idx} activePrice={current_active_price} trailingStop={current_ts}")
                 return
 
-            # 4.5 Bybit constraint check
-            last_price = safe_float(current_pos.get('lastPrice', 0.0))
-            avg_price = safe_float(current_pos.get('sessionAvgPrice', entry_price))
-
-            if side.lower() == "buy":
-                if active_price <= max(avg_price, last_price):
-                    logger.warning(f"TS_SKIP_CONSTRAINT: Long TS active_price ({active_price}) must be > max(sessionAvgPrice, lastPrice) ({max(avg_price, last_price)}) for {symbol}.")
-                    return
-            else: # Short
-                if active_price >= min(avg_price, last_price):
-                    logger.warning(f"TS_SKIP_CONSTRAINT: Short TS active_price ({active_price}) must be < min(sessionAvgPrice, lastPrice) ({min(avg_price, last_price)}) for {symbol}.")
-                    return
-
-            # 5. Set the trailing stop if values differ
+            # 5. Set the trailing stop
             await self.order_manager.place_trailing_stop(
                 symbol=symbol,
                 trailing_stop_price=str(trailing_step),
-                active_price=str(active_price) if not is_active_price_same else "",
-                position_idx=position_idx
+                active_price=str(active_price) if not is_active_price_same else None,
+                position_idx=position_idx,
+                trigger_direction=triggerDirection
             )
 
         except Exception as e:
-            logger.error(f"TS_FAIL(create_or_update): Failed for {symbol}", exc_info=True)
+            logger.error(f"TS_FAIL(create_or_update): Failed for {symbol} idx={position_idx}", exc_info=True)
 
     # --- Adapter Methods for Lifecycle Integration ---
 
@@ -1688,7 +1700,7 @@ class AdaptiveOrderManager:
             self.logger.exception(f"Aggressive limit order error: {e}")
             return {"success": False, "error": str(e)}
 
-    async def place_trailing_stop(self, symbol: str, trailing_stop_price: str, active_price: Optional[str] = None, position_idx: int = 0):
+    async def place_trailing_stop(self, symbol: str, trailing_stop_price: str, active_price: Optional[str] = None, position_idx: int = 0, trigger_direction: Optional[int] = None):
         input_ts = trailing_stop_price
 
         # Normalize the input to determine the value to be sent to the API
@@ -1711,10 +1723,16 @@ class AdaptiveOrderManager:
                 data["takeProfit"] = "0"
                 data["stopLoss"] = "0"
             else:
-                self.logger.info(f"TS_APPLY_START: symbol={symbol}, trailingStop='{sent_ts}', activePrice='{active_price}', positionIdx={position_idx}")
+                log_msg = (
+                    f"TS_APPLY_START: symbol={symbol}, trailingStop='{sent_ts}', "
+                    f"activePrice='{active_price}', positionIdx={position_idx}, triggerDirection={trigger_direction}"
+                )
+                self.logger.info(log_msg)
                 data["trailingStop"] = sent_ts
                 if active_price:
                     data["activePrice"] = active_price
+                if trigger_direction:
+                    data["triggerDirection"] = trigger_direction
 
             self.logger.debug(f"TS Payload for {symbol}: {json.dumps(data)}")
             result = await self.main_client._make_single_request("POST", "position/trading-stop", data=data)
@@ -2070,16 +2088,53 @@ class PositionCopyManager:
                     elif copy_order.source_signal.signal_type == SignalType.POSITION_CLOSE:
                         await self._cleanup_position_tracking(copy_order, result)
 
-                    # 4) Manage Trailing Stop
+                    # 4) Manage Trailing Stop (Asynchronously with Retries)
                     try:
                         signal_type = copy_order.source_signal.signal_type
-                        position_state = self.active_positions.get(copy_order.target_symbol)
-                        if signal_type == SignalType.POSITION_OPEN and position_state:
-                            await self.trailing_manager.create_trailing_stop(position_state)
-                        elif signal_type == SignalType.POSITION_MODIFY and position_state:
-                            await self.trailing_manager.update_trailing_stop(position_state)
+                        # Trigger for OPEN or MODIFY that increases position size
+                        is_increase = (signal_type == SignalType.POSITION_OPEN or
+                                       (signal_type == SignalType.POSITION_MODIFY and not copy_order.metadata.get('reduceOnly', False)))
+
+                        if is_increase:
+                            logger.info(f"Scheduling trailing stop for {copy_order.target_symbol} (signal: {signal_type.value})")
+
+                            async def _set_trailing_with_retry(order_to_trail: CopyOrder):
+                                """Retries setting the trailing stop until the position is visible on the main account."""
+                                max_retries = 10
+                                delay = 0.2  # Initial delay
+                                for attempt in range(max_retries):
+                                    try:
+                                        pos_idx = order_to_trail.metadata.get('position_idx', 0)
+                                        symbol = order_to_trail.target_symbol
+
+                                        positions = await self.main_client.get_positions(category="linear", symbol=symbol)
+                                        main_pos = next((p for p in positions if int(p.get('positionIdx', -1)) == pos_idx), None)
+
+                                        if main_pos and safe_float(main_pos.get('size', 0)) > 0:
+                                            logger.info(f"Position {symbol} (idx={pos_idx}) found on MAIN. Setting/updating trailing stop (attempt {attempt + 1}).")
+                                            await self.trailing_manager.create_or_update_trailing_stop(main_pos)
+                                            return  # Success
+                                        else:
+                                            logger.info(f"Trailing deferred for {symbol} (idx={pos_idx}), position not yet visible. Attempt {attempt + 1}/{max_retries}.")
+
+                                    except Exception as e:
+                                        logger.error(f"Error in trailing stop retry task (attempt {attempt + 1}): {e}", exc_info=True)
+
+                                    await asyncio.sleep(delay)
+                                    delay = min(delay * 2, 15)  # Exponential backoff up to 15s
+
+                                logger.error(f"Failed to set trailing stop for {order_to_trail.target_symbol} after {max_retries} retries.")
+
+                            # Create the background task to avoid blocking the copy pipeline
+                            asyncio.create_task(_set_trailing_with_retry(copy_order))
+
                         elif signal_type == SignalType.POSITION_CLOSE:
-                            await self.trailing_manager.remove_trailing_stop({'symbol': copy_order.target_symbol})
+                            # For full close, we can still attempt to remove the trailing stop
+                            await self.trailing_manager.remove_trailing_stop({
+                                'symbol': copy_order.target_symbol,
+                                'position_idx': copy_order.metadata.get('position_idx', 0)
+                            })
+
                     except Exception as e:
                         logger.error(f"TS_LIFECYCLE_FAIL: Unhandled exception in trailing stop management for {copy_order.target_symbol}", exc_info=True)
 
@@ -2898,6 +2953,9 @@ class Stage2CopyTradingSystem:
         # ✅ Инициализация и алиас для Kelly Calculator (совместимость с Telegram)
         self.kelly_calculator = self.copy_manager.kelly_calculator
         self.kelly_calculator.apply_config(KELLY_CONFIG)
+
+        # ✅ Экспонируем trailing_manager для внешнего доступа (например, для телеметрии)
+        self.trailing_manager = self.copy_manager.trailing_manager
 
         # 5) Состояние системы
         self.system_active = False
