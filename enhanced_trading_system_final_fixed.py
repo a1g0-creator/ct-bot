@@ -5182,125 +5182,74 @@ class ProductionSignalProcessor:
         self._last_set_leverage.clear()
         logger.info("SIGNAL_PROCESSOR: Caches (known_positions, _last_set_leverage) cleared.")
     
+    async def _handle_signal_with_stage2_check(self, signal: TradingSignal, signal_type_str: str):
+        """Generic handler to check Stage-2 readiness before forwarding a signal."""
+        try:
+            # Check for Stage-2 readiness and attempt recovery if needed
+            if await self.monitor._ensure_stage2_ready():
+                if hasattr(self, '_copy_system_callback') and self._copy_system_callback:
+                    try:
+                        await self._copy_system_callback(signal)
+                        logger.info(f"✅ {signal_type_str} signal forwarded to copy system: {signal.symbol}")
+                        await send_telegram_alert(
+                            f"🔄 **СИГНАЛ '{signal_type_str}' ПЕРЕДАН В КОПИРОВАНИЕ**\n"
+                            f"Symbol: {signal.symbol} {signal.side} {signal.size:.6f}"
+                        )
+                    except Exception as e:
+                        logger.error(f"Copy system callback error for {signal_type_str}: {e}")
+                        await send_telegram_alert(f"❌ **ОШИБКА КОПИРОВАНИЯ '{signal_type_str}'**: {str(e)}")
+                else:
+                    logger.error(f"⚠️ Stage-2 recovery check passed, but _copy_system_callback is still not available.")
+            else:
+                logger.error(f"🔥 Stage-2 is not ready and could not be recovered. Signal for {signal.symbol} will be dropped.")
+                await send_telegram_alert(
+                    f"🔥 **СИГНАЛ ПРОПУЩЕН**\n"
+                    f"Система копирования (Stage-2) не готова и не смогла восстановиться.\n"
+                    f"Symbol: {signal.symbol} {signal.side}"
+                )
+        except Exception as e:
+            logger.exception(f"Error handling {signal_type_str} signal for {signal.symbol}: {e}")
+            await send_telegram_alert(f"❌ **КРИТИЧЕСКАЯ ОШИБКА ОБРАБОТКИ СИГНАЛА '{signal_type_str}'**: {str(e)}")
+
+
     async def _handle_position_open_signal(self, signal: TradingSignal):
         """ИСПРАВЛЕННАЯ обработка сигнала открытия позиции"""
-        try:
-            logger.info(f"🟢 POSITION OPEN DETECTED: {signal.symbol} {signal.side} {signal.size} @ {signal.price}")
-        
-            # Отправляем уведомление о новом сигнале
-            await send_telegram_alert(
-                f"🟢 **НОВАЯ ПОЗИЦИЯ ОБНАРУЖЕНА**\n"
-                f"Symbol: {signal.symbol}\n"
-                f"Side: {signal.side}\n"
-                f"Size: {signal.size}\n"
-                f"Price: ${signal.price:.4f}\n"
-                f"Time: {datetime.now().strftime('%H:%M:%S')}"
-            )
-        
-            # ✅ ИНТЕГРАЦИЯ: Если есть система копирования Этапа 2, передаем сигнал
-            if hasattr(self, '_copy_system_callback') and self._copy_system_callback:
-                try:
-                    await self._copy_system_callback(signal)
-                    logger.info(f"✅ Signal forwarded to copy system: {signal.symbol}")
-                
-                    await send_telegram_alert(
-                        f"🔄 **СИГНАЛ ПЕРЕДАН В КОПИРОВАНИЕ**\n"
-                        f"Symbol: {signal.symbol}\n"
-                        f"Action: OPEN {signal.side}\n"
-                        f"Size: {signal.size:.6f}"
-                    )
-                
-                except Exception as e:
-                    logger.error(f"Copy system callback error: {e}")
-                    await send_telegram_alert(f"❌ **ОШИБКА КОПИРОВАНИЯ**: {str(e)}")
-            else:
-                logger.warning("⚠️ Copy system not connected - signal not copied")
-                await send_telegram_alert(
-                    f"⚠️ **ПОЗИЦИЯ НЕ СКОПИРОВАНА**\n"
-                    f"Система копирования не подключена\n"
-                    f"Symbol: {signal.symbol} {signal.side}\n"
-                    f"Используйте integrated_launch_system.py для полной интеграции"
-                )
-            
-        except Exception as e:
-            logger.error(f"Position open signal error: {e}")
-            await send_telegram_alert(f"❌ **ОШИБКА ОБРАБОТКИ СИГНАЛА**: {str(e)}")
-    
+        logger.info(f"🟢 POSITION OPEN DETECTED: {signal.symbol} {signal.side} {signal.size} @ {signal.price}")
+        await send_telegram_alert(
+            f"🟢 **НОВАЯ ПОЗИЦИЯ ОБНАРУЖЕНА**\n"
+            f"Symbol: {signal.symbol}\n"
+            f"Side: {signal.side}\n"
+            f"Size: {signal.size}\n"
+            f"Price: ${signal.price:.4f}\n"
+            f"Time: {datetime.now().strftime('%H:%M:%S')}"
+        )
+        await self._handle_signal_with_stage2_check(signal, "OPEN")
+
     async def _handle_position_close_signal(self, signal: TradingSignal):
         """ИСПРАВЛЕННАЯ обработка сигнала закрытия позиции"""
-        try:
-            logger.info(f"🔴 POSITION CLOSE DETECTED: {signal.symbol} {signal.side} {signal.size} @ {signal.price}")
-        
-            # Отправляем уведомление о закрытии позиции
-            await send_telegram_alert(
-                f"🔴 **ПОЗИЦИЯ ЗАКРЫТА**\n"
-                f"Symbol: {signal.symbol}\n"
-                f"Side: {signal.side}\n"
-                f"Size: {signal.size}\n"
-                f"Price: ${signal.price:.4f}\n"
-                f"Time: {datetime.now().strftime('%H:%M:%S')}"
-            )
-        
-            # ✅ ИНТЕГРАЦИЯ: Если есть система копирования Этапа 2, передаем сигнал
-            if hasattr(self, '_copy_system_callback') and self._copy_system_callback:
-                try:
-                    await self._copy_system_callback(signal)
-                    logger.info(f"✅ Close signal forwarded to copy system: {signal.symbol}")
-                
-                    await send_telegram_alert(
-                        f"🔄 **ЗАКРЫТИЕ ПЕРЕДАНО В КОПИРОВАНИЕ**\n"
-                        f"Symbol: {signal.symbol}\n"
-                        f"Action: CLOSE {signal.side}\n"
-                        f"Size: {signal.size:.6f}"
-                    )
-                
-                except Exception as e:
-                    logger.error(f"Copy system close callback error: {e}")
-                    await send_telegram_alert(f"❌ **ОШИБКА ЗАКРЫТИЯ КОПИИ**: {str(e)}")
-            else:
-                logger.warning("⚠️ Copy system not connected - close signal not processed")
-            
-        except Exception as e:
-            logger.error(f"Position close signal error: {e}")
-            await send_telegram_alert(f"❌ **ОШИБКА ЗАКРЫТИЯ ПОЗИЦИИ**: {str(e)}")
+        logger.info(f"🔴 POSITION CLOSE DETECTED: {signal.symbol} {signal.side} {signal.size} @ {signal.price}")
+        await send_telegram_alert(
+            f"🔴 **ПОЗИЦИЯ ЗАКРЫТА**\n"
+            f"Symbol: {signal.symbol}\n"
+            f"Side: {signal.side}\n"
+            f"Size: {signal.size}\n"
+            f"Price: ${signal.price:.4f}\n"
+            f"Time: {datetime.now().strftime('%H:%M:%S')}"
+        )
+        await self._handle_signal_with_stage2_check(signal, "CLOSE")
 
     async def _handle_position_modify_signal(self, signal: TradingSignal):
         """ИСПРАВЛЕННАЯ обработка сигнала изменения позиции"""
-        try:
-            logger.info(f"🟡 POSITION MODIFY DETECTED: {signal.symbol} {signal.side} {signal.size} @ {signal.price}")
-
-            # Отправляем уведомление об изменении позиции
-            await send_telegram_alert(
-                f"🟡 **ПОЗИЦИЯ ИЗМЕНЕНА**\n"
-                f"Symbol: {signal.symbol}\n"
-                f"Side: {signal.side}\n"
-                f"New Size: {signal.size}\n"
-                f"Price: ${signal.price:.4f}\n"
-                f"Time: {datetime.now().strftime('%H:%M:%S')}"
-            )
-
-            # ✅ ИНТЕГРАЦИЯ: Если есть система копирования Этапа 2, передаем сигнал
-            if hasattr(self, '_copy_system_callback') and self._copy_system_callback:
-                try:
-                    await self._copy_system_callback(signal)
-                    logger.info(f"✅ Modify signal forwarded to copy system: {signal.symbol}")
-
-                    await send_telegram_alert(
-                        f"🔄 **ИЗМЕНЕНИЕ ПЕРЕДАНО В КОПИРОВАНИЕ**\n"
-                        f"Symbol: {signal.symbol}\n"
-                        f"Action: MODIFY {signal.side}\n"
-                        f"New Size: {signal.size:.6f}"
-                    )
-
-                except Exception as e:
-                    logger.error(f"Copy system modify callback error: {e}")
-                    await send_telegram_alert(f"❌ **ОШИБКА ИЗМЕНЕНИЯ КОПИИ**: {str(e)}")
-            else:
-                logger.warning("⚠️ Copy system not connected - modify signal not processed")
-
-        except Exception as e:
-            logger.error(f"Position modify signal error: {e}")
-            await send_telegram_alert(f"❌ **ОШИБКА ИЗМЕНЕНИЯ ПОЗИЦИИ**: {str(e)}")
+        logger.info(f"🟡 POSITION MODIFY DETECTED: {signal.symbol} {signal.side} {signal.size} @ {signal.price}")
+        await send_telegram_alert(
+            f"🟡 **ПОЗИЦИЯ ИЗМЕНЕНА**\n"
+            f"Symbol: {signal.symbol}\n"
+            f"Side: {signal.side}\n"
+            f"New Size: {signal.size}\n"
+            f"Price: ${signal.price:.4f}\n"
+            f"Time: {datetime.now().strftime('%H:%M:%S')}"
+        )
+        await self._handle_signal_with_stage2_check(signal, "MODIFY")
 
     def _remember_leverage(self, symbol: str, lev: int) -> None:
         """Stores the last successfully set leverage for a symbol."""
@@ -5552,6 +5501,16 @@ class FinalTradingMonitor:
                 if new_main_balance is None:
                     raise ValueError("Failed to fetch new balance after reload.")
 
+                # D) Rebind Stage-2 to the fresh client
+                if self.stage2_system:
+                    logger.info("Rebinding Stage-2 to fresh client after key reload...")
+                    self.stage2_system.main_client = self.main_client
+                    self.stage2_system.source_client = self.source_client
+                    self.stage2_system.copy_connected = True
+                    self.stage2_system.trade_executor_connected = True
+                    logger.info("✅ Stage-2 rebound to fresh client after key reload.")
+
+
                 # 7. Final health check and logging
                 duration_ms = (time.time() - start_time) * 1000
                 ws_topics_count = len(self.websocket_manager.subscriptions) if self.websocket_manager else 0
@@ -5604,6 +5563,44 @@ class FinalTradingMonitor:
         except (AttributeError, ValueError):
             # Windows или другие системы могут не поддерживать эти сигналы
             pass
+
+    async def _ensure_stage2_ready(self) -> bool:
+        """Ensures Stage-2 is initialized and connected before processing a signal."""
+        if self.stage2_system and getattr(self.stage2_system, 'copy_connected', False):
+            return True
+
+        logger.warning("Stage-2 is not connected. Attempting lazy re-initialization...")
+        try:
+            if self.stage2_system is None:
+                logger.info("Stage-2 system instance not found, creating a new one.")
+                from stage2_copy_system import Stage2CopyTradingSystem
+                from config import dry_run
+
+                self.stage2_system = Stage2CopyTradingSystem(base_monitor=self)
+                await self.stage2_system.initialize()
+                self.set_copy_state_ref(self.stage2_system.copy_state)
+                self.connect_copy_system(self.stage2_system)
+                self.stage2_system.demo_mode = dry_run
+
+            # Re-bind clients to ensure they are fresh after any hot-reloads
+            self.stage2_system.main_client = self.main_client
+            self.stage2_system.source_client = self.source_client
+
+            # Re-initialize the system to ensure all handlers are correctly registered
+            await self.stage2_system.initialize()
+
+            # Manually set the flags to connected
+            self.stage2_system.copy_connected = True
+            self.stage2_system.trade_executor_connected = True
+
+            logger.info("✅ Stage-2 lazy re-initialization successful.")
+            return True
+        except Exception:
+            logger.exception("🔥 Failed to lazy-initialize Stage-2.")
+            if self.stage2_system:
+                self.stage2_system.copy_connected = False
+                self.stage2_system.trade_executor_connected = False
+            return False
 
 
     async def _register_connections_for_monitoring(self):
@@ -6322,16 +6319,25 @@ class FinalTradingMonitor:
     async def _report_system_stats(self):
         """✅ ИСПРАВЛЕННЫЙ отчет о состоянии системы с информацией о фиксах"""
         try:
-            # Собираем статистику со всех компонентов
+            # 1. Объявляем и вычисляем все переменные до их использования
             source_stats = self.source_client.get_stats()
             main_stats = self.main_client.get_stats()
             ws_stats = self.websocket_manager.get_stats()
             signal_stats = self.signal_processor.get_stats()
             
-            # Системная информация
             memory_usage = psutil.Process().memory_info().rss / 1024 / 1024  # MB
             uptime = time.time() - self.start_time
             
+            copy_connected = getattr(self.stage2_system, 'copy_connected', False)
+            trade_executor_connected = getattr(self.stage2_system, 'trade_executor_connected', False)
+
+            reconcile_now = time.time()
+            reconcile_enqueued_minute = len([t for t in self.reconcile_enqueued_last_minute if reconcile_now - t <= 60])
+
+            db_open_positions = len(positions_writer.get_open_positions(TARGET_ACCOUNT_ID))
+            exchange_open_positions = len([p for p in await self.main_client.get_positions() if safe_float(p.get('size', 0)) > 0])
+
+            # 2. Теперь можно безопасно выводить лог
             logger.info("=" * 80)
             logger.info("FINAL SYSTEM STATUS REPORT (WITH WEBSOCKET FIXES)")
             logger.info("=" * 80)
@@ -6351,14 +6357,6 @@ class FinalTradingMonitor:
             logger.info(f"  Source: {source_stats['success_rate']:.1f}% success, {source_stats['avg_response_time']:.3f}s avg")
             logger.info(f"  Main: {main_stats['success_rate']:.1f}% success, {main_stats['avg_response_time']:.3f}s avg")
             logger.info("")
-            
-            copy_connected = getattr(self.stage2_system, 'copy_connected', False)
-            trade_executor_connected = getattr(self.stage2_system, 'trade_executor_connected', False)
-            reconcile_now = time.time()
-            reconcile_enqueued_minute = len([t for t in self.reconcile_enqueued_last_minute if reconcile_now - t <= 60])
-
-            db_open_positions = len(positions_writer.get_open_positions(TARGET_ACCOUNT_ID))
-            exchange_open_positions = len([p for p in await self.main_client.get_positions() if safe_float(p.get('size', 0)) > 0])
 
             logger.info("WEBSOCKET (FINAL FIXED VERSION):")
             logger.info(f"  Status: {ws_stats['status']}")
@@ -6381,7 +6379,7 @@ class FinalTradingMonitor:
             logger.info("=" * 80)
             
         except Exception as e:
-            logger.error(f"Stats reporting error: {e}")
+            logger.exception(f"Stats reporting error: {e}")
     
     async def _memory_management(self):
         """Управление памятью"""

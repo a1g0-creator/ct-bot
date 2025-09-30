@@ -1506,7 +1506,8 @@ class AdaptiveOrderManager:
                 "orderType": "Market",
                 "qty": formatted_qty,                     # строка, как требует v5
                 "timeInForce": "IOC",
-                "orderLinkId": link_id
+                "orderLinkId": link_id,
+                "positionIdx": copy_order.metadata.get("position_idx", 0)
             }
             order_data['reduceOnly'] = copy_order.metadata.get('reduceOnly', False)
 
@@ -3214,7 +3215,7 @@ class Stage2CopyTradingSystem:
                     order_strategy=OrderStrategy.MARKET,
                     kelly_fraction=0, # Not applicable for closing
                     priority=0,
-                    metadata={'reason': 'ws_flip_close', 'reduceOnly': True}
+                    metadata={'reason': 'ws_flip_close', 'reduceOnly': True, 'position_idx': pos_idx}
                 )
                 close_result = await self.copy_manager.order_manager.place_adaptive_order(close_order)
 
@@ -3236,7 +3237,7 @@ class Stage2CopyTradingSystem:
                     order_strategy=OrderStrategy.MARKET,
                     kelly_fraction=kelly_fraction,
                     priority=1,
-                    metadata={'reason': 'ws_flip_open', 'reduceOnly': False}
+                    metadata={'reason': 'ws_flip_open', 'reduceOnly': False, 'position_idx': pos_idx}
                 )
                 order_result = await self.copy_manager.order_manager.place_adaptive_order(open_order)
 
@@ -3297,7 +3298,7 @@ class Stage2CopyTradingSystem:
                     order_strategy=OrderStrategy.MARKET,
                     kelly_fraction=kelly_fraction,
                     priority=0 if is_closing else (1 if is_opening else 2), # Close highest priority
-                    metadata={'reason': reason, 'reduceOnly': size_delta < 0}
+                    metadata={'reason': reason, 'reduceOnly': size_delta < 0, 'position_idx': pos_idx}
                 )
 
                 # Put the order on the queue to be processed by the main loop
