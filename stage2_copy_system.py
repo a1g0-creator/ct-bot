@@ -352,6 +352,95 @@ class CopyOrder:
     created_at: float = field(default_factory=time.time)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+
+class PositionMode(Enum):
+    HEDGE = 1
+    ONEWAY = 0
+
+class DonorPositionModeDetector:
+    """Detects and caches the position mode (Hedge/One-Way) for a given symbol."""
+    def __init__(self, source_client: EnhancedBybitClient, cache_ttl_sec: int = 300):
+        self._source_client = source_client
+        self._cache_ttl = timedelta(seconds=cache_ttl_sec)
+        self._modes_cache: Dict[str, Tuple[PositionMode, datetime]] = {}
+        self._rest_probe_locks = defaultdict(asyncio.Lock)
+        self._last_probe_time: Dict[str, float] = {}
+
+    def _get_cache_key(self, symbol: str, category: str = "linear") -> str:
+        """Creates a standardized cache key."""
+        return f"{category}:{symbol}"
+
+    def update_from_ws(self, symbol: str, positions: list, category: str = "linear") -> None:
+        """Updates the position mode from incoming WebSocket position data."""
+        key = self._get_cache_key(symbol, category)
+        has_hedge_indices = any(p.get('positionIdx') in [1, 2] and float(p.get('size', 0)) > 0 for p in positions)
+        has_only_oneway_idx = all(p.get('positionIdx') == 0 for p in positions)
+
+        mode = None
+        if has_hedge_indices:
+            mode = PositionMode.HEDGE
+        elif has_only_oneway_idx and positions:
+            mode = PositionMode.ONEWAY
+
+        if mode is not None:
+            if self._modes_cache.get(key, (None, None))[0] != mode:
+                logger.info(f"POSITION_MODE: symbol={key}, mode={mode.name} (src=ws)")
+            self._modes_cache[key] = (mode, datetime.utcnow())
+
+    async def ensure_rest_probe(self, symbol: str, category: str = "linear") -> None:
+        """
+        Ensures the position mode is known, falling back to a REST API probe if needed.
+        This method is throttled to prevent API spam.
+        """
+        key = self._get_cache_key(symbol, category)
+
+        async with self._rest_probe_locks[key]:
+            # Check if mode is already known or if a probe was sent recently
+            if self.get_mode(symbol, category) is not None:
+                return
+
+            now = time.time()
+            if now - self._last_probe_time.get(key, 0) < 60: # Throttle: 1 probe per 60s
+                return
+
+            # Mark that we are probing now
+            self._last_probe_time[key] = now
+            logger.info(f"MODE_PENDING: Probing REST for position mode for {key}.")
+            try:
+                # A light way to get position info. get_positions is suitable.
+                positions = await self._source_client.get_positions(category=category, symbol=symbol)
+                if positions:
+                    # Logic is same as WS update, but on REST data
+                    self.update_from_ws(symbol, positions, category)
+                    mode = self.get_mode(symbol, category)
+                    if mode:
+                         logger.info(f"POSITION_MODE: symbol={key}, mode={mode.name} (src=rest)")
+                    else:
+                         # This can happen if a symbol has no positions at all.
+                         # We don't cache this, will retry later.
+                         logger.info(f"MODE_PROBE_INCONCLUSIVE: No active positions found for {key} via REST.")
+                else:
+                    logger.warning(f"REST probe for {key} returned no position data.")
+
+            except Exception as e:
+                logger.error(f"ensure_rest_probe for {key} failed: {e}", exc_info=True)
+
+    def get_mode(self, symbol: str, category: str = "linear") -> Optional[PositionMode]:
+        """
+        Retrieves the cached position mode for a symbol if it's not stale.
+        Returns None if the mode is unknown or the cache is expired.
+        """
+        key = self._get_cache_key(symbol, category)
+        cached_data = self._modes_cache.get(key)
+        if cached_data:
+            mode, timestamp = cached_data
+            if datetime.utcnow() - timestamp < self._cache_ttl:
+                return mode
+            else:
+                # Cache expired, remove it
+                del self._modes_cache[key]
+        return None
+
 # ================================
 # KELLY CRITERION IMPLEMENTATION
 # ================================
@@ -1126,8 +1215,16 @@ class DynamicTrailingStopManager:
             current_ts = safe_float(current_pos.get('trailingStop', 0.0))
             current_active_price = safe_float(current_pos.get('activePrice', 0.0))
 
-            # 3. Calculate new TS values based on direction (position_idx)
-            side = "Long" if position_idx == 1 else "Short" if position_idx == 2 else "Unknown"
+            # 3. Calculate new TS values based on direction (position_idx or side)
+            side_from_pos = current_pos.get('side', 'None').strip()
+            if position_idx in [1, 2]: # Hedge mode
+                side = "Long" if position_idx == 1 else "Short"
+            elif position_idx == 0 and side_from_pos in ['Buy', 'Sell']: # One-Way mode
+                side = "Long" if side_from_pos == 'Buy' else "Short"
+            else: # Not a valid position to trail
+                logger.info(f"TS_SKIP: Cannot determine trail side for {symbol} idx={position_idx} side='{side_from_pos}'.")
+                return
+
             ref_price = float(current_pos.get('markPrice', entry_price))
 
             filters = await self.main_client.get_symbol_filters(symbol, category="linear")
@@ -2939,6 +3036,7 @@ class Stage2CopyTradingSystem:
 
 
         # 5) Основные компоненты Этапа 2
+        self.mode_detector = DonorPositionModeDetector(self.source_client)
         self.copy_manager = PositionCopyManager(
             self.source_client,
             self.main_client,
@@ -3237,114 +3335,139 @@ class Stage2CopyTradingSystem:
                 logger.info(f"Leverage for {symbol} may need update to {donor_leverage}x. Scheduling non-blocking sync.")
                 asyncio.create_task(self._sync_leverage_non_blocking(symbol, donor_leverage))
 
-            # 3. CALCULATE FINAL TARGET SIZE (The core logic)
-            final_target_size = 0
-            kelly_fraction = 0.0
+            # 3. DETERMINE POSITION MODE (HEDGE/ONE-WAY)
+            mode = self.mode_detector.get_mode(symbol)
+            if mode is None:
+                # Use a lock to ensure only one pending log message is shown
+                if not self.mode_detector._rest_probe_locks[self.mode_detector._get_cache_key(symbol)].locked():
+                    logger.info(f"MODE_PENDING: Position mode for {symbol} is unknown. Probing and deferring action.")
+                asyncio.create_task(self.mode_detector.ensure_rest_probe(symbol))
+                return
 
-            if donor_size > 0 and donor_side:
-                # a. Proportional size based on balance ratio
-                proportional_size = donor_size * (main_balance / source_balance)
-
-                # b. Kelly Criterion adjustment
-                kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(
-                    symbol=symbol, current_size=proportional_size, price=entry_price,
-                    balance=main_balance, source_balance=source_balance
-                )
-                kelly_recommended_size = kelly_result.get('recommended_size', proportional_size)
-                kelly_fraction = kelly_result.get('kelly_fraction', 0.0)
-
-                # c. Apply master copy_config limits
-                final_target_size = kelly_recommended_size * COPY_CONFIG['default_copy_ratio']
-                final_target_size = max(COPY_CONFIG['min_copy_size'], final_target_size)
-                final_target_size = min(COPY_CONFIG['max_copy_size'], final_target_size)
-
-                logger.info(
-                    f"SIZING_INFO: Using balance_account_type='{BALANCE_ACCOUNT_TYPE}' for sizing calculation."
-                )
-                logger.info(
-                    f"TARGET_CALC: Donor Size={donor_size:.4f} -> Proportional={proportional_size:.4f} "
-                    f"-> Kelly Rec={kelly_recommended_size:.4f} -> Final Target={final_target_size:.4f}"
-                )
-
-            # 4. ANTI-CLOSURE & PIN-TO-MIN LOGIC
+            # 4. CALCULATE FINAL TARGET SIZE, DELTA, AND EXECUTE BASED ON MODE
             min_qty = await self.copy_manager.order_manager.get_min_order_qty(symbol, price=entry_price)
+            kelly_fraction = 0.0 # Default
+            order_qty = 0.0
 
-            if donor_size > 0 and 0 < final_target_size < min_qty:
-                logger.info(f"PIN_TO_MIN: target {final_target_size:.4f} < min_qty {min_qty} for {symbol} -> use min_qty")
-                final_target_size = min_qty
+            # These flags will be set within the mode-specific blocks
+            is_opening = False
+            is_full_close = False
 
-            # 5. CALCULATE DELTA AND EXECUTE (SIGNED QUANTITY LOGIC)
-            # donor_signed: + for Buy, - for Sell. If donor has no position, target is 0.
-            if donor_size > 0:
-                donor_signed_qty = final_target_size if donor_side == 'Buy' else -final_target_size
+            # =================================================================
+            # A) HEDGE MODE LOGIC (Existing logic, preserved)
+            # =================================================================
+            if mode == PositionMode.HEDGE:
+                final_target_size = 0
+                if donor_size > 0 and donor_side:
+                    proportional_size = donor_size * (main_balance / source_balance)
+                    kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(
+                        symbol=symbol, current_size=proportional_size, price=entry_price,
+                        balance=main_balance, source_balance=source_balance)
+                    kelly_recommended_size = kelly_result.get('recommended_size', proportional_size)
+                    kelly_fraction = kelly_result.get('kelly_fraction', 0.0)
+                    final_target_size = kelly_recommended_size * COPY_CONFIG['default_copy_ratio']
+                    final_target_size = max(COPY_CONFIG['min_copy_size'], final_target_size)
+                    final_target_size = min(COPY_CONFIG['max_copy_size'], final_target_size)
+                    logger.info(
+                        f"TARGET_CALC (Hedge): Donor={donor_size:.4f} -> Prop={proportional_size:.4f} "
+                        f"-> Kelly={kelly_recommended_size:.4f} -> Final={final_target_size:.4f}")
+
+                if donor_size > 0 and 0 < final_target_size < min_qty:
+                    final_target_size = min_qty
+
+                donor_signed_qty = final_target_size if donor_side == 'Buy' else -final_target_size if donor_side == 'Sell' else 0
+                main_signed_qty = current_target_size if current_target_side == 'Buy' else -current_target_size
+                delta = donor_signed_qty - main_signed_qty
+
+                logger.info(f"POSITION_MODIFY (Hedge): symbol={symbol} donor_signed={donor_signed_qty:.4f} main_signed={main_signed_qty:.4f} -> delta={delta:.4f}")
+
+                if abs(delta) < min_qty and donor_signed_qty != 0:
+                    logger.info(f"HYSTERESIS_SKIP (Hedge): Delta {abs(delta):.6f} < min_qty {min_qty}. No action.")
+                    return
+                if abs(delta) < 1e-9: return
+
+                order_side = 'Buy' if delta > 0 else 'Sell'
+                order_qty = abs(delta)
+                is_reducing_long = main_signed_qty > 0 and delta < 0
+                is_reducing_short = main_signed_qty < 0 and delta > 0
+                reduce_only_flag = is_reducing_long or is_reducing_short
+                final_position_idx = pos_idx
+                is_opening = main_signed_qty == 0 and donor_signed_qty != 0
+                is_full_close = main_signed_qty != 0 and donor_signed_qty == 0
+
+            # =================================================================
+            # B) ONE-WAY MODE LOGIC (New logic)
+            # =================================================================
+            elif mode == PositionMode.ONEWAY:
+                donor_net_size = donor_size if donor_side == 'Buy' else -donor_size if donor_side == 'Sell' else 0
+                final_target_net_size = 0.0
+                if donor_net_size != 0:
+                    proportional_size = abs(donor_net_size) * (main_balance / source_balance)
+                    kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(
+                        symbol=symbol, current_size=proportional_size, price=entry_price,
+                        balance=main_balance, source_balance=source_balance)
+                    kelly_recommended_size = kelly_result.get('recommended_size', proportional_size)
+                    kelly_fraction = kelly_result.get('kelly_fraction', 0.0)
+                    final_target_size = kelly_recommended_size * COPY_CONFIG['default_copy_ratio']
+                    final_target_size = max(COPY_CONFIG['min_copy_size'], final_target_size)
+                    final_target_size = min(COPY_CONFIG['max_copy_size'], final_target_size)
+
+                    if 0 < final_target_size < min_qty:
+                        final_target_size = min_qty
+                    final_target_net_size = final_target_size * np.sign(donor_net_size)
+
+                logger.info(f"TARGET_CALC (One-Way): Donor Net={donor_net_size:.4f} -> Final Net Target={final_target_net_size:.4f}")
+
+                main_pos_oneway = next((p for p in target_positions if int(p.get('positionIdx', 0)) == 0), None)
+                main_net_size = safe_float(main_pos_oneway.get('size', 0)) if main_pos_oneway else 0.0
+                main_net_side = (main_pos_oneway.get('side', '') or '').strip() if main_pos_oneway else ''
+                main_net_signed = main_net_size if main_net_side == 'Buy' else -main_net_size if main_net_side == 'Sell' else 0.0
+
+                delta = final_target_net_size - main_net_signed
+
+                logger.info(f"POSITION_MODIFY (One-Way): donor_net={final_target_net_size:.4f} main_net={main_net_signed:.4f} -> delta={delta:.4f}")
+
+                if abs(delta) < min_qty and final_target_net_size != 0:
+                    logger.info(f"HYSTERESIS_SKIP (One-Way): Delta {abs(delta):.6f} < min_qty {min_qty}. No action.")
+                    return
+                if abs(delta) < 1e-9:
+                    return
+
+                order_side = 'Buy' if delta > 0 else 'Sell'
+                order_qty = abs(delta)
+                final_position_idx = 0
+
+                if np.sign(delta) == np.sign(main_net_signed) and main_net_signed != 0:
+                    reduce_only_flag = False
+                elif np.sign(delta) != np.sign(main_net_signed) and abs(delta) <= abs(main_net_signed):
+                    reduce_only_flag = True
+                else:
+                    reduce_only_flag = False
+
+                is_opening = main_net_signed == 0 and final_target_net_size != 0
+                is_full_close = main_net_signed != 0 and final_target_net_size == 0
+
             else:
-                donor_signed_qty = 0
-
-            # main_signed: + for Buy, - for Sell
-            main_signed_qty = current_target_size if current_target_side == 'Buy' else -current_target_size
-
-            delta = donor_signed_qty - main_signed_qty
-
-            logger.info(
-                f"POSITION_MODIFY: symbol={symbol} donor_signed={donor_signed_qty:.4f} main_signed={main_signed_qty:.4f} -> delta={delta:.4f}"
-            )
-
-            # Hysteresis check: skip tiny modifications, but never a full close
-            if abs(delta) < min_qty and donor_signed_qty != 0:
-                logger.info(f"HYSTERESIS_SKIP: Delta {abs(delta):.6f} for {symbol} is smaller than min_qty {min_qty}. No action.")
+                logger.error(f"Unhandled position mode: {mode}. Skipping.")
                 return
 
-            if abs(delta) < 1e-9: # Effectively zero
-                return
+            # 5. UNIFIED SIGNAL PREPARATION & QUEUE
+            reason = "ws_open" if is_opening else "ws_full_close" if is_full_close else "ws_modify"
+            signal_type_enum = SignalType.POSITION_OPEN if is_opening else SignalType.POSITION_CLOSE if is_full_close else SignalType.POSITION_MODIFY
 
-            order_side = 'Buy' if delta > 0 else 'Sell'
-            order_qty = abs(delta)
+            logger.info(f"COPY_ACTION ({mode.name}): {reason.upper()} for {symbol} | Qty: {order_qty:.4f} | Side: {order_side} | reduceOnly: {reduce_only_flag} | posIdx: {final_position_idx}")
 
-            # Correctly determine reduceOnly and positionIdx
-            is_reducing_long = main_signed_qty > 0 and delta < 0
-            is_reducing_short = main_signed_qty < 0 and delta > 0
-            reduce_only_flag = is_reducing_long or is_reducing_short
-
-            if reduce_only_flag:
-                # If reducing, use the index of the existing position
-                final_position_idx = 1 if main_signed_qty > 0 else 2
-            else:
-                # If opening/increasing, use the index corresponding to the order's side
-                final_position_idx = 1 if order_side == 'Buy' else 2
-
-            # Determine signal type for logging/metadata
-            is_opening = main_signed_qty == 0 and donor_signed_qty != 0
-            is_closing = main_signed_qty != 0 and donor_signed_qty == 0
-
-            reason = "ws_open" if is_opening else "ws_close" if is_closing else "ws_modify"
-            signal_type_enum = SignalType.POSITION_OPEN if is_opening else SignalType.POSITION_CLOSE if is_closing else SignalType.POSITION_MODIFY
-
-            logger.info(f"COPY_ACTION: {reason.upper()} for {symbol} | Qty: {order_qty:.4f} | Side: {order_side} | reduceOnly: {reduce_only_flag} | posIdx: {final_position_idx}")
-
-            # Create a synthetic signal to pass to the queue processor
             synthetic_signal = TradingSignal(
-                signal_type=signal_type_enum,
-                symbol=symbol,
-                side=order_side, # The side of the order we are placing
-                size=order_qty,
-                price=entry_price,
-                timestamp=time.time(),
+                signal_type=signal_type_enum, symbol=symbol, side=order_side, size=order_qty,
+                price=entry_price, timestamp=time.time(),
                 metadata={'reason': reason, 'reduceOnly': reduce_only_flag, 'pos_idx': final_position_idx}
             )
-
             order = CopyOrder(
-                source_signal=synthetic_signal,
-                target_symbol=symbol,
-                target_side=order_side,
-                target_quantity=order_qty,
-                target_price=entry_price,
-                order_strategy=OrderStrategy.MARKET,
-                kelly_fraction=kelly_fraction,
-                priority=0 if is_closing else (1 if is_opening else 2), # Close highest priority
+                source_signal=synthetic_signal, target_symbol=symbol, target_side=order_side,
+                target_quantity=order_qty, target_price=entry_price, order_strategy=OrderStrategy.MARKET,
+                kelly_fraction=kelly_fraction, priority=0 if is_full_close else (1 if is_opening else 2),
                 metadata={'reason': reason, 'reduceOnly': reduce_only_flag, 'position_idx': final_position_idx}
             )
-
-            # Put the order on the queue to be processed by the main loop
             await self.copy_manager.copy_queue.put((order.priority, order.created_at, order))
 
             # --- Margin Mirroring Logic ---
