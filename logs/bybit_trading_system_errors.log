@@ -16,3 +16,16 @@ ConnectionError: Failed to reconnect and authenticate WebSocket.
 2025-09-27 07:52:12,032 [   ERROR] bybit_trading_system:3089 - LEVERAGE_SYNC_FAILED: for ETHUSDT to 10x. Reason: <coroutine object AsyncMockMixin._execute_mock_call at 0x7f39b44d6440> (retCode: <coroutine object AsyncMockMixin._execute_mock_call at 0x7f39b46fbb40>)
 2025-09-27 08:17:08,154 [   ERROR] bybit_trading_system:3089 - LEVERAGE_SYNC_FAILED: for ETHUSDT to 10x. Reason: <coroutine object AsyncMockMixin._execute_mock_call at 0x7f5e1e94c740> (retCode: <coroutine object AsyncMockMixin._execute_mock_call at 0x7f5e1ef12340>)
 2025-09-27 08:18:56,347 [   ERROR] bybit_trading_system:3089 - LEVERAGE_SYNC_FAILED: for ETHUSDT to 10x. Reason: <coroutine object AsyncMockMixin._execute_mock_call at 0x7fb4f3a48a40> (retCode: <coroutine object AsyncMockMixin._execute_mock_call at 0x7fb4f403a440>)
+2025-09-30 07:43:06,010 [   ERROR] bybit_trading_system:5258 - Error handling OPEN signal for BTCUSDT: 'ProductionSignalProcessor' object has no attribute '_copy_system_callback'
+Traceback (most recent call last):
+  File "/app/enhanced_trading_system_final_fixed.py", line 5224, in _handle_signal_with_stage2_check
+    if self._copy_system_callback:
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'ProductionSignalProcessor' object has no attribute '_copy_system_callback'. Did you mean: 'register_copy_system_callback'?
+2025-09-30 07:43:06,038 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
+2025-09-30 07:43:32,308 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
+2025-09-30 07:44:23,543 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
+2025-09-30 07:46:36,044 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
+2025-09-30 07:47:08,023 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
+2025-09-30 07:49:00,219 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
+2025-09-30 07:50:12,215 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.

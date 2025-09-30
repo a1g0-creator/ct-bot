@@ -42,6 +42,7 @@ import statistics
 import uuid
 import os, socket
 from decimal import Decimal
+import asyncio
 from datetime import timezone
 
 from sys_events_logger import sys_logger
@@ -3352,11 +3353,12 @@ class FinalFixedWebSocketManager:
     - ✅ Полная совместимость с websockets 15.0.1
     """
     
-    def __init__(self, api_key: str, api_secret: str, name: str = "websocket", copy_state=None):
+    def __init__(self, api_key: str, api_secret: str, name: str = "websocket", copy_state=None, final_monitor=None):
         self.api_key = api_key
         self.api_secret = api_secret
         self.name = name
         self.copy_state = copy_state
+        self.final_monitor = final_monitor
         
         # Состояние WebSocket
         self.ws = None
@@ -4016,6 +4018,38 @@ class FinalFixedWebSocketManager:
         except Exception as e:
             logger.error(f"{self.name} - Error handling Bybit pong: {e}")
             return False
+
+    async def _escalate_shutdown_after_timeout(self, timeout_seconds: int):
+        """
+        Schedules a graceful shutdown if the connection is not restored within the timeout.
+        This is designed to be called from a non-blocking task.
+        """
+        try:
+            logger.warning(f"WS_ESCALATE_SCHEDULED: Escalation to restart scheduled in {timeout_seconds}s.")
+            await asyncio.sleep(timeout_seconds)
+
+            # Check status again after waiting
+            if not is_websocket_open(self.ws):
+                logger.error(f"WS_ESCALATE_TRIGGER: WebSocket still disconnected after {timeout_seconds}s. Triggering monitor restart.")
+                self.stats['ws_escalations_total'] = self.stats.get('ws_escalations_total', 0) + 1
+
+                # Safely call monitor restart methods if the monitor reference exists
+                if hasattr(self, 'final_monitor') and self.final_monitor:
+                    if hasattr(self.final_monitor, "request_graceful_restart"):
+                        await self.final_monitor.request_graceful_restart(reason="ws_escalation_timeout")
+                    elif hasattr(self.final_monitor, "_request_full_restart"):
+                        await self.final_monitor._request_full_restart("ws_escalation_timeout")
+                    else:
+                        logger.warning("No restart hook available on monitor; escalation logged only.")
+                else:
+                    logger.warning("final_monitor reference not found; escalation logged only.")
+            else:
+                logger.info("WS_ESCALATE_ABORTED: WebSocket reconnected before escalation timeout.")
+
+        except asyncio.CancelledError:
+            logger.info("WS_ESCALATE_ABORTED: Shutdown escalation task was cancelled.")
+        except Exception as e:
+            logger.error(f"Error in _escalate_shutdown_after_timeout: {e}", exc_info=True)
     
     # ============================================================
     #  WS: ЛЁГКИЙ ХЭНДЛЕР ПОЗИЦИЙ + ФОНОВЫЙ ВОРКЕР ЗАПИСИ В БД
@@ -4245,6 +4279,9 @@ class FinalFixedWebSocketManager:
             logger.info("SOURCE_WS - Reconnect already in progress; skip duplicate handler call")
             return
 
+        # Non-blocking escalation task
+        asyncio.create_task(self._escalate_shutdown_after_timeout(180))
+
         async with self._ws_reconnect_lock:
             if self._ws_reconnecting:
                 logger.info("SOURCE_WS - Reconnect already in progress (lock path); skip")
@@ -4253,13 +4290,6 @@ class FinalFixedWebSocketManager:
         
             # ✅ НОВОЕ: Логируем начало реконнекта
             sys_logger.log_reconnect("WebSocket", "Bybit SOURCE_WS", 1)
-
-            # --- планируем отложенную эскалацию shutdown (если ещё нет) ---
-            if not getattr(self, "_planned_shutdown_task", None) or self._planned_shutdown_task.done():
-                self._planned_shutdown_task = asyncio.create_task(
-                    self._escalate_shutdown_after_timeout(180),  # таймаут эскалации, сек
-                    name="Stage1_PlannedShutdown"
-                )
 
             # --- уведомим супервизор о деградации (если подключён) ---
             try:
@@ -4825,23 +4855,6 @@ class ProductionSignalProcessor:
         
         logger.info("Signal processing system stopped")
 
-    def register_copy_system_callback(self, callback_func):
-        """
-        НОВЫЙ МЕТОД: Регистрация callback функции для системы копирования
-    
-        Args:
-            callback_func: async функция для обработки сигналов копирования
-        """
-        self._copy_system_callback = callback_func
-        logger.info("✅ Copy system callback registered successfully")
-    
-        # Отправляем уведомление об успешной регистрации
-        asyncio.create_task(send_telegram_alert(
-            "🔗 **СИСТЕМА КОПИРОВАНИЯ ПОДКЛЮЧЕНА К ОБРАБОТЧИКУ СИГНАЛОВ**\n"
-            "✅ Callback функция зарегистрирована\n"
-            "✅ Все новые сигналы будут автоматически переданы в систему копирования"
-        ))
-
     async def process_position_update(self, position_data: dict):
         """Обработка обновления позиции от WebSocket (hedge-safe + DB ingest)"""
         try:
@@ -5187,29 +5200,47 @@ class ProductionSignalProcessor:
         try:
             # Check for Stage-2 readiness and attempt recovery if needed
             if await self.monitor._ensure_stage2_ready():
-                if hasattr(self, '_copy_system_callback') and self._copy_system_callback:
+                if self.monitor._copy_system_callback:
                     try:
-                        await self._copy_system_callback(signal)
+                        await self.monitor._copy_system_callback(signal)
+                        self.monitor.metrics['signals_forwarded_total'] += 1
                         logger.info(f"✅ {signal_type_str} signal forwarded to copy system: {signal.symbol}")
-                        await send_telegram_alert(
-                            f"🔄 **СИГНАЛ '{signal_type_str}' ПЕРЕДАН В КОПИРОВАНИЕ**\n"
-                            f"Symbol: {signal.symbol} {signal.side} {signal.size:.6f}"
-                        )
+                        # Minimal logging, TG alert can be done by Stage 2
                     except Exception as e:
-                        logger.error(f"Copy system callback error for {signal_type_str}: {e}")
+                        self.monitor.metrics['signals_failed_total'] += 1
+                        logger.error(f"Copy system callback error for {signal_type_str}: {e}", exc_info=True)
                         await send_telegram_alert(f"❌ **ОШИБКА КОПИРОВАНИЯ '{signal_type_str}'**: {str(e)}")
                 else:
-                    logger.error(f"⚠️ Stage-2 recovery check passed, but _copy_system_callback is still not available.")
+                    logger.warning(f"SIG_BUFFERED: symbol={signal.symbol}, reason='no_callback'")
+                    try:
+                        self.monitor._copy_signal_buffer.put_nowait(signal)
+                        self.monitor.metrics['signals_buffered_total'] += 1
+                    except asyncio.QueueFull:
+                        try:
+                            # Drop-oldest policy
+                            dropped_signal = self.monitor._copy_signal_buffer.get_nowait()
+                            logger.warning(f"SIG_BUFFER_OVERFLOW_DROP_OLDEST: size={self.monitor._copy_signal_buffer.qsize()}, max_size={self.monitor._copy_signal_buffer.maxsize}. Dropped {dropped_signal.symbol}")
+                            self.monitor.metrics['signals_dropped_total'] += 1
+                            self.monitor._copy_signal_buffer.put_nowait(signal)
+                            self.monitor.metrics['signals_buffered_total'] += 1
+                        except asyncio.QueueEmpty:
+                            pass # Should not happen
             else:
-                logger.error(f"🔥 Stage-2 is not ready and could not be recovered. Signal for {signal.symbol} will be dropped.")
-                await send_telegram_alert(
-                    f"🔥 **СИГНАЛ ПРОПУЩЕН**\n"
-                    f"Система копирования (Stage-2) не готова и не смогла восстановиться.\n"
-                    f"Symbol: {signal.symbol} {signal.side}"
-                )
+                logger.warning(f"SIG_BUFFERED: symbol={signal.symbol}, reason='stage2_not_ready'")
+                try:
+                    self.monitor._copy_signal_buffer.put_nowait(signal)
+                    self.monitor.metrics['signals_buffered_total'] += 1
+                except asyncio.QueueFull:
+                    # Drop-oldest policy
+                    dropped_signal = self.monitor._copy_signal_buffer.get_nowait()
+                    logger.warning(f"SIG_BUFFER_OVERFLOW_DROP_OLDEST: size={self.monitor._copy_signal_buffer.qsize()}, max_size={self.monitor._copy_signal_buffer.maxsize}. Dropped {dropped_signal.symbol}")
+                    self.monitor.metrics['signals_dropped_total'] += 1
+                    self.monitor._copy_signal_buffer.put_nowait(signal)
+                    self.monitor.metrics['signals_buffered_total'] += 1
         except Exception as e:
             logger.exception(f"Error handling {signal_type_str} signal for {signal.symbol}: {e}")
             await send_telegram_alert(f"❌ **КРИТИЧЕСКАЯ ОШИБКА ОБРАБОТКИ СИГНАЛА '{signal_type_str}'**: {str(e)}")
+
 
 
     async def _handle_position_open_signal(self, signal: TradingSignal):
@@ -5329,7 +5360,7 @@ class FinalTradingMonitor:
         
         # ✅ ИСПРАВЛЕНО: Используем окончательно исправленный WebSocket менеджер
         self.websocket_manager = FinalFixedWebSocketManager(
-            SOURCE_API_KEY, SOURCE_API_SECRET, "SOURCE_WS", copy_state=self.copy_state
+            SOURCE_API_KEY, SOURCE_API_SECRET, "SOURCE_WS", copy_state=self.copy_state, final_monitor=self
         )
         
         self.signal_processor = ProductionSignalProcessor(account_id=DONOR_ACCOUNT_ID, monitor=self)
@@ -5363,6 +5394,21 @@ class FinalTradingMonitor:
         self._deferred_ops_queue = deque()
         self._processed_op_keys = set()
         # === /NEW ===
+
+        # === Stage-2 Callback & Buffering ---
+        self._copy_system_callback = None
+        self._copy_callback_lock = asyncio.Lock()
+
+        buffer_size = int(os.getenv("COPY_SIGNAL_BUFFER_SIZE", "128"))
+        if buffer_size < 32: buffer_size = 32
+        self._copy_signal_buffer = asyncio.Queue(maxsize=buffer_size)
+        logger.info(f"Signal buffer size = {buffer_size}")
+
+        self._buffer_drainer_task = None
+        self._buffer_drainer_event = asyncio.Event()
+
+        self.metrics = defaultdict(int)
+        # === /End ---
 
     @property
     def _deferred_queue(self):
@@ -5506,9 +5552,9 @@ class FinalTradingMonitor:
                     logger.info("Rebinding Stage-2 to fresh client after key reload...")
                     self.stage2_system.main_client = self.main_client
                     self.stage2_system.source_client = self.source_client
-                    self.stage2_system.copy_connected = True
-                    self.stage2_system.trade_executor_connected = True
-                    logger.info("✅ Stage-2 rebound to fresh client after key reload.")
+                    # Re-bind the callback to the fresh instance
+                    await self.connect_copy_system(self.stage2_system)
+                    logger.info("✅ Stage-2 rebound and callback re-bound after key reload.")
 
 
                 # 7. Final health check and logging
@@ -5565,11 +5611,12 @@ class FinalTradingMonitor:
             pass
 
     async def _ensure_stage2_ready(self) -> bool:
-        """Ensures Stage-2 is initialized and connected before processing a signal."""
-        if self.stage2_system and getattr(self.stage2_system, 'copy_connected', False):
+        """Ensures Stage-2 is initialized and connected, then re-binds the callback."""
+        # Quick check if everything is already fine
+        if self.stage2_system and getattr(self.stage2_system, 'copy_connected', False) and self._copy_system_callback:
             return True
 
-        logger.warning("Stage-2 is not connected. Attempting lazy re-initialization...")
+        logger.warning("Stage-2 is not connected or callback is missing. Attempting lazy re-initialization and re-binding...")
         try:
             if self.stage2_system is None:
                 logger.info("Stage-2 system instance not found, creating a new one.")
@@ -5577,9 +5624,7 @@ class FinalTradingMonitor:
                 from config import dry_run
 
                 self.stage2_system = Stage2CopyTradingSystem(base_monitor=self)
-                await self.stage2_system.initialize()
                 self.set_copy_state_ref(self.stage2_system.copy_state)
-                self.connect_copy_system(self.stage2_system)
                 self.stage2_system.demo_mode = dry_run
 
             # Re-bind clients to ensure they are fresh after any hot-reloads
@@ -5593,8 +5638,15 @@ class FinalTradingMonitor:
             self.stage2_system.copy_connected = True
             self.stage2_system.trade_executor_connected = True
 
-            logger.info("✅ Stage-2 lazy re-initialization successful.")
-            return True
+            # CRITICAL: Re-bind the callback using the new reliable method
+            await self.connect_copy_system(self.stage2_system)
+
+            if self._copy_system_callback:
+                 logger.info("✅ Stage-2 lazy re-initialization and callback binding successful.")
+                 return True
+            else:
+                 logger.error("🔥 Stage-2 re-initialized, but callback binding failed.")
+                 return False
         except Exception:
             logger.exception("🔥 Failed to lazy-initialize Stage-2.")
             if self.stage2_system:
@@ -5943,6 +5995,11 @@ class FinalTradingMonitor:
 
             await self.signal_processor.start_processing()
 
+            # Create the single buffer drainer task
+            if self._buffer_drainer_task is None:
+                self._buffer_drainer_task = asyncio.create_task(self._run_buffer_drainer(), name="SignalBufferDrainer")
+                self.active_tasks.add(self._buffer_drainer_task)
+
             logger.info("Connecting to WebSocket with integrated fixes...")
             await self.websocket_manager.connect()
 
@@ -6281,40 +6338,47 @@ class FinalTradingMonitor:
         except Exception as e:
             logger.error(f"Monitoring loop error: {e}")
     
-    def connect_copy_system(self, copy_system):
+    async def connect_copy_system(self, copy_system):
         """
-        НОВЫЙ МЕТОД: Подключение системы копирования к обработчику сигналов
-    
-        Args:
-            copy_system: Экземпляр Stage2CopyTradingSystem
+        Connects Stage-2 and reliably binds the copy callback.
         """
-        try:
-            # Регистрируем callback для обработки сигналов копирования
-            if hasattr(copy_system, 'process_copy_signal'):
-                self.signal_processor.register_copy_system_callback(copy_system.process_copy_signal)
-                logger.info("✅ Copy system successfully connected to signal processor")
+        async with self._copy_callback_lock:
+            self.stage2_system = copy_system
             
-                # Отправляем уведомление об успешном подключении
-                asyncio.create_task(send_telegram_alert(
-                    "🔗 **СИСТЕМЫ ИНТЕГРИРОВАНЫ**\n"
-                    "✅ Этап 1 (мониторинг) → Этап 2 (копирование)\n"
-                    "✅ Signals processor готов к передаче сигналов\n"
-                    "✅ Все новые позиции будут автоматически скопированы"
-                ))
+            candidate = None
+            candidate_name = None
+            # Prefer a known, documented method on Stage2; fallback to common candidates
+            for name in ("enqueue_signal", "handle_incoming_signal", "process_signal", "_enqueue_signal", "process_copy_signal"):
+                candidate = getattr(self.stage2_system, name, None)
+                if callable(candidate):
+                    candidate_name = name
+                    break
             
+            if candidate:
+                # If candidate is a bound sync method, wrap to async thread to avoid blocking
+                if not asyncio.iscoroutinefunction(candidate):
+                    def _sync_wrapper(signal):
+                        return asyncio.to_thread(candidate, signal)
+                    self._copy_system_callback = _sync_wrapper
+                    logger.warning(f"Callback '{candidate_name}' is synchronous. Wrapped in asyncio.to_thread.")
+                else:
+                    self._copy_system_callback = candidate
+
+                qualname = getattr(candidate, '__qualname__', str(candidate))
+                logger.info(f"COPY_CALLBACK_BOUND: method={qualname}")
+                await send_telegram_alert(f"🔗 **СИСТЕМА КОПИРОВАНИЯ ПОДКЛЮЧЕНА**\n✅ Callback: {qualname}")
+
+                # If there are pending signals, poke the drainer to start processing
+                if not self._copy_signal_buffer.empty():
+                    logger.info("Poking buffer drainer to process buffered signals...")
+                    self._buffer_drainer_event.set()
+
                 return True
             else:
-                logger.error("❌ Copy system does not have process_copy_signal method")
-                asyncio.create_task(send_telegram_alert(
-                    "❌ **ОШИБКА ИНТЕГРАЦИИ**\n"
-                    "Система копирования не имеет метода process_copy_signal"
-                ))
+                self._copy_system_callback = None
+                logger.error("❌ Could not find a suitable copy system callback method.")
+                await send_telegram_alert("❌ **ОШИБКА ИНТЕГРАЦИИ**: Не найден метод для callback в Stage-2.")
                 return False
-            
-        except Exception as e:
-            logger.error(f"Copy system connection error: {e}")
-            asyncio.create_task(send_telegram_alert(f"❌ **ОШИБКА ПОДКЛЮЧЕНИЯ КОПИРОВАНИЯ**: {str(e)}"))
-            return False
 
     async def _report_system_stats(self):
         """✅ ИСПРАВЛЕННЫЙ отчет о состоянии системы с информацией о фиксах"""
@@ -6450,8 +6514,6 @@ class FinalTradingMonitor:
         if task and not task.done():
             task.cancel()
 
-
-
     async def _shutdown(self):
         """✅ Корректное и безопасное завершение работы Stage-1 (c учётом супервизора)"""
         try:
@@ -6538,6 +6600,67 @@ class FinalTradingMonitor:
         except Exception as e:
             logger.error(f"Shutdown error: {e}")
             logger.error(f"Full traceback: {traceback.format_exc()}")
+
+    async def _run_buffer_drainer(self):
+        """
+        A single, long-running task that drains the _copy_signal_buffer when a
+        callback becomes available. It is triggered by an asyncio.Event.
+        """
+        logger.info("Buffer drainer task started.")
+        while True:
+            try:
+                await self._buffer_drainer_event.wait()
+
+                if not self._copy_system_callback:
+                    logger.warning("Drainer woken up, but callback is not available. Clearing event.")
+                    self._buffer_drainer_event.clear()
+                    continue
+
+                logger.info(f"Draining signal buffer ({self._copy_signal_buffer.qsize()} items)...")
+                while not self._copy_signal_buffer.empty():
+                    signal = None
+                    try:
+                        signal = self._copy_signal_buffer.get_nowait()
+
+                        max_retries = 3
+                        for attempt in range(max_retries):
+                            try:
+                                start_time = time.time()
+                                await self._copy_system_callback(signal)
+                                latency_ms = (time.time() - start_time) * 1000
+                                self.metrics['signals_forwarded_total'] += 1
+                                logger.info(f"SIG_DRAIN_SUCCESS: symbol={signal.symbol}, latency_ms={latency_ms:.2f}")
+                                break # Success
+                            except Exception as e:
+                                if attempt < max_retries - 1:
+                                    delay = 0.5 * (2 ** attempt)
+                                    logger.warning(
+                                        f"Callback failed for {signal.symbol} (attempt {attempt+1}/{max_retries}). "
+                                        f"Retrying in {delay}s. Error: {e}"
+                                    )
+                                    await asyncio.sleep(delay)
+                                else:
+                                    raise # Re-raise on final attempt
+
+                        self._copy_signal_buffer.task_done()
+
+                    except Exception as e:
+                        if signal:
+                            self.metrics['signals_failed_total'] += 1
+                            logger.error(f"SIG_DRAIN_FAIL: symbol={signal.symbol} after max retries. Error: {e}", exc_info=True)
+                        else:
+                            logger.error(f"Buffer drainer error: {e}", exc_info=True)
+
+                logger.info("Signal buffer drain complete.")
+                self._buffer_drainer_event.clear()
+
+            except asyncio.CancelledError:
+                logger.info("Buffer drainer task cancelled.")
+                break
+            except Exception as e:
+                logger.error(f"Unhandled error in buffer drainer task: {e}", exc_info=True)
+                # In case of a major error, wait a bit before retrying to avoid spamming logs
+                await asyncio.sleep(5)
 
 
 # ================================

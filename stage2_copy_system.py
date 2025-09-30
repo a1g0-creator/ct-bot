@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 try:
     from enhanced_trading_system_final_fixed import (
         FinalTradingMonitor, ProductionSignalProcessor, TradingSignal, SignalType,
-        EnhancedBybitClient, FinalFixedWebSocketManager, 
+        EnhancedBybitClient, FinalFixedWebSocketManager,
         safe_float, send_telegram_alert, logger, MAIN_API_KEY, MAIN_API_SECRET,
         MAIN_API_URL, SOURCE_API_KEY, SOURCE_API_SECRET, SOURCE_API_URL,
         BALANCE_ACCOUNT_TYPE
@@ -3012,6 +3012,28 @@ class Stage2CopyTradingSystem:
             type(self.base_monitor).__name__,
         )
     
+    async def enqueue_signal(self, signal: TradingSignal) -> None:
+        """
+        A stable, documented entry point for receiving signals from Stage-1.
+        This method routes the signal to the main position handler for processing.
+        """
+        try:
+            logger.info(f"STAGE2_ENQUEUE_SIGNAL: symbol={signal.symbol}, type={signal.signal_type.value}")
+
+            # The `on_position_item` method is the new central handler. We need to
+            # convert the TradingSignal into the dictionary format it expects.
+            item = {
+                'symbol': signal.symbol,
+                'side': signal.side,
+                'size': str(signal.size),
+                'entryPrice': str(signal.price),
+                'positionIdx': signal.metadata.get('position_idx', 0),
+            }
+            await self.on_position_item(item)
+
+        except Exception as e:
+            logger.error(f"Failed to enqueue signal for {signal.symbol}: {e}", exc_info=True)
+
     async def initialize(self):
         """Initializes the copy trading system and registers handlers."""
         try:

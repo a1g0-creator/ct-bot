@@ -1660,3 +1660,160 @@ ConnectionError: Failed to reconnect and authenticate WebSocket.
 2025-09-29 14:48:23,762 [    INFO] bybit_trading_system:374 - Advanced Kelly Calculator initialized with safety limits
 2025-09-29 14:48:23,784 [    INFO] bybit_trading_system:672 - Kelly calculation for BTCUSDT: fraction=0.025, size=$249.84
 2025-09-29 14:48:23,784 [    INFO] bybit_trading_system:180 - [live-format] BTCUSDT: qty_in=0.00499680, price=$50000.0000, step=0.001, rule_min_qty=0.001, min_notional=5.0, notional_min_qty=0.00010000, effective_min_qty=0.00100000 -> final_qty=0.004
+2025-09-30 07:41:17,430 [    INFO] bybit_trading_system:746 - ✅ Production logging system initialized successfully
+2025-09-30 07:41:58,485 [    INFO] bybit_trading_system:746 - ✅ Production logging system initialized successfully
+2025-09-30 07:41:59,654 [    INFO] bybit_trading_system:3426 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:41:59,654 [    INFO] bybit_trading_system:5450 - Signal buffer size = 128
+2025-09-30 07:41:59,654 [    INFO] bybit_trading_system:391 - Advanced Kelly Calculator initialized with safety limits
+2025-09-30 07:41:59,654 [    INFO] bybit_trading_system:964 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-30 07:41:59,685 [    INFO] bybit_trading_system:436 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-30 07:41:59,686 [    INFO] bybit_trading_system:3010 - Stage 2 Copy Trading System initialized (monitor=FinalTradingMonitor)
+2025-09-30 07:41:59,694 [    INFO] bybit_trading_system:3426 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:41:59,694 [    INFO] bybit_trading_system:5450 - Signal buffer size = 128
+2025-09-30 07:41:59,695 [    INFO] bybit_trading_system:3426 - websocket - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:43:04,875 [    INFO] bybit_trading_system:746 - ✅ Production logging system initialized successfully
+2025-09-30 07:43:05,986 [    INFO] bybit_trading_system:3426 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:43:05,986 [    INFO] bybit_trading_system:5482 - Signal buffer size = 128
+2025-09-30 07:43:05,986 [    INFO] bybit_trading_system:391 - Advanced Kelly Calculator initialized with safety limits
+2025-09-30 07:43:05,986 [    INFO] bybit_trading_system:964 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-30 07:43:06,008 [    INFO] bybit_trading_system:436 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-30 07:43:06,009 [    INFO] bybit_trading_system:3010 - Stage 2 Copy Trading System initialized (monitor=FinalTradingMonitor)
+2025-09-30 07:43:06,010 [   ERROR] bybit_trading_system:5258 - Error handling OPEN signal for BTCUSDT: 'ProductionSignalProcessor' object has no attribute '_copy_system_callback'
+Traceback (most recent call last):
+  File "/app/enhanced_trading_system_final_fixed.py", line 5224, in _handle_signal_with_stage2_check
+    if self._copy_system_callback:
+       ^^^^^^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'ProductionSignalProcessor' object has no attribute '_copy_system_callback'. Did you mean: 'register_copy_system_callback'?
+2025-09-30 07:43:06,022 [    INFO] bybit_trading_system:3426 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:43:06,022 [    INFO] bybit_trading_system:5482 - Signal buffer size = 128
+2025-09-30 07:43:06,023 [    INFO] bybit_trading_system:3426 - websocket - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:43:06,023 [ WARNING] bybit_trading_system:4028 - WS_ESCALATE_SCHEDULED: Escalation to restart scheduled in 0.01s.
+2025-09-30 07:43:06,038 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
+2025-09-30 07:43:06,038 [ WARNING] bybit_trading_system:4028 - WS_ESCALATE_SCHEDULED: Escalation to restart scheduled in 0.01s.
+2025-09-30 07:43:06,049 [    INFO] bybit_trading_system:4047 - WS_ESCALATE_ABORTED: WebSocket reconnected before escalation timeout.
+2025-09-30 07:43:31,232 [    INFO] bybit_trading_system:746 - ✅ Production logging system initialized successfully
+2025-09-30 07:43:32,262 [    INFO] bybit_trading_system:3426 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:43:32,262 [    INFO] bybit_trading_system:5482 - Signal buffer size = 128
+2025-09-30 07:43:32,262 [    INFO] bybit_trading_system:391 - Advanced Kelly Calculator initialized with safety limits
+2025-09-30 07:43:32,262 [    INFO] bybit_trading_system:964 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-30 07:43:32,284 [    INFO] bybit_trading_system:436 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-30 07:43:32,285 [    INFO] bybit_trading_system:3010 - Stage 2 Copy Trading System initialized (monitor=FinalTradingMonitor)
+2025-09-30 07:43:32,286 [ WARNING] bybit_trading_system:5235 - SIG_BUFFERED: symbol=BTCUSDT, reason='no_callback'
+2025-09-30 07:43:32,286 [    INFO] bybit_trading_system:6445 - COPY_CALLBACK_BOUND: method=<AsyncMock id='139885904714240'>
+2025-09-30 07:43:32,286 [    INFO] bybit_trading_system:6450 - Poking buffer drainer to process buffered signals...
+2025-09-30 07:43:32,291 [    INFO] bybit_trading_system:3426 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:43:32,291 [    INFO] bybit_trading_system:5482 - Signal buffer size = 128
+2025-09-30 07:43:32,292 [    INFO] bybit_trading_system:3426 - websocket - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:43:32,292 [ WARNING] bybit_trading_system:4028 - WS_ESCALATE_SCHEDULED: Escalation to restart scheduled in 0.01s.
+2025-09-30 07:43:32,308 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
+2025-09-30 07:43:32,309 [ WARNING] bybit_trading_system:4028 - WS_ESCALATE_SCHEDULED: Escalation to restart scheduled in 0.01s.
+2025-09-30 07:43:32,321 [    INFO] bybit_trading_system:4047 - WS_ESCALATE_ABORTED: WebSocket reconnected before escalation timeout.
+2025-09-30 07:44:22,415 [    INFO] bybit_trading_system:746 - ✅ Production logging system initialized successfully
+2025-09-30 07:44:23,492 [    INFO] bybit_trading_system:3426 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:44:23,492 [    INFO] bybit_trading_system:5482 - Signal buffer size = 128
+2025-09-30 07:44:23,492 [    INFO] bybit_trading_system:391 - Advanced Kelly Calculator initialized with safety limits
+2025-09-30 07:44:23,493 [    INFO] bybit_trading_system:964 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-30 07:44:23,514 [    INFO] bybit_trading_system:436 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-30 07:44:23,515 [    INFO] bybit_trading_system:3010 - Stage 2 Copy Trading System initialized (monitor=FinalTradingMonitor)
+2025-09-30 07:44:23,516 [ WARNING] bybit_trading_system:5235 - SIG_BUFFERED: symbol=BTCUSDT, reason='no_callback'
+2025-09-30 07:44:23,517 [    INFO] bybit_trading_system:6445 - COPY_CALLBACK_BOUND: method=<AsyncMock id='139752655149088'>
+2025-09-30 07:44:23,517 [    INFO] bybit_trading_system:6450 - Poking buffer drainer to process buffered signals...
+2025-09-30 07:44:23,527 [    INFO] bybit_trading_system:3426 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:44:23,528 [    INFO] bybit_trading_system:5482 - Signal buffer size = 128
+2025-09-30 07:44:23,528 [    INFO] bybit_trading_system:3426 - websocket - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:44:23,529 [ WARNING] bybit_trading_system:4028 - WS_ESCALATE_SCHEDULED: Escalation to restart scheduled in 0.01s.
+2025-09-30 07:44:23,543 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
+2025-09-30 07:44:23,544 [ WARNING] bybit_trading_system:4028 - WS_ESCALATE_SCHEDULED: Escalation to restart scheduled in 0.01s.
+2025-09-30 07:44:23,554 [    INFO] bybit_trading_system:4047 - WS_ESCALATE_ABORTED: WebSocket reconnected before escalation timeout.
+2025-09-30 07:46:34,248 [    INFO] bybit_trading_system:746 - ✅ Production logging system initialized successfully
+2025-09-30 07:46:35,885 [    INFO] bybit_trading_system:3426 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:46:35,885 [    INFO] bybit_trading_system:5422 - Signal buffer size = 128
+2025-09-30 07:46:35,885 [    INFO] bybit_trading_system:391 - Advanced Kelly Calculator initialized with safety limits
+2025-09-30 07:46:35,886 [    INFO] bybit_trading_system:964 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-30 07:46:35,917 [    INFO] bybit_trading_system:436 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-30 07:46:35,918 [    INFO] bybit_trading_system:3010 - Stage 2 Copy Trading System initialized (monitor=FinalTradingMonitor)
+2025-09-30 07:46:35,919 [ WARNING] bybit_trading_system:5235 - SIG_BUFFERED: symbol=BTCUSDT, reason='no_callback'
+2025-09-30 07:46:35,920 [    INFO] bybit_trading_system:6385 - COPY_CALLBACK_BOUND: method=<AsyncMock id='139734138842784'>
+2025-09-30 07:46:35,920 [    INFO] bybit_trading_system:6390 - Poking buffer drainer to process buffered signals...
+2025-09-30 07:46:35,923 [    INFO] bybit_trading_system:6655 - Buffer drainer task started.
+2025-09-30 07:46:35,923 [    INFO] bybit_trading_system:6665 - Draining signal buffer (1 items)...
+2025-09-30 07:46:35,924 [    INFO] bybit_trading_system:6678 - SIG_DRAIN_SUCCESS: symbol=BTCUSDT, latency_ms=0.51
+2025-09-30 07:46:35,924 [    INFO] bybit_trading_system:6700 - Signal buffer drain complete.
+2025-09-30 07:46:36,025 [    INFO] bybit_trading_system:5228 - ✅ OPEN signal forwarded to copy system: BTCUSDT
+2025-09-30 07:46:36,026 [    INFO] bybit_trading_system:6704 - Buffer drainer task cancelled.
+2025-09-30 07:46:36,031 [    INFO] bybit_trading_system:3426 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:46:36,032 [    INFO] bybit_trading_system:5422 - Signal buffer size = 128
+2025-09-30 07:46:36,032 [    INFO] bybit_trading_system:3426 - websocket - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:46:36,033 [ WARNING] bybit_trading_system:4028 - WS_ESCALATE_SCHEDULED: Escalation to restart scheduled in 0.01s.
+2025-09-30 07:46:36,044 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
+2025-09-30 07:46:36,045 [ WARNING] bybit_trading_system:4028 - WS_ESCALATE_SCHEDULED: Escalation to restart scheduled in 0.01s.
+2025-09-30 07:46:36,056 [    INFO] bybit_trading_system:4047 - WS_ESCALATE_ABORTED: WebSocket reconnected before escalation timeout.
+2025-09-30 07:47:06,688 [    INFO] bybit_trading_system:746 - ✅ Production logging system initialized successfully
+2025-09-30 07:47:07,869 [    INFO] bybit_trading_system:3426 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:47:07,870 [    INFO] bybit_trading_system:5422 - Signal buffer size = 128
+2025-09-30 07:47:07,870 [    INFO] bybit_trading_system:391 - Advanced Kelly Calculator initialized with safety limits
+2025-09-30 07:47:07,870 [    INFO] bybit_trading_system:964 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-30 07:47:07,899 [    INFO] bybit_trading_system:436 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-30 07:47:07,900 [    INFO] bybit_trading_system:3010 - Stage 2 Copy Trading System initialized (monitor=FinalTradingMonitor)
+2025-09-30 07:47:07,901 [ WARNING] bybit_trading_system:5235 - SIG_BUFFERED: symbol=BTCUSDT, reason='no_callback'
+2025-09-30 07:47:07,902 [    INFO] bybit_trading_system:6385 - COPY_CALLBACK_BOUND: method=<AsyncMock id='139783221559952'>
+2025-09-30 07:47:07,902 [    INFO] bybit_trading_system:6390 - Poking buffer drainer to process buffered signals...
+2025-09-30 07:47:07,904 [    INFO] bybit_trading_system:6655 - Buffer drainer task started.
+2025-09-30 07:47:07,905 [    INFO] bybit_trading_system:6665 - Draining signal buffer (1 items)...
+2025-09-30 07:47:07,905 [    INFO] bybit_trading_system:6678 - SIG_DRAIN_SUCCESS: symbol=BTCUSDT, latency_ms=0.50
+2025-09-30 07:47:07,905 [    INFO] bybit_trading_system:6700 - Signal buffer drain complete.
+2025-09-30 07:47:08,006 [    INFO] bybit_trading_system:5228 - ✅ OPEN signal forwarded to copy system: BTCUSDT
+2025-09-30 07:47:08,006 [    INFO] bybit_trading_system:6704 - Buffer drainer task cancelled.
+2025-09-30 07:47:08,011 [    INFO] bybit_trading_system:3426 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:47:08,011 [    INFO] bybit_trading_system:5422 - Signal buffer size = 128
+2025-09-30 07:47:08,012 [    INFO] bybit_trading_system:3426 - websocket - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:47:08,012 [ WARNING] bybit_trading_system:4028 - WS_ESCALATE_SCHEDULED: Escalation to restart scheduled in 0.01s.
+2025-09-30 07:47:08,023 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
+2025-09-30 07:47:08,024 [ WARNING] bybit_trading_system:4028 - WS_ESCALATE_SCHEDULED: Escalation to restart scheduled in 0.01s.
+2025-09-30 07:47:08,035 [    INFO] bybit_trading_system:4047 - WS_ESCALATE_ABORTED: WebSocket reconnected before escalation timeout.
+2025-09-30 07:48:59,023 [    INFO] bybit_trading_system:746 - ✅ Production logging system initialized successfully
+2025-09-30 07:49:00,073 [    INFO] bybit_trading_system:3426 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:49:00,074 [    INFO] bybit_trading_system:5418 - Signal buffer size = 128
+2025-09-30 07:49:00,074 [    INFO] bybit_trading_system:391 - Advanced Kelly Calculator initialized with safety limits
+2025-09-30 07:49:00,074 [    INFO] bybit_trading_system:964 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-30 07:49:00,095 [    INFO] bybit_trading_system:436 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-30 07:49:00,096 [    INFO] bybit_trading_system:3010 - Stage 2 Copy Trading System initialized (monitor=FinalTradingMonitor)
+2025-09-30 07:49:00,097 [ WARNING] bybit_trading_system:5231 - SIG_BUFFERED: symbol=BTCUSDT, reason='no_callback'
+2025-09-30 07:49:00,098 [    INFO] bybit_trading_system:6381 - COPY_CALLBACK_BOUND: method=<AsyncMock id='139842758307632'>
+2025-09-30 07:49:00,098 [    INFO] bybit_trading_system:6386 - Poking buffer drainer to process buffered signals...
+2025-09-30 07:49:00,099 [    INFO] bybit_trading_system:6622 - Buffer drainer task started.
+2025-09-30 07:49:00,099 [    INFO] bybit_trading_system:6632 - Draining signal buffer (1 items)...
+2025-09-30 07:49:00,100 [    INFO] bybit_trading_system:6645 - SIG_DRAIN_SUCCESS: symbol=BTCUSDT, latency_ms=0.46
+2025-09-30 07:49:00,100 [    INFO] bybit_trading_system:6667 - Signal buffer drain complete.
+2025-09-30 07:49:00,202 [    INFO] bybit_trading_system:5224 - ✅ OPEN signal forwarded to copy system: BTCUSDT
+2025-09-30 07:49:00,202 [    INFO] bybit_trading_system:6671 - Buffer drainer task cancelled.
+2025-09-30 07:49:00,206 [    INFO] bybit_trading_system:3426 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:49:00,207 [    INFO] bybit_trading_system:5418 - Signal buffer size = 128
+2025-09-30 07:49:00,207 [    INFO] bybit_trading_system:3426 - websocket - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:49:00,208 [ WARNING] bybit_trading_system:4028 - WS_ESCALATE_SCHEDULED: Escalation to restart scheduled in 0.01s.
+2025-09-30 07:49:00,219 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
+2025-09-30 07:49:00,220 [ WARNING] bybit_trading_system:4028 - WS_ESCALATE_SCHEDULED: Escalation to restart scheduled in 0.01s.
+2025-09-30 07:49:00,230 [    INFO] bybit_trading_system:4047 - WS_ESCALATE_ABORTED: WebSocket reconnected before escalation timeout.
+2025-09-30 07:50:10,911 [    INFO] bybit_trading_system:746 - ✅ Production logging system initialized successfully
+2025-09-30 07:50:12,070 [    INFO] bybit_trading_system:3426 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:50:12,070 [    INFO] bybit_trading_system:5405 - Signal buffer size = 128
+2025-09-30 07:50:12,070 [    INFO] bybit_trading_system:391 - Advanced Kelly Calculator initialized with safety limits
+2025-09-30 07:50:12,070 [    INFO] bybit_trading_system:964 - DynamicTrailingStopManager initialized with config: {'enabled': True, 'mode': 'conservative', 'activation_pct': 0.015, 'step_pct': 0.002, 'max_pct': 0.05, 'atr_period': 14, 'atr_multiplier': 2.0}
+2025-09-30 07:50:12,093 [    INFO] bybit_trading_system:436 - Kelly config applied: multiplier=0.5, max_size=0.25, lookback=100
+2025-09-30 07:50:12,094 [    INFO] bybit_trading_system:3010 - Stage 2 Copy Trading System initialized (monitor=FinalTradingMonitor)
+2025-09-30 07:50:12,095 [ WARNING] bybit_trading_system:5214 - SIG_BUFFERED: symbol=BTCUSDT, reason='no_callback'
+2025-09-30 07:50:12,096 [    INFO] bybit_trading_system:6368 - COPY_CALLBACK_BOUND: method=<AsyncMock id='139964550746512'>
+2025-09-30 07:50:12,096 [    INFO] bybit_trading_system:6373 - Poking buffer drainer to process buffered signals...
+2025-09-30 07:50:12,097 [    INFO] bybit_trading_system:6609 - Buffer drainer task started.
+2025-09-30 07:50:12,097 [    INFO] bybit_trading_system:6619 - Draining signal buffer (1 items)...
+2025-09-30 07:50:12,098 [    INFO] bybit_trading_system:6632 - SIG_DRAIN_SUCCESS: symbol=BTCUSDT, latency_ms=0.44
+2025-09-30 07:50:12,098 [    INFO] bybit_trading_system:6654 - Signal buffer drain complete.
+2025-09-30 07:50:12,198 [    INFO] bybit_trading_system:5207 - ✅ OPEN signal forwarded to copy system: BTCUSDT
+2025-09-30 07:50:12,199 [    INFO] bybit_trading_system:6658 - Buffer drainer task cancelled.
+2025-09-30 07:50:12,203 [    INFO] bybit_trading_system:3426 - SOURCE_WS - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:50:12,203 [    INFO] bybit_trading_system:5405 - Signal buffer size = 128
+2025-09-30 07:50:12,204 [    INFO] bybit_trading_system:3426 - websocket - WebSocket manager initialized (websockets v15.0.1)
+2025-09-30 07:50:12,204 [ WARNING] bybit_trading_system:4028 - WS_ESCALATE_SCHEDULED: Escalation to restart scheduled in 0.01s.
+2025-09-30 07:50:12,215 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
+2025-09-30 07:50:12,216 [ WARNING] bybit_trading_system:4028 - WS_ESCALATE_SCHEDULED: Escalation to restart scheduled in 0.01s.
+2025-09-30 07:50:12,227 [    INFO] bybit_trading_system:4047 - WS_ESCALATE_ABORTED: WebSocket reconnected before escalation timeout.
