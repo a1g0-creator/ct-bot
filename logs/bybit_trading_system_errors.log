@@ -31,3 +31,9 @@ AttributeError: 'ProductionSignalProcessor' object has no attribute '_copy_syste
 2025-09-30 07:50:12,215 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
 2025-10-01 04:43:30,438 [   ERROR] bybit_trading_system:4037 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
 2025-10-01 08:41:25,229 [   ERROR] bybit_trading_system:4037 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
+2025-10-01 10:25:27,397 [   ERROR] bybit_trading_system:3443 - HEDGE_FAIL: Processing single position update for BTCUSDT failed: 'Stage2CopyTradingSystem' object has no attribute 'order_manager'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3429, in _process_single_position_update
+    self.order_manager.cancel_all_symbol_orders(symbol)
+    ^^^^^^^^^^^^^^^^^^
+AttributeError: 'Stage2CopyTradingSystem' object has no attribute 'order_manager'

@@ -161,16 +161,18 @@ class TestTrailingStopManager(unittest.IsolatedAsyncioTestCase):
         to an absolute price distance and rounded to the symbol's tick size.
         """
         # --- Arrange ---
+        # The position_data represents the DONOR's position that triggers the TS update
         position_data = {
             'symbol': 'BTCUSDT',
             'side': 'Buy',
             'quantity': 0.1,
             'entryPrice': 50000,
-            'position_idx': 0,
+            'position_idx': 1, # Use a hedge mode idx to test IDX_MAP logic
         }
         self.mock_main_client.get_symbol_filters.return_value = {"tick_size": "0.5"}
+        # IMPORTANT: The logic now requires an active position with a 'size' field on MAIN.
         self.mock_main_client.get_positions.return_value = [
-            {'symbol': 'BTCUSDT', 'positionIdx': 0, 'side': 'Buy', 'markPrice': '51000', 'lastPrice': '51000', 'sessionAvgPrice': '51000'}
+            {'symbol': 'BTCUSDT', 'positionIdx': 1, 'side': 'Buy', 'size': '0.1', 'markPrice': '51000'}
         ]
         self.mock_order_manager.place_trailing_stop = AsyncMock(return_value={'success': True})
 
@@ -181,7 +183,8 @@ class TestTrailingStopManager(unittest.IsolatedAsyncioTestCase):
         self.mock_order_manager.place_trailing_stop.assert_called_once()
         call_args = self.mock_order_manager.place_trailing_stop.call_args.kwargs
         self.assertEqual(call_args.get('symbol'), 'BTCUSDT')
-        self.assertEqual(call_args.get('position_idx'), 0)
+        # The logic now finds the real pos_idx from the main account's position
+        self.assertEqual(call_args.get('position_idx'), 1)
 
 
     async def test_remove_trailing_stop(self):
@@ -314,6 +317,10 @@ class TestUniversalCopyLogic(unittest.IsolatedAsyncioTestCase):
             side_effect=lambda **kwargs: {"recommended_size": kwargs.get('current_size', kwargs.get('proportional', 0))}
         )
         self.system.copy_manager.order_manager.get_min_order_qty = AsyncMock(return_value=0.001)
+
+        # Mock cleanup methods to prevent real API calls during tests
+        self.system.trailing_manager.remove_trailing_stop = AsyncMock()
+        self.system.copy_manager.order_manager.cancel_all_symbol_orders = AsyncMock()
 
     # --- HEDGE Mode Tests ---
 

@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from collections import deque, defaultdict, namedtuple
 import math
+import random
 import statistics
 import traceback
 import uuid
@@ -1181,98 +1182,104 @@ class DynamicTrailingStopManager:
         """
         Calculates and sets a trailing stop for both LONG and SHORT positions using v5/position/trading-stop.
         This method is idempotent, checks existing values, and includes a debounce mechanism.
+        It determines the correct positionIdx for the MAIN account, ignoring the donor's.
         """
         symbol = position_data.get('symbol')
-        position_idx = int(position_data.get('position_idx', 0))
+        donor_pos_idx = int(position_data.get('position_idx', 0)) # This is for logging/comparison only
 
         try:
-            # 1. Debounce check
+            # 1. Fetch MAIN account positions to determine correct mode and pos_idx
+            main_positions = await self.main_client.get_positions(category="linear", symbol=symbol)
+            active_main_positions = [p for p in main_positions if safe_float(p.get('size', 0)) > 0]
+
+            if not active_main_positions:
+                logger.info(f"TS_SKIP: No active position on MAIN for {symbol}. Cannot set trailing stop.")
+                return
+
+            # Determine MAIN mode and find the relevant position
+            is_hedge_mode_main = any(int(p.get('positionIdx', 0)) in [1, 2] for p in active_main_positions)
+            main_mode_str = "HEDGE" if is_hedge_mode_main else "ONEWAY"
+
+            side_from_pos_data = "Buy" if donor_pos_idx == 1 else "Sell" if donor_pos_idx == 2 else position_data.get('side')
+
+            current_pos = None
+            if is_hedge_mode_main:
+                # In Hedge mode, find the position matching the intended side (from donor_pos_idx)
+                target_side = "Buy" if donor_pos_idx == 1 else "Sell"
+                current_pos = next((p for p in active_main_positions if p.get('side') == target_side), None)
+            else: # One-way mode
+                current_pos = active_main_positions[0] if active_main_positions else None
+
+            if not current_pos:
+                logger.warning(f"TS_WARN: Could not find a matching active position on MAIN for {symbol} with side {side_from_pos_data}.")
+                return
+
+            main_pos_idx = int(current_pos.get('positionIdx'))
+            logger.info(f"IDX_MAP: symbol={symbol}, donor_idx={donor_pos_idx}, main_idx={main_pos_idx}, mode_main={main_mode_str}")
+
+            # 2. Debounce check using the correct main_pos_idx
             now = time.time()
-            last_update_key = (symbol, position_idx)
-            last_update = self._ts_update_timestamps.get(last_update_key, 0)
-            if now - last_update < 2:  # 2-second debounce
-                logger.info(f"TS_DEBOUNCE: Skipping update for {symbol} idx={position_idx}, last update was {now - last_update:.1f}s ago.")
+            last_update_key = (symbol, main_pos_idx)
+            if now - self._ts_update_timestamps.get(last_update_key, 0) < 2:  # 2-second debounce
+                logger.info(f"TS_DEBOUNCE: Skipping update for {symbol} idx={main_pos_idx}, last update was {now - self._ts_update_timestamps.get(last_update_key, 0):.1f}s ago.")
                 return
             self._ts_update_timestamps[last_update_key] = now
 
             if not self.cfg.get('enabled'):
-                logger.info(f"TS_SKIP: Trailing stops are disabled globally for {symbol} idx={position_idx}.")
+                logger.info(f"TS_SKIP: Trailing stops are disabled globally for {symbol} idx={main_pos_idx}.")
                 return
 
-            entry_price = float(position_data.get('entryPrice', 0))
-            position_value = float(position_data.get('size', 0)) * entry_price
+            # 3. Check notional value
+            entry_price = float(current_pos.get('entryPrice', 0))
+            position_value = float(current_pos.get('size', 0)) * entry_price
             if position_value < self.cfg.get('min_notional_for_ts', 0):
-                logger.info(f"TS_SKIP: Position value ${position_value:.2f} for {symbol} idx={position_idx} is below threshold.")
+                logger.info(f"TS_SKIP: Position value ${position_value:.2f} for {symbol} idx={main_pos_idx} is below threshold.")
                 return
 
-            # 2. Fetch current position state from Bybit to get the most up-to-date values
-            positions = await self.main_client.get_positions(category="linear", symbol=symbol)
-            current_pos = next((p for p in positions if int(p.get('positionIdx', -1)) == position_idx), None)
-
-            if not current_pos:
-                logger.warning(f"TS_WARN: Could not find current position for {symbol} idx={position_idx} to compare.")
-                return
-
+            # 4. Calculate new TS values
             current_ts = safe_float(current_pos.get('trailingStop', 0.0))
             current_active_price = safe_float(current_pos.get('activePrice', 0.0))
-
-            # 3. Calculate new TS values based on direction (position_idx or side)
-            side_from_pos = current_pos.get('side', 'None').strip()
-            if position_idx in [1, 2]: # Hedge mode
-                side = "Long" if position_idx == 1 else "Short"
-            elif position_idx == 0 and side_from_pos in ['Buy', 'Sell']: # One-Way mode
-                side = "Long" if side_from_pos == 'Buy' else "Short"
-            else: # Not a valid position to trail
-                logger.info(f"TS_SKIP: Cannot determine trail side for {symbol} idx={position_idx} side='{side_from_pos}'.")
-                return
+            side = current_pos.get('side') # Use side from the actual MAIN position
 
             ref_price = float(current_pos.get('markPrice', entry_price))
-
             filters = await self.main_client.get_symbol_filters(symbol, category="linear")
-            tick_size = float(filters.get("tick_size", 0.01))
+            tick_size = float(filters.get("tick_size", 0.001))
 
             activation_pct = float(self.cfg.get('activation_pct', 0.015))
             step_pct = float(self.cfg.get('step_pct', 0.002))
 
-            if side == "Long": # position_idx == 1
+            if side == "Buy":
                 triggerDirection = 2  # Fall
                 active_price = self._round_to_tick(ref_price * (1 + activation_pct), tick_size)
-            elif side == "Short": # position_idx == 2
+            elif side == "Sell":
                 triggerDirection = 1  # Rise
                 active_price = self._round_to_tick(ref_price * (1 - activation_pct), tick_size)
             else:
-                logger.error(f"TS_FAIL: Invalid position_idx ({position_idx}) for {symbol}. Cannot determine direction.")
+                logger.error(f"TS_FAIL: Invalid side '{side}' for {symbol} on MAIN. Cannot determine direction.")
                 return
 
-            trailing_step = self._round_to_tick(ref_price * step_pct, tick_size)
+            # Trailing stop distance must be an absolute price value
+            trailing_step_distance = self._round_to_tick(ref_price * step_pct, tick_size)
 
-            logger.info(
-                f"Trailing set/updated: symbol={symbol}, position_idx={position_idx}, side={side}, "
-                f"activePrice={active_price}, trailingStop={trailing_step}, triggerDirection={triggerDirection}, source='stage2'"
-            )
-
-            # 4. Compare with existing values (with tolerance)
-            is_ts_same = abs(current_ts - trailing_step) < (tick_size / 2) if current_ts != 0 else False
-            is_active_price_same = abs(current_active_price - active_price) < (tick_size / 2) if current_active_price != 0 else False
-
-            if current_active_price == 0 and active_price > 0:
-                is_active_price_same = False
+            # 5. Compare with existing values
+            is_ts_same = abs(current_ts - trailing_step_distance) < (tick_size / 2) if current_ts > 0 else False
+            is_active_price_same = abs(current_active_price - active_price) < (tick_size / 2) if current_active_price > 0 else False
 
             if is_ts_same and is_active_price_same:
-                logger.info(f"TS_SKIP_IDENTICAL: symbol={symbol} idx={position_idx} activePrice={current_active_price} trailingStop={current_ts}")
+                logger.info(f"TS_SKIP_IDENTICAL: symbol={symbol} idx={main_pos_idx} activePrice={current_active_price} trailingStop={current_ts}")
                 return
 
-            # 5. Set the trailing stop
+            # 6. Set the trailing stop using the correct main_pos_idx
             await self.order_manager.place_trailing_stop(
                 symbol=symbol,
-                trailing_stop_price=str(trailing_step),
+                trailing_stop_price=str(trailing_step_distance),
                 active_price=str(active_price) if not is_active_price_same else None,
-                position_idx=position_idx,
+                position_idx=main_pos_idx,
                 trigger_direction=triggerDirection
             )
 
         except Exception as e:
-            logger.error(f"TS_FAIL(create_or_update): Failed for {symbol} idx={position_idx}", exc_info=True)
+            logger.error(f"TS_FAIL(create_or_update): Failed for {symbol} (donor_idx={donor_pos_idx})", exc_info=True)
 
     # --- Adapter Methods for Lifecycle Integration ---
 
@@ -1799,59 +1806,72 @@ class AdaptiveOrderManager:
             return {"success": False, "error": str(e)}
 
     async def place_trailing_stop(self, symbol: str, trailing_stop_price: str, active_price: Optional[str] = None, position_idx: int = 0, trigger_direction: Optional[int] = None):
-        input_ts = trailing_stop_price
-
-        # Normalize the input to determine the value to be sent to the API
         sent_ts = str(trailing_stop_price) if trailing_stop_price not in ["", None] else "0"
-
-        if trailing_stop_price in ["", None, "0"]:
-            self.logger.info(f"TS_REMOVE_NORMALIZED: input='{input_ts}', sent='0'")
-            sent_ts = "0"
+        is_reset = sent_ts == "0"
 
         data = {
             "category": "linear",
             "symbol": symbol,
             "positionIdx": position_idx,
         }
-        is_reset = sent_ts == "0"
+
         try:
+            payload_for_log = {}
             if is_reset:
-                self.logger.info(f"TS_RESET_START: symbol={symbol}, positionIdx={position_idx}")
+                log_msg = f"TS_CLEAR: Clearing trailing stop for symbol={symbol}, positionIdx={position_idx}"
+                self.logger.info(log_msg)
                 data["trailingStop"] = "0"
+                # Bybit docs suggest sending all to 0 to be safe when clearing
                 data["takeProfit"] = "0"
                 data["stopLoss"] = "0"
+                payload_for_log = {"trailingStop": "0"}
             else:
-                log_msg = (
-                    f"TS_APPLY_START: symbol={symbol}, trailingStop='{sent_ts}', "
-                    f"activePrice='{active_price}', positionIdx={position_idx}, triggerDirection={trigger_direction}"
-                )
-                self.logger.info(log_msg)
                 data["trailingStop"] = sent_ts
+                payload_for_log["trailingStop"] = sent_ts
                 if active_price:
                     data["activePrice"] = active_price
+                    payload_for_log["activePrice"] = active_price
                 if trigger_direction:
                     data["triggerDirection"] = trigger_direction
+                    payload_for_log["triggerDirection"] = trigger_direction
 
-            self.logger.debug(f"TS Payload for {symbol}: {json.dumps(data)}")
+                log_msg = (
+                    f"TS_APPLY: Setting trailing stop for symbol={symbol}, positionIdx={position_idx} "
+                    f"with payload: {json.dumps(payload_for_log)}"
+                )
+                self.logger.info(log_msg)
+
             result = await self.main_client._make_single_request("POST", "position/trading-stop", data=data)
-            self.logger.info("%s: symbol=%s trailingStop='%s'",
-                             "TS_RESET_OK" if is_reset else "TS_APPLY_OK",
-                             symbol, sent_ts)
-            return {"success": True, "result": result}
+
+            ret_code = (result or {}).get("retCode")
+            if ret_code == 0:
+                self.logger.info("%s: symbol=%s, positionIdx=%s, retCode=0",
+                                 "TS_CLEAR_OK" if is_reset else "TS_APPLY_OK",
+                                 symbol, position_idx)
+                return {"success": True, "result": result}
+
+            # Handle non-zero return codes
+            err_msg = (result or {}).get("retMsg", "Unknown API error")
+            if ret_code == 34040: # Not modified
+                self.logger.info("TS_NOOP: Not modified for symbol=%s, positionIdx=%s (retCode=34040)", symbol, position_idx)
+                return {"success": True, "noop": True}
+            if ret_code == 10001: # position idx not match position mode / etc.
+                if is_reset:
+                    self.logger.info("TS_CLEAR_IGNORE: Already cleared or no position for symbol=%s, positionIdx=%s (retCode=10001)", symbol, position_idx)
+                    return {"success": True, "already_set": True}
+                else:
+                    self.logger.error("TS_APPLY_FAIL: Invalid params for symbol=%s, positionIdx=%s. Error: '%s' (retCode=10001). Payload: %s",
+                                     symbol, position_idx, err_msg, json.dumps(data))
+                    return {"success": False, "error": err_msg, "no_retry": True}
+
+            # Generic error
+            self.logger.error("TS_FAIL: API error for symbol=%s, positionIdx=%s. Error: '%s' (retCode=%s)",
+                             symbol, position_idx, err_msg, ret_code)
+            return {"success": False, "error": err_msg}
 
         except Exception as e:
-            es = str(e)
-            if "34040" in es:
-                self.logger.info("TS_NOOP: symbol=%s ret=34040 (not modified)", data.get("symbol"))
-                return {"success": True, "noop": True}
-            if is_reset and "10001" in es:
-                self.logger.info("TS_ALREADY_REMOVED{symbol=%s, reason='already_removed_10001'}", symbol)
-                return {"success": True, "already_set": True}
-            if "10001" in es and not is_reset:
-                self.logger.error("TS_APPLY_FAIL: Invalid parameters for %s. code=10001, msg='%s'", symbol, es)
-                return {"success": False, "error": es, "no_retry": True}
-            self.logger.exception("Trailing stop placement error: %s", e)
-            return {"success": False, "error": es}
+            self.logger.exception("Trailing stop placement exception for symbol=%s, positionIdx=%s: %s", symbol, position_idx, e)
+            return {"success": False, "error": str(e)}
 
     async def cancel_all_symbol_orders(self, symbol: str, order_type_filter: Optional[str] = None) -> Dict[str, Any]:
         """Cancels all open orders for a symbol, optionally filtering by type (e.g., 'Stop')."""
@@ -3314,6 +3334,33 @@ class Stage2CopyTradingSystem:
         elif mode == PositionMode.ONEWAY:
             await self._process_aggregate_position_update(positions, mode)
 
+    async def _check_and_record_action(self, action_key: tuple) -> bool:
+        """
+        Centralized idempotency check. Returns True if the action should be skipped.
+        Includes a probabilistic cleanup of the cache to prevent memory leaks.
+        """
+        async with self._idempotency_lock:
+            # 1. Check if the action is a recent duplicate
+            if time.time() - self._recent_actions.get(action_key, 0) < self._idempotency_window_sec:
+                logger.info(f"IDEMPOTENCY_SKIP: Skipping duplicate action for key {action_key}")
+                return True  # True means "skip this action"
+
+            # 2. Record the new action
+            self._recent_actions[action_key] = time.time()
+
+            # 3. Probabilistic cleanup (e.g., 5% chance on each new action)
+            if random.random() < 0.05:
+                now = time.time()
+                # Clean keys older than 10x the window to be safe
+                cleanup_threshold = now - (self._idempotency_window_sec * 10)
+                keys_to_delete = [k for k, ts in self._recent_actions.items() if ts < cleanup_threshold]
+                for k in keys_to_delete:
+                    del self._recent_actions[k]
+                if keys_to_delete:
+                    logger.debug(f"IDEMPOTENCY_CLEANUP: Removed {len(keys_to_delete)} old action keys.")
+
+            return False # False means "do not skip"
+
     async def _process_single_position_update(self, item: dict, mode: PositionMode):
         """
         Self-contained handler for a single position update in HEDGE mode.
@@ -3322,26 +3369,24 @@ class Stage2CopyTradingSystem:
         try:
             symbol = item.get('symbol')
             pos_idx = int(item.get('positionIdx', 0))
-
-            action_key = (symbol, pos_idx)
-            async with self._idempotency_lock:
-                if time.time() - self._recent_actions.get(action_key, 0) < self._idempotency_window_sec:
-                    return
-                self._recent_actions[action_key] = time.time()
-
-            main_balance = await self.main_client.get_balance()
-            source_balance = await self.source_client.get_balance()
-            if not all([main_balance, source_balance, main_balance > 0, source_balance > 0]):
-                logger.debug("Skipping copy due to invalid or zero balance.")
-                return
-
-            donor_side = (item.get('side') or "").strip()
             donor_size = float(item.get('size', 0) or 0)
-            entry_price = float(item.get('entryPrice') or item.get('markPrice') or 0)
 
             target_positions = await self.main_client.get_positions(category="linear", symbol=symbol)
             main_pos = next((p for p in target_positions if int(p.get('positionIdx', 0)) == pos_idx), None)
             main_size = safe_float(main_pos.get('size')) if main_pos else 0.0
+
+            if donor_size <= 0 and main_size <= 0:
+                logger.info(f"NOOP_ZERO: donor_size=0 and MAIN is empty for {symbol} (pos_idx={pos_idx}) - ignoring snapshot.")
+                return
+
+            main_balance = await self.main_client.get_balance()
+            source_balance = await self.source_client.get_balance()
+            if not all([main_balance, source_balance, main_balance > 0, source_balance > 0]):
+                logger.warning("Skipping copy due to invalid or zero balance.")
+                return
+
+            donor_side = (item.get('side') or "").strip()
+            entry_price = float(item.get('entryPrice') or item.get('markPrice') or 0)
             main_side = (main_pos.get('side') or '').strip() if main_pos else ''
             main_signed_qty = main_size if main_side == 'Buy' else -main_size if main_side == 'Sell' else 0.0
 
@@ -3361,22 +3406,38 @@ class Stage2CopyTradingSystem:
             delta = donor_signed - main_signed_qty
 
             if abs(delta) < min_qty and donor_signed != 0:
+                logger.info(f"HEDGE_SKIP_MIN_DELTA: Calculated delta {delta} for {symbol} is below min_qty {min_qty}. No action taken.")
                 return
 
             side = 'Buy' if delta > 0 else 'Sell'
             qty = abs(delta)
 
             reduce_only = (_sign(delta) != _sign(main_signed_qty)) and (abs(delta) <= abs(main_signed_qty))
-            final_position_idx = (1 if main_signed_qty > 0 else 2) if reduce_only else (1 if delta > 0 else 2)
+            final_position_idx = pos_idx # In Hedge mode, final pos_idx is the same as received.
 
             is_opening = (main_signed_qty == 0 and donor_signed != 0)
             is_full_close = (main_signed_qty != 0 and donor_signed == 0)
+
+            if is_full_close:
+                logger.info(f"HEDGE_CLOSE_SYNC: Donor closed position for {symbol} idx={final_position_idx}. Syncing MAIN to zero.")
+                qty = abs(main_signed_qty)
+                side = 'Sell' if main_signed_qty > 0 else 'Buy'
+                reduce_only = True
+
+                cleanup_tasks = [
+                    self.trailing_manager.remove_trailing_stop({'symbol': symbol, 'position_idx': final_position_idx}),
+                    self.copy_manager.order_manager.cancel_all_symbol_orders(symbol)
+                ]
+                await asyncio.gather(*cleanup_tasks)
+
+            action_key = (symbol, final_position_idx, side, round(qty, 6))
+            if await self._check_and_record_action(action_key):
+                return
 
             await self._queue_copy_order(
                 symbol, entry_price, side, qty, reduce_only, final_position_idx, is_opening, is_full_close,
                 kelly_fraction, mode, delta=delta, main_qty=main_signed_qty, target_qty=donor_signed
             )
-            return
 
         except Exception as e:
             logger.error(f"HEDGE_FAIL: Processing single position update for {item.get('symbol')} failed: {e}", exc_info=True)
@@ -3388,43 +3449,42 @@ class Stage2CopyTradingSystem:
         """
         try:
             symbol = positions[0].get('symbol')
+            donor_net = sum(float(p.get('size', 0)) * (1 if p.get('side') == 'Buy' else -1) for p in positions)
 
-            action_key = (symbol, 0)
-            async with self._idempotency_lock:
-                if time.time() - self._recent_actions.get(action_key, 0) < self._idempotency_window_sec:
-                    return
-                self._recent_actions[action_key] = time.time()
+            target_positions = await self.main_client.get_positions(category="linear", symbol=symbol)
+            main_pos = next((p for p in target_positions if int(p.get('positionIdx', 0)) == 0), None)
+            main_net = (safe_float(main_pos.get('size')) if main_pos else 0.0) * (1 if (main_pos and (main_pos.get('side') or '').strip() == 'Buy') else -1 if main_pos else 0)
+
+            if donor_net == 0 and main_net == 0:
+                logger.info(f"NOOP_ZERO: donor_net=0 and MAIN is empty for {symbol} (one-way) - ignoring snapshot.")
+                return
 
             main_balance = await self.main_client.get_balance()
             source_balance = await self.source_client.get_balance()
             if not all([main_balance, source_balance, main_balance > 0, source_balance > 0]):
-                logger.debug("Skipping copy due to invalid or zero balance.")
+                logger.warning("Skipping copy due to invalid or zero balance.")
                 return
 
-            donor_net = sum(float(p.get('size', 0)) * (1 if p.get('side') == 'Buy' else -1) for p in positions)
             entry_price = float(positions[0].get('markPrice') or positions[0].get('entryPrice') or 0)
 
             target_size = 0.0
             kelly_fraction = 0.0
-            if donor_net != 0:
+            min_qty = await self.copy_manager.order_manager.get_min_order_qty(symbol, price=entry_price)
+
+            if abs(donor_net) > 0:
                 proportional = abs(donor_net) * (main_balance / source_balance)
                 kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(symbol=symbol, current_size=proportional, price=entry_price, balance=main_balance, source_balance=source_balance)
                 target_size = kelly_result.get('recommended_size', proportional)
                 kelly_fraction = kelly_result.get('kelly_fraction', 0.0)
 
-            min_qty = await self.copy_manager.order_manager.get_min_order_qty(symbol, price=entry_price)
-            if 0 < target_size < min_qty:
-                target_size = min_qty
+                if 0 < target_size < min_qty:
+                    target_size = min_qty
 
             final_target_net = target_size * _sign(donor_net)
-
-            target_positions = await self.main_client.get_positions(category="linear", symbol=symbol)
-            main_pos = next((p for p in target_positions if int(p.get('positionIdx', 0)) == 0), None)
-            main_net = (safe_float(main_pos.get('size')) if main_pos else 0.0) * (1 if (main_pos and (main_pos.get('side') or '').strip()=='Buy') else -1 if main_pos else 0)
-
             delta = final_target_net - main_net
 
             if abs(delta) < min_qty and final_target_net != 0:
+                logger.info(f"ONEWAY_SKIP_MIN_DELTA: Calculated delta {delta} for {symbol} is below min_qty {min_qty}. No action taken.")
                 return
 
             side = 'Buy' if delta > 0 else 'Sell'
@@ -3434,11 +3494,14 @@ class Stage2CopyTradingSystem:
             is_opening = (main_net == 0 and final_target_net != 0)
             is_full_close = (main_net != 0 and final_target_net == 0)
 
+            action_key = (symbol, 0, side, round(qty, 6))
+            if await self._check_and_record_action(action_key):
+                return
+
             await self._queue_copy_order(
                 symbol, entry_price, side, qty, reduce_only, 0, is_opening, is_full_close,
                 kelly_fraction, mode, delta=delta, main_qty=main_net, target_qty=final_target_net
             )
-            return
 
         except Exception as e:
             logger.error(f"ONEWAY_FAIL: Processing aggregate update for {positions[0].get('symbol')} failed: {e}", exc_info=True)
