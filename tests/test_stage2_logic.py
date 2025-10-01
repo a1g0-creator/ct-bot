@@ -381,6 +381,25 @@ class TestUniversalCopyLogic(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(order.metadata['reduceOnly'])
         self.assertEqual(order.source_signal.signal_type, self.SignalType_imported.POSITION_CLOSE)
 
+    async def test_mode_detector_schedules_probe_when_mode_is_unknown(self):
+        """Tests that ensure_rest_probe is scheduled and run when the mode is None."""
+        # Arrange
+        donor_pos = [{'symbol': 'XRPUSDT', 'side': 'Buy', 'size': '100', 'positionIdx': 0}]
+        self.system.mode_detector.get_mode = MagicMock(return_value=None)
+        # Mock the method that gets called in the background
+        self.system.mode_detector.ensure_rest_probe = AsyncMock()
+
+        # Act
+        await self.system.on_position_item(donor_pos)
+        # Yield control to the event loop to allow the created task to run
+        await asyncio.sleep(0)
+
+        # Assert
+        # Check that the probe method was actually called
+        self.system.mode_detector.ensure_rest_probe.assert_awaited_once_with('XRPUSDT')
+        # Ensure no order was queued because the mode was unknown
+        self.assertEqual(self.system.copy_manager.copy_queue.qsize(), 0)
+
 
     # --- ONE-WAY Mode Tests ---
 
