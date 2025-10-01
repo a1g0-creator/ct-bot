@@ -41,6 +41,7 @@ MOCK_MODULES = {
 class TestStage2Logic(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
+        os.environ['DATABASE_URL'] = 'sqlite:///:memory:'
         # Import here after modules are patched
         from stage2_copy_system import format_quantity_for_symbol_live, Stage2CopyTradingSystem, TradingSignal, SignalType
         global format_quantity_for_symbol_live_imported
@@ -135,6 +136,7 @@ if __name__ == '__main__':
 @patch.dict('sys.modules', MOCK_MODULES)
 class TestTrailingStopManager(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        os.environ['DATABASE_URL'] = 'sqlite:///:memory:'
         from stage2_copy_system import DynamicTrailingStopManager
         from enhanced_trading_system_final_fixed import EnhancedBybitClient
 
@@ -206,6 +208,7 @@ class TestTrailingStopManager(unittest.IsolatedAsyncioTestCase):
 @patch.dict('sys.modules', MOCK_MODULES)
 class TestMarginMirroring(unittest.IsolatedAsyncioTestCase):
     def setUp(self):
+        os.environ['DATABASE_URL'] = 'sqlite:///:memory:'
         from stage2_copy_system import Stage2CopyTradingSystem, MARGIN_CONFIG
         from enhanced_trading_system_final_fixed import EnhancedBybitClient
 
@@ -281,10 +284,12 @@ class TestMarginMirroring(unittest.IsolatedAsyncioTestCase):
 class TestPositionItemHandler(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
-        from stage2_copy_system import Stage2CopyTradingSystem
+        os.environ['DATABASE_URL'] = 'sqlite:///:memory:'
+        from stage2_copy_system import Stage2CopyTradingSystem, PositionMode
         # Import SignalType from the mocked module, which is now a MagicMock
         from enhanced_trading_system_final_fixed import EnhancedBybitClient, SignalType
         self.SignalType_imported = SignalType
+        self.PositionMode_imported = PositionMode
 
         # Mock clients
         self.mock_source_client = AsyncMock(spec=EnhancedBybitClient)
@@ -308,8 +313,8 @@ class TestPositionItemHandler(unittest.IsolatedAsyncioTestCase):
         self.system.copy_state.source_ws_ok = True
         self.system.copy_state.limits_checked = True
         self.system.copy_connected = True
+        self.system.trade_executor_connected = True  # FIX: Explicitly set trade executor as connected
         mock_monitor._is_paused = False
-        self.system.copy_connected = True # Fix for regression
 
         # Replace the real queue with a standard asyncio.Queue for testing
         self.system.copy_manager.copy_queue = asyncio.Queue()
@@ -339,7 +344,7 @@ class TestPositionItemHandler(unittest.IsolatedAsyncioTestCase):
         self.mock_main_client.get_positions.return_value = [] # No existing position
 
         # --- Act ---
-        await self.system.on_position_item(donor_position_update)
+        await self.system.on_position_item([donor_position_update])
 
         # --- Assert ---
         self.assertEqual(self.system.copy_manager.copy_queue.qsize(), 1)
@@ -370,7 +375,7 @@ class TestPositionItemHandler(unittest.IsolatedAsyncioTestCase):
         ]
 
         # --- Act ---
-        await self.system.on_position_item(donor_position_update)
+        await self.system.on_position_item([donor_position_update])
 
         # --- Assert ---
         self.assertEqual(self.system.copy_manager.copy_queue.qsize(), 1)
@@ -399,7 +404,7 @@ class TestPositionItemHandler(unittest.IsolatedAsyncioTestCase):
         ]
 
         # --- Act ---
-        await self.system.on_position_item(donor_position_update)
+        await self.system.on_position_item([donor_position_update])
 
         # --- Assert ---
         self.assertEqual(self.system.copy_manager.copy_queue.qsize(), 1)
@@ -430,7 +435,7 @@ class TestPositionItemHandler(unittest.IsolatedAsyncioTestCase):
         ]
 
         # --- Act ---
-        await self.system.on_position_item(donor_position_update)
+        await self.system.on_position_item([donor_position_update])
 
         # --- Assert ---
         self.assertEqual(self.system.copy_manager.copy_queue.qsize(), 1)
@@ -442,4 +447,40 @@ class TestPositionItemHandler(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(copy_order.target_side, 'Sell')
         self.assertAlmostEqual(copy_order.target_quantity, 1.0)
         self.assertEqual(copy_order.metadata['reduceOnly'], True)
+        self.assertEqual(copy_order.source_signal.signal_type, self.SignalType_imported.POSITION_MODIFY)
+
+    async def test_on_position_item_oneway_reversal(self):
+        """
+        Tests One-Way mode for a full reversal (e.g., short to long) in a single event.
+        It should result in a single, larger Buy order, not two separate orders.
+        """
+        # --- Arrange ---
+        # Donor flips from a 2 ETH short to a 1 ETH long. Net change is +3 ETH.
+        # The WS sends the final state: one position record for the long side.
+        donor_position_update = [
+             {'symbol': 'ETHUSDT', 'side': 'Buy', 'size': '1.0', 'positionIdx': 0, 'leverage': '10', 'entryPrice': '3000'}
+        ]
+        # Main account has a proportional 1 ETH short position.
+        self.mock_source_client.get_balance.return_value = 10000.0
+        self.mock_main_client.get_balance.return_value = 5000.0
+        self.mock_main_client.get_positions.return_value = [
+            {'symbol': 'ETHUSDT', 'side': 'Sell', 'size': '1.0', 'positionIdx': 0, 'leverage': '10'}
+        ]
+        self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.ONEWAY)
+
+
+        # --- Act ---
+        await self.system.on_position_item(donor_position_update)
+
+        # --- Assert ---
+        self.assertEqual(self.system.copy_manager.copy_queue.qsize(), 1)
+        _, _, copy_order = await self.system.copy_manager.copy_queue.get()
+
+        # Proportional target: 1.0 * (5000/10000) = +0.5 ETH
+        # Current main position: -1.0 ETH
+        # Delta: +0.5 - (-1.0) = +1.5 ETH
+        self.assertEqual(copy_order.target_side, 'Buy')
+        self.assertAlmostEqual(copy_order.target_quantity, 1.5)
+        # This is a reversal through zero, so reduceOnly must be False.
+        self.assertEqual(copy_order.metadata['reduceOnly'], False)
         self.assertEqual(copy_order.source_signal.signal_type, self.SignalType_imported.POSITION_MODIFY)

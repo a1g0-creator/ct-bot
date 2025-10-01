@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 import sys
 import os
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+os.environ['DATABASE_URL'] = 'sqlite:///:memory:' # FIX: Set env var before imports
 
 from enhanced_trading_system_final_fixed import (
     FinalTradingMonitor,
@@ -20,6 +21,7 @@ from stage2_copy_system import Stage2CopyTradingSystem
 class TestSystemFixes(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
+        os.environ['DATABASE_URL'] = 'sqlite:///:memory:'
         # Mock dependencies for FinalTradingMonitor
         self.mock_source_client = MagicMock()
         self.mock_main_client = MagicMock()
