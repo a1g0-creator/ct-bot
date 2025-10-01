@@ -1184,19 +1184,16 @@ class DynamicTrailingStopManager:
         Determines the correct MAIN positionIdx (ignores donor's), applies debounce and idempotency.
         """
         symbol = position_data.get("symbol")
-        donor_pos_idx = int(position_data.get("position_idx", 0))  # for logging only
+        donor_pos_idx = int(position_data.get("position_idx", 0))  # logging only
         donor_side = (position_data.get("side") or "").strip()
-
         try:
             main_positions = await self.main_client.get_positions(category="linear", symbol=symbol) or []
             active_positions = [p for p in main_positions if safe_float(p.get("size")) > 0]
             if not active_positions:
                 logger.info(f"TS_SKIP: No active position on MAIN for {symbol}.")
                 return
-
             is_hedge_main = any(int(p.get("positionIdx", 0)) in (1, 2) for p in active_positions)
             if is_hedge_main:
-                # match side on MAIN; fall back to first active
                 target_side = "Buy" if donor_pos_idx == 1 else "Sell" if donor_pos_idx == 2 else donor_side
                 current_pos = next((p for p in active_positions if (p.get("side") or "").strip() == target_side), active_positions[0])
             else:
@@ -1224,11 +1221,9 @@ class DynamicTrailingStopManager:
             curr_ts = safe_float(current_pos.get("trailingStop"))
             curr_ap = safe_float(current_pos.get("activePrice"))
             side = (current_pos.get("side") or "").strip()  # 'Buy' | 'Sell'
-
             ref_price = safe_float(current_pos.get("markPrice")) or entry_price
             filters = await self.main_client.get_symbol_filters(symbol, category="linear")
             tick = float(filters.get("tick_size") or 0.01)
-
             activation_pct = float(self.cfg.get('activation_pct', 0.015))
             step_pct = float(self.cfg.get('step_pct', 0.002))
 
@@ -1245,7 +1240,7 @@ class DynamicTrailingStopManager:
                 logger.info(f"TS_SKIP_IDENTICAL: symbol={symbol} idx={main_pos_idx} activePrice={curr_ap} trailingStop={curr_ts}")
                 return
 
-            await self.order_manager.place_trailing_stop(
+            await self.place_trailing_stop(
                 symbol=symbol,
                 trailing_stop_price=str(trail_abs),
                 active_price=(None if is_ap_same else str(active_price)),
