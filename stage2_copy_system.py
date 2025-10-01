@@ -1178,83 +1178,82 @@ class DynamicTrailingStopManager:
             return value
         return round(value / tick_size) * tick_size
 
-    async def create_or_update_trailing_stop(self, position_data: Dict[str, Any], ref_price_type: str = 'entry'):
+    async def create_or_update_trailing_stop(self, position_data: Dict[str, Any], ref_price_type: str = "entry"):
         """
-        Calculates and sets a trailing stop using v5 API. Determines correct MAIN positionIdx.
+        Calculates and sets a trailing stop using Bybit v5 API.
+        Determines the correct MAIN positionIdx (ignores donor's), applies debounce and idempotency.
         """
-        symbol = position_data.get('symbol')
-        donor_pos_idx = int(position_data.get('position_idx', 0))
-        donor_side = (position_data.get('side') or "").strip()
+        symbol = position_data.get("symbol")
+        donor_pos_idx = int(position_data.get("position_idx", 0))  # for logging only
+        donor_side = (position_data.get("side") or "").strip()
 
         try:
             main_positions = await self.main_client.get_positions(category="linear", symbol=symbol) or []
-            active_positions = [p for p in main_positions if safe_float(p.get('size')) > 0]
-
+            active_positions = [p for p in main_positions if safe_float(p.get("size")) > 0]
             if not active_positions:
                 logger.info(f"TS_SKIP: No active position on MAIN for {symbol}.")
                 return
 
-            is_hedge_main = any(int(p.get('positionIdx', 0)) in (1, 2) for p in active_positions)
-
-            current_pos = None
+            is_hedge_main = any(int(p.get("positionIdx", 0)) in (1, 2) for p in active_positions)
             if is_hedge_main:
-                target_side = 'Buy' if donor_pos_idx == 1 else 'Sell' if donor_pos_idx == 2 else donor_side
-                current_pos = next((p for p in active_positions if (p.get('side') or '').strip() == target_side), None)
+                # match side on MAIN; fall back to first active
+                target_side = "Buy" if donor_pos_idx == 1 else "Sell" if donor_pos_idx == 2 else donor_side
+                current_pos = next((p for p in active_positions if (p.get("side") or "").strip() == target_side), active_positions[0])
             else:
-                current_pos = active_positions[0] if active_positions else None
+                current_pos = active_positions[0]
 
-            if not current_pos:
-                logger.warning(f"TS_WARN: Could not find a matching active position on MAIN for {symbol}.")
-                return
-
-            main_pos_idx = int(current_pos.get('positionIdx', 0))
+            main_pos_idx = int(current_pos.get("positionIdx", 0))
+            logger.info(f"IDX_MAP: symbol={symbol}, donor_idx={donor_pos_idx}, main_idx={main_pos_idx}, main_side={(current_pos.get('side') or '').strip()}")
 
             now = time.time()
-            if now - self._ts_update_timestamps.get((symbol, main_pos_idx), 0) < 2:
-                return # Debounce
-
-            self._ts_update_timestamps[(symbol, main_pos_idx)] = now
+            key = (symbol, main_pos_idx)
+            if now - self._ts_update_timestamps.get(key, 0) < 2:
+                logger.info(f"TS_DEBOUNCE: Skip {symbol} idx={main_pos_idx}")
+                return
+            self._ts_update_timestamps[key] = now
 
             if not self.cfg.get('enabled'):
                 return
 
-            entry_price = safe_float(current_pos.get('entryPrice')) or safe_float(current_pos.get('markPrice'))
-            position_value = safe_float(current_pos.get('size')) * entry_price
+            entry_price = safe_float(current_pos.get("entryPrice")) or safe_float(current_pos.get("markPrice")) or safe_float(current_pos.get("lastPrice"))
+            position_value = safe_float(current_pos.get("size")) * entry_price
             if position_value < self.cfg.get('min_notional_for_ts', 0):
+                logger.info(f"TS_SKIP: Position value ${position_value:.2f} for {symbol} idx={main_pos_idx} is below threshold.")
                 return
 
-            filters = await self.main_client.get_symbol_filters(symbol, category="linear")
-            tick = float(filters.get('tick_size') or 0.01)
+            curr_ts = safe_float(current_pos.get("trailingStop"))
+            curr_ap = safe_float(current_pos.get("activePrice"))
+            side = (current_pos.get("side") or "").strip()  # 'Buy' | 'Sell'
 
-            side = (current_pos.get('side') or '').strip()
+            ref_price = safe_float(current_pos.get("markPrice")) or entry_price
+            filters = await self.main_client.get_symbol_filters(symbol, category="linear")
+            tick = float(filters.get("tick_size") or 0.01)
+
             activation_pct = float(self.cfg.get('activation_pct', 0.015))
             step_pct = float(self.cfg.get('step_pct', 0.002))
 
-            ref_price = safe_float(current_pos.get('markPrice')) or entry_price
-            active_price = self._round_to_tick(ref_price * (1 + activation_pct if side == 'Buy' else 1 - activation_pct), tick)
-            trail_abs = self._round_to_tick(ref_price * step_pct, tick)
-            trigger_dir = 2 if side == 'Buy' else 1
-
-            curr_ts = safe_float(current_pos.get('trailingStop'))
-            curr_ap = safe_float(current_pos.get('activePrice'))
+            if side not in ("Buy", "Sell"):
+                logger.error(f"TS_FAIL: Invalid side '{side}' for {symbol} on MAIN.")
+                return
+            active_price = self._round_to_tick(ref_price * (1 + activation_pct if side == "Buy" else 1 - activation_pct), tick)
+            trail_abs    = self._round_to_tick(ref_price * step_pct, tick)   # absolute distance
+            trigger_dir  = 2 if side == "Buy" else 1
 
             is_ts_same = curr_ts and abs(curr_ts - trail_abs) < (tick / 2)
             is_ap_same = curr_ap and abs(curr_ap - active_price) < (tick / 2)
-
             if is_ts_same and is_ap_same:
+                logger.info(f"TS_SKIP_IDENTICAL: symbol={symbol} idx={main_pos_idx} activePrice={curr_ap} trailingStop={curr_ts}")
                 return
-
-            logger.info(f"IDX_MAP: symbol={symbol}, donor_idx={donor_pos_idx}, main_idx={main_pos_idx}, main_side={side}")
 
             await self.order_manager.place_trailing_stop(
                 symbol=symbol,
                 trailing_stop_price=str(trail_abs),
-                active_price=str(active_price) if not is_ap_same else None,
+                active_price=(None if is_ap_same else str(active_price)),
                 position_idx=main_pos_idx,
                 trigger_direction=trigger_dir,
             )
         except Exception as e:
-            logger.error(f"TS_FAIL(create_or_update): Failed for {symbol}", exc_info=True)
+            logger.error(f"TS_FAIL(create_or_update): Failed for {symbol} (donor_idx={donor_pos_idx})", exc_info=True)
 
     # --- Adapter Methods for Lifecycle Integration ---
 
@@ -3170,8 +3169,12 @@ class Stage2CopyTradingSystem:
 
         try:
             # Get balances for proportional calculation
-            main_balance = await self.main_client.get_balance()
-            source_balance = await self.source_client.get_balance()
+            main_balance_raw = await self.main_client.get_balance()
+            source_balance_raw = await self.source_client.get_balance()
+
+            main_balance = safe_float(main_balance_raw.get("equity") if isinstance(main_balance_raw, dict) else main_balance_raw)
+            source_balance = safe_float(source_balance_raw.get("equity") if isinstance(source_balance_raw, dict) else source_balance_raw)
+
             if not all([main_balance, source_balance]) or source_balance <= 0:
                 logger.warning(f"MARGIN_MIRROR_SKIP: Invalid balances for {symbol}.")
                 return
@@ -3338,7 +3341,9 @@ class Stage2CopyTradingSystem:
 
             main_balance = await self.main_client.get_balance()
             source_balance = await self.source_client.get_balance()
-            if not (main_balance and source_balance and float(main_balance) > 0 and float(source_balance) > 0):
+            main_equity = safe_float(main_balance.get("equity") if isinstance(main_balance, dict) else main_balance)
+            src_equity  = safe_float(source_balance.get("equity") if isinstance(source_balance, dict) else source_balance)
+            if main_equity <= 0 or src_equity <= 0:
                 logger.warning("Skipping copy due to invalid or zero balance.")
                 return
 
@@ -3350,8 +3355,8 @@ class Stage2CopyTradingSystem:
             target_size = 0.0
             kelly_fraction = 0.0
             if donor_size > 0 and donor_side:
-                proportional_size = donor_size * (main_balance / source_balance)
-                kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(symbol=symbol, current_size=proportional_size, price=entry_price, balance=main_balance, source_balance=source_balance)
+                proportional_size = donor_size * (main_equity / src_equity)
+                kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(symbol=symbol, current_size=proportional_size, price=entry_price, balance=main_equity, source_balance=src_equity)
                 target_size = kelly_result.get('recommended_size', proportional_size)
                 kelly_fraction = kelly_result.get('kelly_fraction', 0.0)
 
@@ -3418,7 +3423,9 @@ class Stage2CopyTradingSystem:
 
             main_balance = await self.main_client.get_balance()
             source_balance = await self.source_client.get_balance()
-            if not (main_balance and source_balance and float(main_balance) > 0 and float(source_balance) > 0):
+            main_equity = safe_float(main_balance.get("equity") if isinstance(main_balance, dict) else main_balance)
+            src_equity  = safe_float(source_balance.get("equity") if isinstance(source_balance, dict) else source_balance)
+            if main_equity <= 0 or src_equity <= 0:
                 logger.warning("Skipping copy due to invalid or zero balance.")
                 return
 
@@ -3429,8 +3436,8 @@ class Stage2CopyTradingSystem:
             min_qty = await self.copy_manager.order_manager.get_min_order_qty(symbol, price=entry_price)
 
             if abs(donor_net) > 0:
-                proportional = abs(donor_net) * (main_balance / source_balance)
-                kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(symbol=symbol, current_size=proportional, price=entry_price, balance=main_balance, source_balance=source_balance)
+                proportional = abs(donor_net) * (main_equity / src_equity)
+                kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(symbol=symbol, current_size=proportional, price=entry_price, balance=main_equity, source_balance=src_equity)
                 target_size = kelly_result.get('recommended_size', proportional)
                 kelly_fraction = kelly_result.get('kelly_fraction', 0.0)
 

@@ -233,8 +233,8 @@ class TestMarginMirroring(unittest.IsolatedAsyncioTestCase):
     async def test_proportional_margin_addition(self):
         """Tests if a margin addition on the donor is proportionally mirrored."""
         # --- Arrange ---
-        self.mock_source_client.get_balance.return_value = 10000.0
-        self.mock_main_client.get_balance.return_value = 5000.0 # 0.5x ratio
+        self.mock_source_client.get_balance.return_value = {"equity": 10000.0}
+        self.mock_main_client.get_balance.return_value = {"equity": 5000.0} # 0.5x ratio
         self.mock_main_client.add_margin = AsyncMock(return_value={'success': True})
 
         donor_margin_change = 50.0 # Donor adds 50 USDT
@@ -254,8 +254,8 @@ class TestMarginMirroring(unittest.IsolatedAsyncioTestCase):
     async def test_debounce_logic(self):
         """Tests that rapid margin changes are debounced."""
         # --- Arrange ---
-        self.mock_source_client.get_balance.return_value = 10000.0
-        self.mock_main_client.get_balance.return_value = 5000.0
+        self.mock_source_client.get_balance.return_value = {"equity": 10000.0}
+        self.mock_main_client.get_balance.return_value = {"equity": 5000.0}
         self.mock_main_client.add_margin = AsyncMock(return_value={'success': True})
 
         # --- Act ---
@@ -269,8 +269,8 @@ class TestMarginMirroring(unittest.IsolatedAsyncioTestCase):
     async def test_minimum_delta_check(self):
         """Tests that small margin changes are ignored."""
         # --- Arrange ---
-        self.mock_source_client.get_balance.return_value = 10000.0
-        self.mock_main_client.get_balance.return_value = 1000.0 # 0.1x ratio
+        self.mock_source_client.get_balance.return_value = {"equity": 10000.0}
+        self.mock_main_client.get_balance.return_value = {"equity": 1000.0} # 0.1x ratio
         self.mock_main_client.add_margin = AsyncMock(return_value={'success': True})
 
         # Proportional change will be 20.0 * 0.1 = 2.0 USDT, which is less than min_usdt_delta of 5.0
@@ -328,8 +328,8 @@ class TestUniversalCopyLogic(unittest.IsolatedAsyncioTestCase):
         """HEDGE: Opening a new short position should create a Sell order with posIdx=2 and reduceOnly=False."""
         # Arrange
         donor_pos = [{'symbol': 'BTCUSDT', 'side': 'Sell', 'size': '0.1', 'positionIdx': 2, 'entryPrice': '50000'}]
-        self.mock_source_client.get_balance.return_value = 1000.0
-        self.mock_main_client.get_balance.return_value = 1000.0
+        self.mock_source_client.get_balance.return_value = {"equity": 1000.0}
+        self.mock_main_client.get_balance.return_value = {"equity": 1000.0}
         self.mock_main_client.get_positions.return_value = [] # No existing position on main
         self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.HEDGE)
 
@@ -349,8 +349,8 @@ class TestUniversalCopyLogic(unittest.IsolatedAsyncioTestCase):
         # Arrange
         donor_pos = [{'symbol': 'BTCUSDT', 'side': 'Buy', 'size': '0.05', 'positionIdx': 1, 'entryPrice': '50000'}]
         main_pos = [{'symbol': 'BTCUSDT', 'side': 'Buy', 'size': '0.1', 'positionIdx': 1}]
-        self.mock_source_client.get_balance.return_value = 1000.0
-        self.mock_main_client.get_balance.return_value = 1000.0
+        self.mock_source_client.get_balance.return_value = {"equity": 1000.0}
+        self.mock_main_client.get_balance.return_value = {"equity": 1000.0}
         self.mock_main_client.get_positions.return_value = main_pos
         self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.HEDGE)
 
@@ -371,8 +371,8 @@ class TestUniversalCopyLogic(unittest.IsolatedAsyncioTestCase):
         # Arrange
         donor_pos = [{'symbol': 'BTCUSDT', 'side': 'Buy', 'size': '0', 'positionIdx': 1, 'entryPrice': '50000'}]
         main_pos = [{'symbol': 'BTCUSDT', 'side': 'Buy', 'size': '0.1', 'positionIdx': 1}]
-        self.mock_source_client.get_balance.return_value = 1000.0
-        self.mock_main_client.get_balance.return_value = 1000.0
+        self.mock_source_client.get_balance.return_value = {"equity": 1000.0}
+        self.mock_main_client.get_balance.return_value = {"equity": 1000.0}
         self.mock_main_client.get_positions.return_value = main_pos
         self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.HEDGE)
 
@@ -393,8 +393,8 @@ class TestUniversalCopyLogic(unittest.IsolatedAsyncioTestCase):
         # Arrange
         donor_pos = [{'symbol': 'BTCUSDT', 'side': 'Buy', 'size': '0.1001', 'positionIdx': 1, 'entryPrice': '50000'}]
         main_pos = [{'symbol': 'BTCUSDT', 'side': 'Buy', 'size': '0.1', 'positionIdx': 1}]
-        self.mock_source_client.get_balance.return_value = 1000.0
-        self.mock_main_client.get_balance.return_value = 1000.0
+        self.mock_source_client.get_balance.return_value = {"equity": 1000.0}
+        self.mock_main_client.get_balance.return_value = {"equity": 1000.0}
         self.mock_main_client.get_positions.return_value = main_pos
         self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.HEDGE)
         # Delta will be ~0.0001, which is less than the mock min_qty
@@ -411,8 +411,8 @@ class TestUniversalCopyLogic(unittest.IsolatedAsyncioTestCase):
         # Arrange
         donor_pos = [{'symbol': 'ETHUSDT', 'side': 'Buy', 'size': '1.5001', 'positionIdx': 0, 'markPrice': '3000'}]
         main_pos = [{'symbol': 'ETHUSDT', 'side': 'Buy', 'size': '1.5', 'positionIdx': 0}]
-        self.mock_source_client.get_balance.return_value = 10000.0
-        self.mock_main_client.get_balance.return_value = 10000.0
+        self.mock_source_client.get_balance.return_value = {"equity": 10000.0}
+        self.mock_main_client.get_balance.return_value = {"equity": 10000.0}
         self.mock_main_client.get_positions.return_value = main_pos
         self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.ONEWAY)
         # Delta will be ~0.0001, which is less than the mock min_qty
@@ -450,8 +450,8 @@ class TestUniversalCopyLogic(unittest.IsolatedAsyncioTestCase):
         """ONE-WAY: Opening a new position from zero should create a Buy order with posIdx=0 and reduceOnly=False."""
         # Arrange
         donor_pos = [{'symbol': 'ETHUSDT', 'side': 'Buy', 'size': '1.5', 'positionIdx': 0, 'markPrice': '3000'}]
-        self.mock_source_client.get_balance.return_value = 10000.0
-        self.mock_main_client.get_balance.return_value = 10000.0
+        self.mock_source_client.get_balance.return_value = {"equity": 10000.0}
+        self.mock_main_client.get_balance.return_value = {"equity": 10000.0}
         self.mock_main_client.get_positions.return_value = [] # No existing position
         self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.ONEWAY)
 
@@ -472,8 +472,8 @@ class TestUniversalCopyLogic(unittest.IsolatedAsyncioTestCase):
         # Arrange
         donor_pos = [{'symbol': 'ETHUSDT', 'side': 'Buy', 'size': '1.0', 'positionIdx': 0, 'markPrice': '3000'}]
         main_pos = [{'symbol': 'ETHUSDT', 'side': 'Buy', 'size': '1.5', 'positionIdx': 0}]
-        self.mock_source_client.get_balance.return_value = 10000.0
-        self.mock_main_client.get_balance.return_value = 10000.0
+        self.mock_source_client.get_balance.return_value = {"equity": 10000.0}
+        self.mock_main_client.get_balance.return_value = {"equity": 10000.0}
         self.mock_main_client.get_positions.return_value = main_pos
         self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.ONEWAY)
 
@@ -494,8 +494,8 @@ class TestUniversalCopyLogic(unittest.IsolatedAsyncioTestCase):
         # Arrange
         donor_pos = [{'symbol': 'ETHUSDT', 'side': 'Buy', 'size': '1.0', 'positionIdx': 0, 'markPrice': '3000'}]
         main_pos = [{'symbol': 'ETHUSDT', 'side': 'Sell', 'size': '1.5', 'positionIdx': 0}]
-        self.mock_source_client.get_balance.return_value = 10000.0
-        self.mock_main_client.get_balance.return_value = 10000.0
+        self.mock_source_client.get_balance.return_value = {"equity": 10000.0}
+        self.mock_main_client.get_balance.return_value = {"equity": 10000.0}
         self.mock_main_client.get_positions.return_value = main_pos
         self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.ONEWAY)
 
@@ -517,8 +517,8 @@ class TestUniversalCopyLogic(unittest.IsolatedAsyncioTestCase):
         # Arrange
         donor_pos = [{'symbol': 'ETHUSDT', 'side': 'Sell', 'size': '0', 'positionIdx': 0, 'markPrice': '3000'}]
         main_pos = [{'symbol': 'ETHUSDT', 'side': 'Sell', 'size': '1.5', 'positionIdx': 0}]
-        self.mock_source_client.get_balance.return_value = 10000.0
-        self.mock_main_client.get_balance.return_value = 10000.0
+        self.mock_source_client.get_balance.return_value = {"equity": 10000.0}
+        self.mock_main_client.get_balance.return_value = {"equity": 10000.0}
         self.mock_main_client.get_positions.return_value = main_pos
         self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.ONEWAY)
 

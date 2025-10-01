@@ -37,3 +37,69 @@ Traceback (most recent call last):
     self.order_manager.cancel_all_symbol_orders(symbol)
     ^^^^^^^^^^^^^^^^^^
 AttributeError: 'Stage2CopyTradingSystem' object has no attribute 'order_manager'
+2025-10-01 14:16:26,332 [   ERROR] bybit_trading_system:3210 - MARGIN_MIRROR_EXCEPTION: for BTCUSDT
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3174, in _mirror_margin_adjustment
+    if not all([main_balance, source_balance]) or source_balance <= 0:
+                                                  ^^^^^^^^^^^^^^^^^^^
+TypeError: '<=' not supported between instances of 'dict' and 'int'
+2025-10-01 14:16:26,339 [   ERROR] bybit_trading_system:3210 - MARGIN_MIRROR_EXCEPTION: for BTCUSDT
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3174, in _mirror_margin_adjustment
+    if not all([main_balance, source_balance]) or source_balance <= 0:
+                                                  ^^^^^^^^^^^^^^^^^^^
+TypeError: '<=' not supported between instances of 'dict' and 'int'
+2025-10-01 14:16:26,356 [   ERROR] bybit_trading_system:3210 - MARGIN_MIRROR_EXCEPTION: for BTCUSDT
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3174, in _mirror_margin_adjustment
+    if not all([main_balance, source_balance]) or source_balance <= 0:
+                                                  ^^^^^^^^^^^^^^^^^^^
+TypeError: '<=' not supported between instances of 'dict' and 'int'
+2025-10-01 14:16:26,366 [   ERROR] bybit_trading_system:3210 - MARGIN_MIRROR_EXCEPTION: for BTCUSDT
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3174, in _mirror_margin_adjustment
+    if not all([main_balance, source_balance]) or source_balance <= 0:
+                                                  ^^^^^^^^^^^^^^^^^^^
+TypeError: '<=' not supported between instances of 'dict' and 'int'
+2025-10-01 14:16:26,420 [   ERROR] bybit_trading_system:3401 - HEDGE_FAIL: Processing single position update for BTCUSDT failed: unsupported operand type(s) for /: 'dict' and 'dict'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3354, in _process_single_position_update
+    proportional_size = donor_size * (main_balance / source_balance)
+                                      ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~
+TypeError: unsupported operand type(s) for /: 'dict' and 'dict'
+2025-10-01 14:16:26,433 [   ERROR] bybit_trading_system:3401 - HEDGE_FAIL: Processing single position update for BTCUSDT failed: unsupported operand type(s) for /: 'dict' and 'dict'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3354, in _process_single_position_update
+    proportional_size = donor_size * (main_balance / source_balance)
+                                      ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~
+TypeError: unsupported operand type(s) for /: 'dict' and 'dict'
+2025-10-01 14:16:26,446 [   ERROR] bybit_trading_system:3401 - HEDGE_FAIL: Processing single position update for BTCUSDT failed: unsupported operand type(s) for /: 'dict' and 'dict'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3354, in _process_single_position_update
+    proportional_size = donor_size * (main_balance / source_balance)
+                                      ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~
+TypeError: unsupported operand type(s) for /: 'dict' and 'dict'
+2025-10-01 14:16:26,477 [   ERROR] bybit_trading_system:3467 - ONEWAY_FAIL: Processing aggregate update for ETHUSDT failed: unsupported operand type(s) for /: 'dict' and 'dict'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3435, in _process_aggregate_position_update
+    proportional = abs(donor_net) * (main_balance / source_balance)
+                                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~
+TypeError: unsupported operand type(s) for /: 'dict' and 'dict'
+2025-10-01 14:16:26,490 [   ERROR] bybit_trading_system:3467 - ONEWAY_FAIL: Processing aggregate update for ETHUSDT failed: unsupported operand type(s) for /: 'dict' and 'dict'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3435, in _process_aggregate_position_update
+    proportional = abs(donor_net) * (main_balance / source_balance)
+                                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~
+TypeError: unsupported operand type(s) for /: 'dict' and 'dict'
+2025-10-01 14:16:26,502 [   ERROR] bybit_trading_system:3467 - ONEWAY_FAIL: Processing aggregate update for ETHUSDT failed: unsupported operand type(s) for /: 'dict' and 'dict'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3435, in _process_aggregate_position_update
+    proportional = abs(donor_net) * (main_balance / source_balance)
+                                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~
+TypeError: unsupported operand type(s) for /: 'dict' and 'dict'
+2025-10-01 14:16:26,515 [   ERROR] bybit_trading_system:3467 - ONEWAY_FAIL: Processing aggregate update for ETHUSDT failed: unsupported operand type(s) for /: 'dict' and 'dict'
+Traceback (most recent call last):
+  File "/app/stage2_copy_system.py", line 3435, in _process_aggregate_position_update
+    proportional = abs(donor_net) * (main_balance / source_balance)
+                                     ~~~~~~~~~~~~~^~~~~~~~~~~~~~~~
+TypeError: unsupported operand type(s) for /: 'dict' and 'dict'
