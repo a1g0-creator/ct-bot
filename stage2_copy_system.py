@@ -22,17 +22,6 @@ import asyncio
 import time
 import json
 import logging
-import pandas as pd
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple, Any, Union
-from dataclasses import dataclass, field
-from enum import Enum
-from collections import deque, defaultdict, namedtuple
-import asyncio
-import time
-import json
-import logging
-import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any, Union
 from dataclasses import dataclass, field
@@ -3293,10 +3282,9 @@ class Stage2CopyTradingSystem:
 
     async def on_position_item(self, positions: Union[list, dict]):
         """
-        Refactored handler for all position updates (OPEN, MODIFY, CLOSE).
-        Handles Hedge mode (iterative) and One-Way mode (aggregate) correctly.
+        Main entry point for position updates. Normalizes input, detects position mode,
+        and routes to the appropriate handler (Hedge or One-Way).
         """
-        # Normalize input to always be a list
         if isinstance(positions, dict):
             positions = [positions]
 
@@ -3307,32 +3295,29 @@ class Stage2CopyTradingSystem:
         if not symbol:
             return
 
-        # Update mode detector with the full, fresh list of positions
         self.mode_detector.update_from_ws(symbol, positions, category="linear")
         mode = self.mode_detector.get_mode(symbol)
 
         if mode is None:
-            cache_key = self.mode_detector._get_cache_key(symbol)
-            if not self.mode_detector._rest_probe_locks[cache_key].locked():
-                logger.info(f"MODE_PENDING: Position mode for {symbol} is unknown. Probing and deferring action.")
             asyncio.create_task(self.mode_detector.ensure_rest_probe(symbol))
+            logger.info(f"MODE_PENDING: Position mode for {symbol} is unknown. Scheduling probe.")
             return
 
         if not self.trade_executor_connected:
-            logger.warning("Copy system not connected. State: trade_executor_connected=False")
+            logger.warning("COPY_GATE: System not connected, skipping position processing.")
             return
 
-        # Branch logic based on detected mode
         if mode == PositionMode.HEDGE:
-            # In Hedge Mode, we process each position update individually.
             for item in positions:
                 await self._process_single_position_update(item, mode)
         elif mode == PositionMode.ONEWAY:
-            # In One-Way Mode, we process all positions as a single aggregate event.
             await self._process_aggregate_position_update(positions, mode)
 
     async def _process_single_position_update(self, item: dict, mode: PositionMode):
-        """Processes a single position update, primarily for Hedge Mode."""
+        """
+        Self-contained handler for a single position update in HEDGE mode.
+        Calculates delta, determines order parameters, and queues the order.
+        """
         try:
             symbol = item.get('symbol')
             pos_idx = int(item.get('positionIdx', 0))
@@ -3340,127 +3325,131 @@ class Stage2CopyTradingSystem:
             action_key = (symbol, pos_idx)
             async with self._idempotency_lock:
                 if time.time() - self._recent_actions.get(action_key, 0) < self._idempotency_window_sec:
-                    return # Idempotency skip
+                    return
                 self._recent_actions[action_key] = time.time()
+
+            main_balance = await self.main_client.get_balance()
+            source_balance = await self.source_client.get_balance()
+            if not all([main_balance, source_balance, main_balance > 0, source_balance > 0]):
+                logger.debug("Skipping copy due to invalid or zero balance.")
+                return
 
             donor_side = (item.get('side') or "").strip()
             donor_size = float(item.get('size', 0) or 0)
             entry_price = float(item.get('entryPrice') or item.get('markPrice') or 0)
 
-            main_balance = await self.main_client.get_balance()
-            source_balance = await self.source_client.get_balance()
-            if not all([main_balance, source_balance]) or main_balance <= 0:
-                return
-
             target_positions = await self.main_client.get_positions(category="linear", symbol=symbol)
-            target_pos = next((p for p in target_positions if int(p.get('positionIdx', 0)) == pos_idx), None)
-            current_target_size = safe_float(target_pos.get('size')) if target_pos else 0.0
-            current_target_side = (target_pos.get('side') or "").strip() if target_pos else ""
+            main_pos = next((p for p in target_positions if int(p.get('positionIdx', 0)) == pos_idx), None)
+            main_size = safe_float(main_pos.get('size')) if main_pos else 0.0
+            main_side = (main_pos.get('side') or "").strip() if main_pos else ""
+            main_signed_qty = main_size if main_side == 'Buy' else -main_size if main_side == 'Sell' else 0.0
 
-            # --- HEDGE MODE LOGIC ---
-            final_target_size = 0
+            target_size = 0.0
             kelly_fraction = 0.0
             if donor_size > 0 and donor_side:
                 proportional_size = donor_size * (main_balance / source_balance)
                 kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(symbol=symbol, current_size=proportional_size, price=entry_price, balance=main_balance, source_balance=source_balance)
-                kelly_recommended_size = kelly_result.get('recommended_size', proportional_size)
+                target_size = kelly_result.get('recommended_size', proportional_size)
                 kelly_fraction = kelly_result.get('kelly_fraction', 0.0)
-                final_target_size = kelly_recommended_size * COPY_CONFIG['default_copy_ratio']
+
+            min_qty = await self.copy_manager.order_manager.get_min_order_qty(symbol, price=entry_price)
+            if 0 < target_size < min_qty:
+                target_size = min_qty
+
+            donor_signed_qty = target_size if donor_side == 'Buy' else -target_size if donor_side == 'Sell' else 0.0
+            delta = donor_signed_qty - main_signed_qty
+
+            if abs(delta) < min_qty and donor_signed_qty != 0:
+                return
+
+            order_side = 'Buy' if delta > 0 else 'Sell'
+            order_qty = abs(delta)
+
+            reduce_only = (_sign(delta) != _sign(main_signed_qty)) and (abs(delta) <= abs(main_signed_qty))
+
+            if reduce_only:
+                final_position_idx = 1 if main_signed_qty > 0 else 2
+            else: # Opening or increasing
+                final_position_idx = 1 if order_side == 'Buy' else 2
+
+            is_opening = main_signed_qty == 0 and donor_signed_qty != 0
+            is_full_close = main_signed_qty != 0 and donor_signed_qty == 0
+
+            await self._queue_copy_order(symbol, entry_price, order_side, order_qty, reduce_only, final_position_idx, is_opening, is_full_close, kelly_fraction, mode)
+            return
+
+        except Exception as e:
+            logger.error(f"HEDGE_FAIL: Processing single position update for {item.get('symbol')} failed: {e}", exc_info=True)
+
+    async def _process_aggregate_position_update(self, positions: list, mode: PositionMode):
+        """
+        Self-contained handler for an aggregated position update in ONE-WAY mode.
+        Calculates net delta, determines order params, and queues the order.
+        """
+        try:
+            symbol = positions[0].get('symbol')
+
+            main_balance = await self.main_client.get_balance()
+            source_balance = await self.source_client.get_balance()
+            if not all([main_balance, source_balance, main_balance > 0, source_balance > 0]):
+                logger.debug("Skipping copy due to invalid or zero balance.")
+                return
+
+            donor_net = sum(float(p.get('size', 0)) * (1 if p.get('side') == 'Buy' else -1) for p in positions)
+            entry_price = float(positions[0].get('markPrice') or positions[0].get('entryPrice') or 0)
+
+            final_target_size = 0.0
+            kelly_fraction = 0.0
+            if donor_net != 0:
+                proportional_size = abs(donor_net) * (main_balance / source_balance)
+                kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(symbol=symbol, current_size=proportional_size, price=entry_price, balance=main_balance, source_balance=source_balance)
+                final_target_size = kelly_result.get('recommended_size', proportional_size)
+                kelly_fraction = kelly_result.get('kelly_fraction', 0.0)
 
             min_qty = await self.copy_manager.order_manager.get_min_order_qty(symbol, price=entry_price)
             if 0 < final_target_size < min_qty:
                 final_target_size = min_qty
 
-            donor_signed_qty = final_target_size if donor_side == 'Buy' else -final_target_size if donor_side == 'Sell' else 0
-            main_signed_qty = current_target_size if current_target_side == 'Buy' else -current_target_size
-            delta = donor_signed_qty - main_signed_qty
+            final_target_net = final_target_size * _sign(donor_net)
 
-            if abs(delta) < min_qty:
-                return
-
-            order_side = 'Buy' if delta > 0 else 'Sell'
-            order_qty = abs(delta)
-            is_reducing_long = main_signed_qty > 0 and delta < 0
-            is_reducing_short = main_signed_qty < 0 and delta > 0
-            reduce_only_flag = is_reducing_long or is_reducing_short
-
-            is_opening = main_signed_qty == 0 and donor_signed_qty != 0
-            is_full_close = main_signed_qty != 0 and donor_signed_qty == 0
-
-            final_position_idx = (1 if main_signed_qty > 0 else 2) if reduce_only_flag else (1 if order_side == 'Buy' else 2)
-
-            await self._queue_copy_order(symbol, entry_price, order_side, order_qty, reduce_only_flag, final_position_idx, is_opening, is_full_close, kelly_fraction, mode)
-
-        except Exception as e:
-            logger.error(f"Failed processing single position update for {item.get('symbol')}: {e}", exc_info=True)
-
-    async def _process_aggregate_position_update(self, positions: list, mode: PositionMode):
-        """Processes a list of positions as a single event for One-Way Mode."""
-        try:
-            symbol = positions[0].get('symbol')
-
-            # --- ONE-WAY MODE LOGIC ---
-            # 1. Calculate donor's aggregate net position
-            donor_net_size = sum((float(p.get('size', 0)) if p.get('side') == 'Buy' else -float(p.get('size', 0))) for p in positions)
-            entry_price = float(positions[0].get('entryPrice') or positions[0].get('markPrice') or 0)
-
-            # 2. Calculate target size based on aggregate donor position
-            main_balance = await self.main_client.get_balance()
-            source_balance = await self.source_client.get_balance()
-            if not all([main_balance, source_balance]) or main_balance <= 0:
-                return
-
-            final_target_net_size = 0.0
-            kelly_fraction = 0.0
-            if donor_net_size != 0:
-                proportional_size = abs(donor_net_size) * (main_balance / source_balance)
-                kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(symbol=symbol, current_size=proportional_size, price=entry_price, balance=main_balance, source_balance=source_balance)
-                kelly_recommended_size = kelly_result.get('recommended_size', proportional_size)
-                kelly_fraction = kelly_result.get('kelly_fraction', 0.0)
-                final_target_size = kelly_recommended_size * COPY_CONFIG['default_copy_ratio']
-                final_target_net_size = final_target_size * _sign(donor_net_size)
-
-            min_qty = await self.copy_manager.order_manager.get_min_order_qty(symbol, price=entry_price)
-            if 0 < abs(final_target_net_size) < min_qty:
-                final_target_net_size = min_qty * _sign(final_target_net_size)
-
-            # 3. Get main account's current net position
             target_positions = await self.main_client.get_positions(category="linear", symbol=symbol)
-            main_pos_oneway = next((p for p in target_positions if int(p.get('positionIdx', 0)) == 0), None)
-            main_net_size = safe_float(main_pos_oneway.get('size', 0)) if main_pos_oneway else 0.0
-            main_net_side = (main_pos_oneway.get('side', '') or '').strip() if main_pos_oneway else ''
-            main_net_signed = main_net_size if main_net_side == 'Buy' else -main_net_size if main_net_side == 'Sell' else 0.0
+            main_pos = next((p for p in target_positions if int(p.get('positionIdx', 0)) == 0), None)
+            main_net = float(main_pos.get('size', 0)) * (1 if main_pos.get('side') == 'Buy' else -1) if main_pos else 0.0
 
-            # 4. Calculate delta and order parameters
-            delta = final_target_net_size - main_net_signed
-            if abs(delta) < min_qty:
+            delta = final_target_net - main_net
+
+            if abs(delta) < min_qty and final_target_net != 0:
                 return
 
-            order_side = 'Buy' if delta > 0 else 'Sell'
-            order_qty = abs(delta)
-            final_position_idx = 0
+            side = 'Buy' if delta > 0 else 'Sell'
+            qty = abs(delta)
             
-            if _sign(delta) == _sign(main_net_signed) and main_net_signed != 0:
-                reduce_only_flag = False
-            elif _sign(delta) != _sign(main_net_signed) and abs(delta) <= abs(main_net_signed):
-                reduce_only_flag = True
+            # reduceOnly logic for One-Way
+            if _sign(delta) == _sign(main_net):
+                reduce_only = False  # Increasing position
+            elif abs(delta) <= abs(main_net):
+                reduce_only = True   # Pure reduction
             else:
-                reduce_only_flag = False
-            
-            is_opening = main_net_signed == 0 and final_target_net_size != 0
-            is_full_close = main_net_signed != 0 and final_target_net_size == 0
+                reduce_only = False  # Reversal through zero
 
-            await self._queue_copy_order(symbol, entry_price, order_side, order_qty, reduce_only_flag, final_position_idx, is_opening, is_full_close, kelly_fraction, mode)
+            is_opening = (main_net == 0 and final_target_net != 0)
+            is_full_close = (main_net != 0 and final_target_net == 0)
+
+            await self._queue_copy_order(symbol, entry_price, side, qty, reduce_only, 0, is_opening, is_full_close, kelly_fraction, mode)
+            return
 
         except Exception as e:
-            logger.error(f"Failed processing aggregate position update for {positions[0].get('symbol')}: {e}", exc_info=True)
+            logger.error(f"ONEWAY_FAIL: Processing aggregate update for {positions[0].get('symbol')} failed: {e}", exc_info=True)
 
     async def _queue_copy_order(self, symbol, entry_price, order_side, order_qty, reduce_only_flag, final_position_idx, is_opening, is_full_close, kelly_fraction, mode):
         """Helper to create and queue a copy order."""
         reason = "ws_open" if is_opening else "ws_full_close" if is_full_close else "ws_modify"
         signal_type_enum = SignalType.POSITION_OPEN if is_opening else SignalType.POSITION_CLOSE if is_full_close else SignalType.POSITION_MODIFY
 
-        logger.info(f"COPY_ACTION ({mode.name}): {reason.upper()} for {symbol} | Qty: {order_qty:.4f} | Side: {order_side} | reduceOnly: {reduce_only_flag} | posIdx: {final_position_idx}")
+        logger.info(
+            f"COPY_ACTION ({mode.name}): {reason.upper()} symbol={symbol} qty={order_qty:.4f} "
+            f"side={order_side} reduceOnly={reduce_only_flag} posIdx={final_position_idx}"
+        )
 
         synthetic_signal = TradingSignal(
             signal_type=signal_type_enum, symbol=symbol, side=order_side, size=order_qty,
@@ -3476,158 +3465,6 @@ class Stage2CopyTradingSystem:
         await self.copy_manager.copy_queue.put((order.priority, order.created_at, order))
 
 
-    async def handle_position_signal(self, position_data):
-        """
-        ИСПРАВЛЕННЫЙ обработчик сигналов позиций для системы копирования
-        """
-        try:
-            # ✅ ДОБАВЛЕНО: Детальное логирование для диагностики
-            logger.info(f"🔄 Stage2 received position signal: {position_data}")
-        
-            if not self.system_active or not self.copy_enabled:
-                logger.info(f"Stage2 not ready: active={self.system_active}, enabled={self.copy_enabled}")
-                return
-    
-            symbol = position_data.get('symbol', '')
-            current_size = float(position_data.get('size', '0'))
-            side = position_data.get('side', '')
-            price = float(position_data.get('markPrice', '0'))
-    
-            logger.info(f"📊 Position signal details: {symbol} {side} size={current_size} price={price}")
-        
-            # Игнорируем тестовые сигналы
-            if symbol == 'TEST':
-                return
-    
-            # Проверяем изменения позиции
-            position_key = f"{symbol}_{side}"
-    
-            # ✅ ИСПРАВЛЕНО: Используем copy_manager.active_positions вместо self.active_positions
-            if position_key in self.copy_manager.active_positions:
-                # Существующая позиция - проверяем изменения
-                prev_size = self.copy_manager.active_positions[position_key].get('size', 0)
-                size_delta = current_size - prev_size
-            
-                logger.info(f"📈 Position change: {symbol} {prev_size:.6f} -> {current_size:.6f} (delta: {size_delta:.6f})")
-        
-                if abs(size_delta) > 0.001:  # Минимальное изменение 0.001
-                    if size_delta > 0:
-                        # Увеличение позиции
-                        signal = TradingSignal(
-                            signal_type=SignalType.POSITION_MODIFY,
-                            symbol=symbol,
-                            side=side,
-                            size=abs(size_delta),
-                            price=price,
-                            timestamp=time.time(),
-                            metadata={
-                                'action': 'increase',
-                                'prev_size': prev_size,
-                                'new_size': current_size,
-                                'source': 'websocket'
-                            }
-                        )
-                        logger.info(f"🟡 Generated MODIFY signal for increase: {symbol}")
-                        await self.process_copy_signal(signal)
-                
-                    elif current_size == 0:
-                        # Закрытие позиции
-                        signal = TradingSignal(
-                            signal_type=SignalType.POSITION_CLOSE,
-                            symbol=symbol,
-                            side=side,
-                            size=prev_size,
-                            price=price,
-                            timestamp=time.time(),
-                            metadata={
-                                'action': 'close',
-                                'prev_size': prev_size,
-                                'source': 'websocket'
-                            }
-                        )
-                        logger.info(f"🔴 Generated CLOSE signal: {symbol}")
-                        await self.process_copy_signal(signal)
-                
-                    else:
-                        # Уменьшение позиции
-                        signal = TradingSignal(
-                            signal_type=SignalType.POSITION_MODIFY,
-                            symbol=symbol,
-                            side=side,
-                            size=abs(size_delta),
-                            price=price,
-                            timestamp=time.time(),
-                            metadata={
-                                'action': 'decrease',
-                                'prev_size': prev_size,
-                                'new_size': current_size,
-                                'source': 'websocket'
-                            }
-                        )
-                        logger.info(f"🟡 Generated MODIFY signal for decrease: {symbol}")
-                        await self.process_copy_signal(signal)
-            else:
-                # Новая позиция
-                if current_size > 0:
-                    signal = TradingSignal(
-                        signal_type=SignalType.POSITION_OPEN,
-                        symbol=symbol,
-                        side=side,
-                        size=current_size,
-                        price=price,
-                        timestamp=time.time(),
-                        metadata={
-                            'action': 'open',
-                            'source': 'websocket'
-                        }
-                    )
-                    logger.info(f"🟢 Generated OPEN signal: {symbol}")
-                    await self.process_copy_signal(signal)
-    
-            # ✅ ИСПРАВЛЕНО: Обновляем состояние позиций в правильном месте
-            if current_size > 0:
-                self.copy_manager.active_positions[position_key] = {
-                    'symbol': symbol,
-                    'side': side,
-                    'size': current_size,
-                    'price': price,
-                    'last_update': time.time()
-                }
-                logger.debug(f"Updated position state: {position_key}")
-            elif position_key in self.copy_manager.active_positions:
-                del self.copy_manager.active_positions[position_key]
-                logger.debug(f"Removed position state: {position_key}")
-    
-            # Обновляем статистику
-            self.system_stats['total_signals_processed'] += 1
-    
-        except Exception as e:
-            logger.error(f"Position signal handling error: {e}")
-            logger.error(f"Position data: {position_data}")
-
-    def _register_copy_signal_handler(self):
-        """Регистрация обработчика сигналов для копирования"""
-        try:
-            # Расширяем signal processor из Этапа 1 для обработки копирования
-            original_execute_signal = self.base_monitor.signal_processor._execute_signal_processing
-            
-            async def enhanced_signal_processing(signal: TradingSignal):
-                """Расширенная обработка сигналов с копированием"""
-                # Сначала выполняем базовую обработку
-                await original_execute_signal(signal)
-                
-                # Затем обрабатываем копирование
-                if self.copy_enabled and not self.drawdown_controller.emergency_stop_active:
-                    await self.process_copy_signal(signal)
-                    self.system_stats['total_signals_processed'] += 1
-            
-            # Подменяем обработчик
-            self.base_monitor.signal_processor._execute_signal_processing = enhanced_signal_processing
-            
-            logger.info("Copy signal handler registered")
-            
-        except Exception as e:
-            logger.error(f"Copy signal handler registration error: {e}")
     
     async def start_system(self):
         """Идемпотентный запуск Stage-2 без повторного старта Stage-1"""
