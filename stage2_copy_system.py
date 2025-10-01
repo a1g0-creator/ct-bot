@@ -80,7 +80,8 @@ COPY_CONFIG = {
     'slippage_tolerance': 0.002,            # Допустимое проскальзывание (0.2%)
     'market_impact_threshold': 0.05,        # Порог воздействия на рынок (5%)
     'kelly_min_mult': 0.5,                  # Kelly не уменьшает размер более чем в 2 раза
-    'kelly_max_mult': 2.0                   # и не увеличивает более чем в 2 раза
+    'kelly_max_mult': 2.0,                  # и не увеличивает более чем в 2 раза
+    'idempotency_window_sec': 5,            # Окно идемпотентности в секундах
 }
 
 # Kelly Criterion настройки
@@ -3081,7 +3082,7 @@ class Stage2CopyTradingSystem:
 
         # Idempotency cache to prevent duplicate orders
         self._recent_actions = {}
-        self._idempotency_window_sec = 5  # 5-second window
+        self._idempotency_window_sec = self.copy_config.get('idempotency_window_sec', 5)
         self._idempotency_lock = asyncio.Lock()
 
         # Cache for leverage sync to avoid redundant API calls
@@ -3371,7 +3372,10 @@ class Stage2CopyTradingSystem:
             is_opening = (main_signed_qty == 0 and donor_signed != 0)
             is_full_close = (main_signed_qty != 0 and donor_signed == 0)
 
-            await self._queue_copy_order(symbol, entry_price, side, qty, reduce_only, final_position_idx, is_opening, is_full_close, kelly_fraction, mode)
+            await self._queue_copy_order(
+                symbol, entry_price, side, qty, reduce_only, final_position_idx, is_opening, is_full_close,
+                kelly_fraction, mode, delta=delta, main_qty=main_signed_qty, target_qty=donor_signed
+            )
             return
 
         except Exception as e:
@@ -3430,26 +3434,33 @@ class Stage2CopyTradingSystem:
             is_opening = (main_net == 0 and final_target_net != 0)
             is_full_close = (main_net != 0 and final_target_net == 0)
 
-            await self._queue_copy_order(symbol, entry_price, side, qty, reduce_only, 0, is_opening, is_full_close, kelly_fraction, mode)
+            await self._queue_copy_order(
+                symbol, entry_price, side, qty, reduce_only, 0, is_opening, is_full_close,
+                kelly_fraction, mode, delta=delta, main_qty=main_net, target_qty=final_target_net
+            )
             return
 
         except Exception as e:
             logger.error(f"ONEWAY_FAIL: Processing aggregate update for {positions[0].get('symbol')} failed: {e}", exc_info=True)
 
-    async def _queue_copy_order(self, symbol, entry_price, order_side, order_qty, reduce_only_flag, final_position_idx, is_opening, is_full_close, kelly_fraction, mode):
+    async def _queue_copy_order(self, symbol, entry_price, order_side, order_qty, reduce_only_flag, final_position_idx, is_opening, is_full_close, kelly_fraction, mode, delta: float = 0.0, main_qty: float = 0.0, target_qty: float = 0.0):
         """Helper to create and queue a copy order."""
         reason = "ws_open" if is_opening else "ws_full_close" if is_full_close else "ws_modify"
         signal_type_enum = SignalType.POSITION_OPEN if is_opening else SignalType.POSITION_CLOSE if is_full_close else SignalType.POSITION_MODIFY
 
+        log_main_qty_field = 'main_net' if mode == PositionMode.ONEWAY else 'main_signed'
+        log_target_qty_field = 'final_target_net' if mode == PositionMode.ONEWAY else 'target_signed'
+
         logger.info(
-            f"COPY_ACTION ({mode.name}): {reason.upper()} symbol={symbol} qty={order_qty:.4f} "
-            f"side={order_side} reduceOnly={reduce_only_flag} posIdx={final_position_idx}"
+            f"COPY_ACTION ({mode.name}): {reason.upper()} symbol={symbol} "
+            f"delta={delta:+.4f} {log_main_qty_field}={main_qty:+.4f} {log_target_qty_field}={target_qty:+.4f} "
+            f"-> qty={order_qty:.4f} side={order_side} reduceOnly={reduce_only_flag} position_idx={final_position_idx}"
         )
 
         synthetic_signal = TradingSignal(
             signal_type=signal_type_enum, symbol=symbol, side=order_side, size=order_qty,
             price=entry_price, timestamp=time.time(),
-            metadata={'reason': reason, 'reduceOnly': reduce_only_flag, 'pos_idx': final_position_idx}
+            metadata={'reason': reason, 'reduceOnly': reduce_only_flag, 'position_idx': final_position_idx}
         )
         order = CopyOrder(
             source_signal=synthetic_signal, target_symbol=symbol, target_side=order_side,

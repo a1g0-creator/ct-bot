@@ -381,6 +381,42 @@ class TestUniversalCopyLogic(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(order.metadata['reduceOnly'])
         self.assertEqual(order.source_signal.signal_type, self.SignalType_imported.POSITION_CLOSE)
 
+    async def test_hedge_skip_when_delta_below_min_qty(self):
+        """HEDGE: Should not queue an order if the absolute delta is smaller than the minimum order quantity."""
+        # Arrange
+        donor_pos = [{'symbol': 'BTCUSDT', 'side': 'Buy', 'size': '0.1001', 'positionIdx': 1, 'entryPrice': '50000'}]
+        main_pos = [{'symbol': 'BTCUSDT', 'side': 'Buy', 'size': '0.1', 'positionIdx': 1}]
+        self.mock_source_client.get_balance.return_value = 1000.0
+        self.mock_main_client.get_balance.return_value = 1000.0
+        self.mock_main_client.get_positions.return_value = main_pos
+        self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.HEDGE)
+        # Delta will be ~0.0001, which is less than the mock min_qty
+        self.system.copy_manager.order_manager.get_min_order_qty = AsyncMock(return_value=0.001)
+
+        # Act
+        await self.system.on_position_item(donor_pos)
+
+        # Assert
+        self.assertEqual(self.system.copy_manager.copy_queue.qsize(), 0)
+
+    async def test_oneway_skip_when_delta_below_min_qty(self):
+        """ONEWAY: Should not queue an order if the absolute delta is smaller than the minimum order quantity."""
+        # Arrange
+        donor_pos = [{'symbol': 'ETHUSDT', 'side': 'Buy', 'size': '1.5001', 'positionIdx': 0, 'markPrice': '3000'}]
+        main_pos = [{'symbol': 'ETHUSDT', 'side': 'Buy', 'size': '1.5', 'positionIdx': 0}]
+        self.mock_source_client.get_balance.return_value = 10000.0
+        self.mock_main_client.get_balance.return_value = 10000.0
+        self.mock_main_client.get_positions.return_value = main_pos
+        self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.ONEWAY)
+        # Delta will be ~0.0001, which is less than the mock min_qty
+        self.system.copy_manager.order_manager.get_min_order_qty = AsyncMock(return_value=0.01)
+
+        # Act
+        await self.system.on_position_item(donor_pos)
+
+        # Assert
+        self.assertEqual(self.system.copy_manager.copy_queue.qsize(), 0)
+
     async def test_mode_detector_schedules_probe_when_mode_is_unknown(self):
         """Tests that ensure_rest_probe is scheduled and run when the mode is None."""
         # Arrange
