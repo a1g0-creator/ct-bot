@@ -485,6 +485,7 @@ class IntegratedTradingSystem:
         self._stopping: bool = False
         # Флаг отложенной регистрации сигналов (если в __init__ нет активного event loop)
         self._defer_signal_setup: bool = True
+        self._rest_reconcile_warned: bool = False
 
         # >>> logging init (единая система логирования в ./logs/)
         # - локально: ~/Documents/trading_bot/logs/
@@ -863,6 +864,16 @@ class IntegratedTradingSystem:
 
         while not self._have_keys():
             await asyncio.sleep(poll_seconds)
+
+    async def _await_stage2_handler_registration(self, ws_manager, stage2_cb, timeout_sec: int = 10) -> bool:
+        start = time.time()
+        while time.time() - start < timeout_sec:
+            if ws_manager.has_handler('position', stage2_cb):
+                logger.info("COPY_HANDLER_OK: Stage2 'position' handler is registered.")
+                return True
+            await asyncio.sleep(0.3)
+        logger.error("❌ CRITICAL FAILURE: Stage2 handler NOT registered — positions WON'T copy!")
+        return False
 
     def _pick_stage2_start_coro(self, stage2):
         """
@@ -1440,114 +1451,56 @@ class IntegratedTradingSystem:
                 self._refresh_bot_refs()
             logger.info("Telegram bot references refreshed (after credentials apply)")
 
-            # 5) АВТО-АКТИВАЦИЯ Stage-2 с ОТЛОЖЕННОЙ регистрацией обработчиков (исправлено)
+            # 5) АВТО-АКТИВАЦИЯ Stage-2 и РЕГИСТРАЦИЯ HANDLER'а (стабилизировано)
             try:
                 self.system_active = True
-
                 s2 = getattr(self, "stage2_system", None)
+
                 if s2:
-                    # Активируем флаги заранее, чтобы тестовый сигнал не проваливался на active=False
-                    if hasattr(s2, "copy_enabled"):
-                        s2.copy_enabled = True
-                    if hasattr(s2, "active"):
-                        s2.active = True
+                    if hasattr(s2, "copy_enabled"): s2.copy_enabled = True
+                    if hasattr(s2, "active"): s2.active = True
 
-                    async def delayed_handler_registration(system_ref, stage2_ref, retries=10, delay=0.5):
-                        """
-                        Отложенная регистрация обработчика Stage2 на корректном менеджере + стартовый reconcile.
-                        Используем актуальные имена: stage1_monitor.websocket_manager и handle_position_signal.
-                        """
-                        await asyncio.sleep(3.0)  # даём системе подняться
+                    ws_mgr = getattr(getattr(self, "stage1_monitor", None), "websocket_manager", None)
+                    stage2_cb = getattr(s2, "on_position_item", None)
 
-                        attempt = 0
-                        ws_mgr = None
+                    if ws_mgr and callable(stage2_cb) and hasattr(ws_mgr, 'has_handler'):
+                        ws_mgr.register_handler("position", stage2_cb)
+                        logger.info("COPY_WIRED: websocket → on_position_item (idempotent)")
 
-                        while attempt <= retries:
-                            attempt += 1
+                        await self._await_stage2_handler_registration(ws_mgr, stage2_cb)
 
-                            ws_mgr = getattr(getattr(system_ref, "stage1_monitor", None), "websocket_manager", None)
-
-                            # есть менеджер и нужный метод у Stage2?
-                            if ws_mgr and hasattr(stage2_ref, "handle_position_signal"):
-                                try:
-                                    # проверим, не зарегистрирован ли уже
-                                    exists = False
-                                    try:
-                                        lst = ws_mgr.message_handlers.get("position_update", [])
-                                        # сравнение bound-методов корректно работает
-                                        exists = any(h is stage2_ref.handle_position_signal for h in lst)
-                                    except Exception:
-                                        pass
-
-                                    if not exists:
-                                        ws_mgr.register_handler("position_update", stage2_ref.handle_position_signal)
-                                        logger.info("✅ DELAYED FIX: Stage2 handler registered for 'position_update'")
-                                    else:
-                                        logger.info("ℹ️ Stage2 handler already registered for 'position_update'")
-
-                                    # Диагностика
-                                    try:
-                                        handlers_cnt = len(ws_mgr.message_handlers.get("position_update", []))
-                                    except Exception:
-                                        handlers_cnt = "N/A"
-                                    logger.info(
-                                        "🎯 CRITICAL SUCCESS: Stage2 handler READY — copying WILL work! "
-                                        f"(handlers={handlers_cnt}, active={getattr(stage2_ref, 'active', 'N/A')}, "
-                                        f"copy_enabled={getattr(stage2_ref, 'copy_enabled', 'N/A')})"
-                                    )
-
-                                    # --- Стартовый reconcile: прогнать уже открытые позиции источника
-                                    try:
-                                        source_client = getattr(getattr(system_ref, "stage1_monitor", None), "source_client", None)
-                                        if source_client and hasattr(source_client, "get_positions"):
-                                            src_positions = await source_client.get_positions()
-                                            if src_positions:
-                                                logger.info(f"🔄 Initial SOURCE→MAIN reconcile: {len(src_positions)} positions")
-                                                for pos in src_positions:
-                                                    position_data = {
-                                                        "symbol": pos.get("symbol"),
-                                                        "side": pos.get("side"),
-                                                        "size": str(pos.get("size", 0)),
-                                                        "markPrice": str(pos.get("markPrice", pos.get("avgPrice", 0))),
-                                                        "unrealisedPnl": str(pos.get("unrealisedPnl", 0)),
-                                                    }
-                                                    await stage2_ref.handle_position_signal(position_data)
-                                                    logger.info(f"Reconciled: {position_data['symbol']} {position_data['side']} size={position_data['size']}")
-                                            else:
-                                                logger.info("Initial reconcile: no source positions found")
-                                    except Exception as e:
-                                        logger.error(f"Initial reconcile failed: {e}")
-
-                                    return  # всё ок, выходим
-                                except Exception as e:
-                                    logger.error(f"Delayed registration failed on attempt {attempt}: {e}")
-
-                            await asyncio.sleep(delay)
-
-                        logger.error("❌ CRITICAL FAILURE: Stage2 handler NOT registered — positions WON'T copy!")
-                        if not ws_mgr:
-                            logger.error("   Reason: stage1_monitor.websocket_manager is not available after retries")
-
-                    # Запускаем отложенную регистрацию С ПЕРЕДАЧЕЙ ССЫЛОК
-                    asyncio.create_task(delayed_handler_registration(self, s2))
+                        # Стартовый reconcile
+                        try:
+                            source_client = getattr(getattr(self, "stage1_monitor", None), "source_client", None)
+                            if source_client and hasattr(source_client, "get_positions"):
+                                src_positions = await source_client.get_positions()
+                                if src_positions:
+                                    logger.info(f"🔄 Initial SOURCE→MAIN reconcile: {len(src_positions)} positions")
+                                    for pos in src_positions:
+                                        position_data = {
+                                            "symbol": pos.get("symbol"), "side": pos.get("side"),
+                                            "size": str(pos.get("size", 0)),
+                                            "markPrice": str(pos.get("markPrice", pos.get("avgPrice", 0))),
+                                            "unrealisedPnl": str(pos.get("unrealisedPnl", 0)),
+                                        }
+                                        await stage2_cb(position_data)
+                                        logger.debug(f"Reconciled: {position_data['symbol']} {position_data['side']} size={position_data['size']}")
+                        except Exception as e:
+                            logger.error(f"Initial reconcile failed: {e}")
 
                     # Вызываем start_copying/enable_copying если присутствует
                     start_coro = getattr(s2, "start_copying", None) or getattr(s2, "enable_copying", None)
                     if callable(start_coro):
                         with suppress(Exception):
                             res = start_coro()
-                            if hasattr(res, "__await__"):
-                                await res
+                            if hasattr(res, "__await__"): await res
 
-                    logger.info("Stage-2 activated, handler registration scheduled with correct context")
+                    logger.info("Stage-2 activated, handler registration logic completed.")
                     if sys_logger:
                         with suppress(Exception):
-                            sys_logger.log_event(
-                                "INFO", "Stage2System",
-                                "Auto-activated with delayed handler registration"
-                            )
+                            sys_logger.log_event("INFO", "Stage2System", "Auto-activated and handler registration stabilized")
                 else:
-                    logger.warning("Stage-2 instance is missing")
+                    logger.warning("Stage-2 instance is missing, activation skipped.")
 
             except Exception as e:
                 logger.exception("Failed to activate Stage-2: %s", e)
@@ -2009,18 +1962,21 @@ class IntegratedTradingSystem:
                     self.active_tasks.add(wtask)
                 logger.info("✅ Positions DB workers started (2)")
 
-                # 3) Периодический reconcile через REST (уважаем RECONCILE_ENABLE)
-                reconcile_coro = getattr(ws, "reconcile_positions_from_rest", None)
+                # 3) Периодический reconcile через REST (с одноразовым предупреждением)
                 reconcile_enabled = os.getenv("RECONCILE_ENABLE", "1") == "1"
-                if callable(reconcile_coro) and reconcile_enabled:
-                    rtask = asyncio.create_task(reconcile_coro(), name="Stage1_PositionsReconcile")
-                    tasks.append(rtask)
-                    self.active_tasks.add(rtask)
-                    logger.info("✅ Positions reconciliation task started")
-                elif callable(reconcile_coro) and not reconcile_enabled:
-                    logger.info("Positions reconciliation is disabled; task not started")
+                if hasattr(ws, 'reconcile_positions_from_rest') and callable(getattr(ws, 'reconcile_positions_from_rest')):
+                    if reconcile_enabled:
+                        reconcile_coro = getattr(ws, "reconcile_positions_from_rest")
+                        rtask = asyncio.create_task(reconcile_coro(), name="Stage1_PositionsReconcile")
+                        tasks.append(rtask)
+                        self.active_tasks.add(rtask)
+                        logger.info("✅ Positions reconciliation task started")
+                    else:
+                        logger.info("Positions reconciliation is disabled by RECONCILE_ENABLE=0; task not started")
                 else:
-                    logger.warning("reconcile_positions_from_rest() not found in websocket_manager")
+                    if not self._rest_reconcile_warned:
+                        logger.warning("RECONCILE_REST: skipped (optional method not implemented)")
+                        self._rest_reconcile_warned = True
 
             print(f"\n🎯 Запущено {len(tasks)} системных задач")
             print("🔄 Система работает в полностью автономном режиме")

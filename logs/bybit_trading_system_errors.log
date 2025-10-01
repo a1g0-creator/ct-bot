@@ -30,3 +30,4 @@ AttributeError: 'ProductionSignalProcessor' object has no attribute '_copy_syste
 2025-09-30 07:49:00,219 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
 2025-09-30 07:50:12,215 [   ERROR] bybit_trading_system:4033 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
 2025-10-01 04:43:30,438 [   ERROR] bybit_trading_system:4037 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
+2025-10-01 08:41:25,229 [   ERROR] bybit_trading_system:4037 - WS_ESCALATE_TRIGGER: WebSocket still disconnected after 0.01s. Triggering monitor restart.
