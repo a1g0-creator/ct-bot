@@ -283,115 +283,192 @@ class TestMarginMirroring(unittest.IsolatedAsyncioTestCase):
 class TestUniversalCopyLogic(unittest.IsolatedAsyncioTestCase):
 
     def setUp(self):
+        """Set up a fresh system for each test."""
         os.environ['DATABASE_URL'] = 'sqlite:///:memory:'
         from stage2_copy_system import Stage2CopyTradingSystem, PositionMode
         from enhanced_trading_system_final_fixed import EnhancedBybitClient, SignalType
 
+        # Make modules available to tests
         self.SignalType_imported = SignalType
         self.PositionMode_imported = PositionMode
+
+        # Mock clients
         self.mock_source_client = AsyncMock(spec=EnhancedBybitClient)
         self.mock_main_client = AsyncMock(spec=EnhancedBybitClient)
         self.mock_main_client.api_key = "main_key"
         self.mock_main_client.api_secret = "main_secret"
-        self.mock_main_client.set_leverage = AsyncMock(return_value={'retCode': 0, 'retMsg': 'OK'})
 
+        # Mock base monitor
         mock_monitor = MagicMock()
         mock_monitor.source_client = self.mock_source_client
         mock_monitor.main_client = self.mock_main_client
-        mock_monitor._is_paused = False
 
+        # Instantiate the system under test
         self.system = Stage2CopyTradingSystem(base_monitor=mock_monitor)
-        self.system.trade_executor_connected = True
+        self.system.trade_executor_connected = True # Assume system is ready to trade
         self.system.copy_manager.copy_queue = asyncio.Queue()
+
+        # Mock dependencies that make external calls
         self.system.copy_manager.kelly_calculator.calculate_optimal_size = AsyncMock(
-            side_effect=lambda **kwargs: {"recommended_size": kwargs.get('current_size', 0)}
+            # Default mock: return the proportional size without Kelly adjustment
+            side_effect=lambda **kwargs: {"recommended_size": kwargs.get('current_size', kwargs.get('proportional', 0))}
         )
         self.system.copy_manager.order_manager.get_min_order_qty = AsyncMock(return_value=0.001)
 
-    async def test_hedge_open_short_correct_posidx(self):
-        """HEDGE: Opening a new short position should create a Sell order with positionIdx=2."""
-        donor_pos = [{'symbol': 'BTCUSDT', 'side': 'Sell', 'size': '0.1', 'positionIdx': 2}]
+    # --- HEDGE Mode Tests ---
+
+    async def test_hedge_open_new_short(self):
+        """HEDGE: Opening a new short position should create a Sell order with posIdx=2 and reduceOnly=False."""
+        # Arrange
+        donor_pos = [{'symbol': 'BTCUSDT', 'side': 'Sell', 'size': '0.1', 'positionIdx': 2, 'entryPrice': '50000'}]
         self.mock_source_client.get_balance.return_value = 1000.0
         self.mock_main_client.get_balance.return_value = 1000.0
-        self.mock_main_client.get_positions.return_value = []
+        self.mock_main_client.get_positions.return_value = [] # No existing position on main
         self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.HEDGE)
 
+        # Act
         await self.system.on_position_item(donor_pos)
 
+        # Assert
         self.assertEqual(self.system.copy_manager.copy_queue.qsize(), 1)
         _, _, order = await self.system.copy_manager.copy_queue.get()
         self.assertEqual(order.target_side, 'Sell')
         self.assertEqual(order.metadata['position_idx'], 2)
         self.assertFalse(order.metadata['reduceOnly'])
+        self.assertEqual(order.source_signal.signal_type, self.SignalType_imported.POSITION_OPEN)
 
-    async def test_hedge_reduce_long_correct_posidx(self):
-        """HEDGE: Reducing a long position should create a Sell order with positionIdx=1 and reduceOnly=True."""
-        donor_pos = [{'symbol': 'BTCUSDT', 'side': 'Buy', 'size': '0.05', 'positionIdx': 1}]
+    async def test_hedge_reduce_long_position(self):
+        """HEDGE: Reducing a long position should create a Sell order with posIdx=1 and reduceOnly=True."""
+        # Arrange
+        donor_pos = [{'symbol': 'BTCUSDT', 'side': 'Buy', 'size': '0.05', 'positionIdx': 1, 'entryPrice': '50000'}]
         main_pos = [{'symbol': 'BTCUSDT', 'side': 'Buy', 'size': '0.1', 'positionIdx': 1}]
         self.mock_source_client.get_balance.return_value = 1000.0
         self.mock_main_client.get_balance.return_value = 1000.0
         self.mock_main_client.get_positions.return_value = main_pos
         self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.HEDGE)
 
+        # Act
         await self.system.on_position_item(donor_pos)
 
+        # Assert
         self.assertEqual(self.system.copy_manager.copy_queue.qsize(), 1)
         _, _, order = await self.system.copy_manager.copy_queue.get()
         self.assertEqual(order.target_side, 'Sell')
         self.assertAlmostEqual(order.target_quantity, 0.05)
         self.assertEqual(order.metadata['position_idx'], 1)
         self.assertTrue(order.metadata['reduceOnly'])
+        self.assertEqual(order.source_signal.signal_type, self.SignalType_imported.POSITION_MODIFY)
 
-    async def test_oneway_open_from_zero(self):
-        """ONE-WAY: Opening a new position from zero should create a Buy order with positionIdx=0."""
-        donor_pos = [{'symbol': 'ETHUSDT', 'side': 'Buy', 'size': '1.5', 'positionIdx': 0}]
+    async def test_hedge_full_close_long_position(self):
+        """HEDGE: Closing a long position fully should create a Sell order with posIdx=1 and reduceOnly=True."""
+        # Arrange
+        donor_pos = [{'symbol': 'BTCUSDT', 'side': 'Buy', 'size': '0', 'positionIdx': 1, 'entryPrice': '50000'}]
+        main_pos = [{'symbol': 'BTCUSDT', 'side': 'Buy', 'size': '0.1', 'positionIdx': 1}]
         self.mock_source_client.get_balance.return_value = 1000.0
         self.mock_main_client.get_balance.return_value = 1000.0
-        self.mock_main_client.get_positions.return_value = []
-        self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.ONEWAY)
+        self.mock_main_client.get_positions.return_value = main_pos
+        self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.HEDGE)
 
+        # Act
         await self.system.on_position_item(donor_pos)
 
+        # Assert
+        self.assertEqual(self.system.copy_manager.copy_queue.qsize(), 1)
+        _, _, order = await self.system.copy_manager.copy_queue.get()
+        self.assertEqual(order.target_side, 'Sell')
+        self.assertAlmostEqual(order.target_quantity, 0.1)
+        self.assertEqual(order.metadata['position_idx'], 1)
+        self.assertTrue(order.metadata['reduceOnly'])
+        self.assertEqual(order.source_signal.signal_type, self.SignalType_imported.POSITION_CLOSE)
+
+
+    # --- ONE-WAY Mode Tests ---
+
+    async def test_oneway_open_from_zero(self):
+        """ONE-WAY: Opening a new position from zero should create a Buy order with posIdx=0 and reduceOnly=False."""
+        # Arrange
+        donor_pos = [{'symbol': 'ETHUSDT', 'side': 'Buy', 'size': '1.5', 'positionIdx': 0, 'markPrice': '3000'}]
+        self.mock_source_client.get_balance.return_value = 10000.0
+        self.mock_main_client.get_balance.return_value = 10000.0
+        self.mock_main_client.get_positions.return_value = [] # No existing position
+        self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.ONEWAY)
+
+        # Act
+        await self.system.on_position_item(donor_pos)
+
+        # Assert
         self.assertEqual(self.system.copy_manager.copy_queue.qsize(), 1)
         _, _, order = await self.system.copy_manager.copy_queue.get()
         self.assertEqual(order.target_side, 'Buy')
         self.assertAlmostEqual(order.target_quantity, 1.5)
         self.assertEqual(order.metadata['position_idx'], 0)
         self.assertFalse(order.metadata['reduceOnly'])
+        self.assertEqual(order.source_signal.signal_type, self.SignalType_imported.POSITION_OPEN)
 
-    async def test_oneway_pure_reduce(self):
-        """ONE-WAY: A pure reduction should create a Sell order with reduceOnly=True and positionIdx=0."""
-        donor_pos = [{'symbol': 'ETHUSDT', 'side': 'Buy', 'size': '1.0', 'positionIdx': 0}]
+    async def test_oneway_pure_reduce_position(self):
+        """ONE-WAY: A pure reduction of a long position should create a Sell order with reduceOnly=True and posIdx=0."""
+        # Arrange
+        donor_pos = [{'symbol': 'ETHUSDT', 'side': 'Buy', 'size': '1.0', 'positionIdx': 0, 'markPrice': '3000'}]
         main_pos = [{'symbol': 'ETHUSDT', 'side': 'Buy', 'size': '1.5', 'positionIdx': 0}]
-        self.mock_source_client.get_balance.return_value = 1000.0
-        self.mock_main_client.get_balance.return_value = 1000.0
+        self.mock_source_client.get_balance.return_value = 10000.0
+        self.mock_main_client.get_balance.return_value = 10000.0
         self.mock_main_client.get_positions.return_value = main_pos
         self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.ONEWAY)
 
+        # Act
         await self.system.on_position_item(donor_pos)
 
+        # Assert
         self.assertEqual(self.system.copy_manager.copy_queue.qsize(), 1)
         _, _, order = await self.system.copy_manager.copy_queue.get()
         self.assertEqual(order.target_side, 'Sell')
         self.assertAlmostEqual(order.target_quantity, 0.5)
         self.assertEqual(order.metadata['position_idx'], 0)
         self.assertTrue(order.metadata['reduceOnly'])
+        self.assertEqual(order.source_signal.signal_type, self.SignalType_imported.POSITION_MODIFY)
 
-    async def test_oneway_reversal_to_long(self):
+    async def test_oneway_reversal_through_zero(self):
         """ONE-WAY: A reversal from short to long should create a single Buy order with reduceOnly=False."""
-        donor_pos = [{'symbol': 'ETHUSDT', 'side': 'Buy', 'size': '1.0', 'positionIdx': 0}]
+        # Arrange
+        donor_pos = [{'symbol': 'ETHUSDT', 'side': 'Buy', 'size': '1.0', 'positionIdx': 0, 'markPrice': '3000'}]
         main_pos = [{'symbol': 'ETHUSDT', 'side': 'Sell', 'size': '1.5', 'positionIdx': 0}]
-        self.mock_source_client.get_balance.return_value = 1000.0
-        self.mock_main_client.get_balance.return_value = 1000.0
+        self.mock_source_client.get_balance.return_value = 10000.0
+        self.mock_main_client.get_balance.return_value = 10000.0
         self.mock_main_client.get_positions.return_value = main_pos
         self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.ONEWAY)
 
+        # Act
         await self.system.on_position_item(donor_pos)
 
+        # Assert
         self.assertEqual(self.system.copy_manager.copy_queue.qsize(), 1)
         _, _, order = await self.system.copy_manager.copy_queue.get()
-        # Delta = 1.0 (target) - (-1.5) (current) = 2.5
+        # Delta = target_net(1.0) - main_net(-1.5) = 2.5
         self.assertEqual(order.target_side, 'Buy')
         self.assertAlmostEqual(order.target_quantity, 2.5)
         self.assertEqual(order.metadata['position_idx'], 0)
         self.assertFalse(order.metadata['reduceOnly'])
+        self.assertEqual(order.source_signal.signal_type, self.SignalType_imported.POSITION_MODIFY)
+
+    async def test_oneway_full_close_short_position(self):
+        """ONE-WAY: Closing a short position fully should create a Buy order with reduceOnly=True."""
+        # Arrange
+        donor_pos = [{'symbol': 'ETHUSDT', 'side': 'Sell', 'size': '0', 'positionIdx': 0, 'markPrice': '3000'}]
+        main_pos = [{'symbol': 'ETHUSDT', 'side': 'Sell', 'size': '1.5', 'positionIdx': 0}]
+        self.mock_source_client.get_balance.return_value = 10000.0
+        self.mock_main_client.get_balance.return_value = 10000.0
+        self.mock_main_client.get_positions.return_value = main_pos
+        self.system.mode_detector.get_mode = MagicMock(return_value=self.PositionMode_imported.ONEWAY)
+
+        # Act
+        await self.system.on_position_item(donor_pos)
+
+        # Assert
+        self.assertEqual(self.system.copy_manager.copy_queue.qsize(), 1)
+        _, _, order = await self.system.copy_manager.copy_queue.get()
+        # Delta = target_net(0) - main_net(-1.5) = 1.5
+        self.assertEqual(order.target_side, 'Buy')
+        self.assertAlmostEqual(order.target_quantity, 1.5)
+        self.assertEqual(order.metadata['position_idx'], 0)
+        self.assertTrue(order.metadata['reduceOnly'])
+        self.assertEqual(order.source_signal.signal_type, self.SignalType_imported.POSITION_CLOSE)

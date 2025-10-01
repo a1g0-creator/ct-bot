@@ -3341,7 +3341,7 @@ class Stage2CopyTradingSystem:
             target_positions = await self.main_client.get_positions(category="linear", symbol=symbol)
             main_pos = next((p for p in target_positions if int(p.get('positionIdx', 0)) == pos_idx), None)
             main_size = safe_float(main_pos.get('size')) if main_pos else 0.0
-            main_side = (main_pos.get('side') or "").strip() if main_pos else ""
+            main_side = (main_pos.get('side') or '').strip() if main_pos else ''
             main_signed_qty = main_size if main_side == 'Buy' else -main_size if main_side == 'Sell' else 0.0
 
             target_size = 0.0
@@ -3356,26 +3356,22 @@ class Stage2CopyTradingSystem:
             if 0 < target_size < min_qty:
                 target_size = min_qty
 
-            donor_signed_qty = target_size if donor_side == 'Buy' else -target_size if donor_side == 'Sell' else 0.0
-            delta = donor_signed_qty - main_signed_qty
+            donor_signed = target_size if donor_side == 'Buy' else -target_size if donor_side == 'Sell' else 0.0
+            delta = donor_signed - main_signed_qty
 
-            if abs(delta) < min_qty and donor_signed_qty != 0:
+            if abs(delta) < min_qty and donor_signed != 0:
                 return
 
-            order_side = 'Buy' if delta > 0 else 'Sell'
-            order_qty = abs(delta)
+            side = 'Buy' if delta > 0 else 'Sell'
+            qty = abs(delta)
 
             reduce_only = (_sign(delta) != _sign(main_signed_qty)) and (abs(delta) <= abs(main_signed_qty))
+            final_position_idx = (1 if main_signed_qty > 0 else 2) if reduce_only else (1 if delta > 0 else 2)
 
-            if reduce_only:
-                final_position_idx = 1 if main_signed_qty > 0 else 2
-            else: # Opening or increasing
-                final_position_idx = 1 if order_side == 'Buy' else 2
+            is_opening = (main_signed_qty == 0 and donor_signed != 0)
+            is_full_close = (main_signed_qty != 0 and donor_signed == 0)
 
-            is_opening = main_signed_qty == 0 and donor_signed_qty != 0
-            is_full_close = main_signed_qty != 0 and donor_signed_qty == 0
-
-            await self._queue_copy_order(symbol, entry_price, order_side, order_qty, reduce_only, final_position_idx, is_opening, is_full_close, kelly_fraction, mode)
+            await self._queue_copy_order(symbol, entry_price, side, qty, reduce_only, final_position_idx, is_opening, is_full_close, kelly_fraction, mode)
             return
 
         except Exception as e:
@@ -3389,6 +3385,12 @@ class Stage2CopyTradingSystem:
         try:
             symbol = positions[0].get('symbol')
 
+            action_key = (symbol, 0)
+            async with self._idempotency_lock:
+                if time.time() - self._recent_actions.get(action_key, 0) < self._idempotency_window_sec:
+                    return
+                self._recent_actions[action_key] = time.time()
+
             main_balance = await self.main_client.get_balance()
             source_balance = await self.source_client.get_balance()
             if not all([main_balance, source_balance, main_balance > 0, source_balance > 0]):
@@ -3398,23 +3400,23 @@ class Stage2CopyTradingSystem:
             donor_net = sum(float(p.get('size', 0)) * (1 if p.get('side') == 'Buy' else -1) for p in positions)
             entry_price = float(positions[0].get('markPrice') or positions[0].get('entryPrice') or 0)
 
-            final_target_size = 0.0
+            target_size = 0.0
             kelly_fraction = 0.0
             if donor_net != 0:
-                proportional_size = abs(donor_net) * (main_balance / source_balance)
-                kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(symbol=symbol, current_size=proportional_size, price=entry_price, balance=main_balance, source_balance=source_balance)
-                final_target_size = kelly_result.get('recommended_size', proportional_size)
+                proportional = abs(donor_net) * (main_balance / source_balance)
+                kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(symbol=symbol, current_size=proportional, price=entry_price, balance=main_balance, source_balance=source_balance)
+                target_size = kelly_result.get('recommended_size', proportional)
                 kelly_fraction = kelly_result.get('kelly_fraction', 0.0)
 
             min_qty = await self.copy_manager.order_manager.get_min_order_qty(symbol, price=entry_price)
-            if 0 < final_target_size < min_qty:
-                final_target_size = min_qty
+            if 0 < target_size < min_qty:
+                target_size = min_qty
 
-            final_target_net = final_target_size * _sign(donor_net)
+            final_target_net = target_size * _sign(donor_net)
 
             target_positions = await self.main_client.get_positions(category="linear", symbol=symbol)
             main_pos = next((p for p in target_positions if int(p.get('positionIdx', 0)) == 0), None)
-            main_net = float(main_pos.get('size', 0)) * (1 if main_pos.get('side') == 'Buy' else -1) if main_pos else 0.0
+            main_net = (safe_float(main_pos.get('size')) if main_pos else 0.0) * (1 if (main_pos and (main_pos.get('side') or '').strip()=='Buy') else -1 if main_pos else 0)
 
             delta = final_target_net - main_net
 
@@ -3423,15 +3425,8 @@ class Stage2CopyTradingSystem:
 
             side = 'Buy' if delta > 0 else 'Sell'
             qty = abs(delta)
-            
-            # reduceOnly logic for One-Way
-            if _sign(delta) == _sign(main_net):
-                reduce_only = False  # Increasing position
-            elif abs(delta) <= abs(main_net):
-                reduce_only = True   # Pure reduction
-            else:
-                reduce_only = False  # Reversal through zero
 
+            reduce_only = (_sign(delta) != _sign(main_net) and abs(delta) <= abs(main_net))
             is_opening = (main_net == 0 and final_target_net != 0)
             is_full_close = (main_net != 0 and final_target_net == 0)
 
@@ -3887,5 +3882,5 @@ if __name__ == "__main__":
         print(f"\n💥 Ошибка запуска: {e}")
         print("Убедитесь что:")
         print("1. Файл enhanced_trading_system_final_fixed.py находится в той же директории")
-        print("2. Все зависимости установлены: pip install numpy pandas scipy")
+        print("2. Все зависимости установлены: pip install scipy")
         print("3. API ключи корректно настроены в конфигурационных файлах")
