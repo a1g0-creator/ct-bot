@@ -1593,8 +1593,12 @@ class AdaptiveOrderManager:
                 "qty": formatted_qty,                     # строка, как требует v5
                 "timeInForce": "IOC",
                 "orderLinkId": link_id,
-                "positionIdx": copy_order.metadata.get("position_idx", 0)
             }
+
+            pos_idx = copy_order.metadata.get("position_idx")
+            if pos_idx in (1, 2):
+                order_data["positionIdx"] = pos_idx
+
             order_data['reduceOnly'] = copy_order.metadata.get('reduceOnly', False)
 
             self.logger.info(
@@ -1629,17 +1633,18 @@ class AdaptiveOrderManager:
 
 
             err = (result or {}).get("retMsg") or "No response"
-            self.logger.error(f"Market order failed: {err}")
+            ret_code = (result or {}).get("retCode")
+            self.logger.error(f"Market order failed: {err} (retCode: {ret_code})")
             if "Qty invalid" in err:
                 self.logger.error(
                     f"Qty details: formatted={formatted_qty}, value=${float(formatted_qty) * float(current_price):.2f}, "
                     f"price=${float(current_price):.2f}"
                 )
-            return {"success": False, "error": err}
+            return {"success": False, "error": err, "retCode": ret_code}
 
         except Exception as e:
             self.logger.exception(f"Market order error: {e}")
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "retCode": -1}
 
 
     async def _place_smart_limit_order(self, copy_order: CopyOrder, market_conditions: MarketConditions) -> Dict[str, Any]:
@@ -1686,6 +1691,10 @@ class AdaptiveOrderManager:
                 "orderLinkId": link_id
             }
 
+            pos_idx = copy_order.metadata.get("position_idx")
+            if pos_idx in (1, 2):
+                order_data["positionIdx"] = pos_idx
+
             result = await self.main_client._make_request_with_retry("POST", "order/create", data=order_data)
             if result and result.get("retCode") == 0:
                 order_id = result.get("result", {}).get("orderId")
@@ -1703,12 +1712,13 @@ class AdaptiveOrderManager:
                 }
 
             err = (result or {}).get("retMsg") or "No response"
-            self.logger.error(f"Smart limit order failed: {err}")
-            return {"success": False, "error": err}
+            ret_code = (result or {}).get("retCode")
+            self.logger.error(f"Smart limit order failed: {err} (retCode: {ret_code})")
+            return {"success": False, "error": err, "retCode": ret_code}
 
         except Exception as e:
             self.logger.exception(f"Smart limit order error: {e}")
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "retCode": -1}
 
 
     async def _place_aggressive_limit_order(self, copy_order: CopyOrder, market_conditions: MarketConditions) -> Dict[str, Any]:
@@ -1750,6 +1760,10 @@ class AdaptiveOrderManager:
                 "orderLinkId": link_id
             }
 
+            pos_idx = copy_order.metadata.get("position_idx")
+            if pos_idx in (1, 2):
+                order_data["positionIdx"] = pos_idx
+
             result = await self.main_client._make_request_with_retry("POST", "order/create", data=order_data)
             if result and result.get("retCode") == 0:
                 order_id = result.get("result", {}).get("orderId")
@@ -1767,12 +1781,13 @@ class AdaptiveOrderManager:
                 }
 
             err = (result or {}).get("retMsg") or "No response"
-            self.logger.error(f"Aggressive limit order failed: {err}")
-            return {"success": False, "error": err}
+            ret_code = (result or {}).get("retCode")
+            self.logger.error(f"Aggressive limit order failed: {err} (retCode: {ret_code})")
+            return {"success": False, "error": err, "retCode": ret_code}
 
         except Exception as e:
             self.logger.exception(f"Aggressive limit order error: {e}")
-            return {"success": False, "error": str(e)}
+            return {"success": False, "error": str(e), "retCode": -1}
 
     async def place_trailing_stop(self, symbol: str, trailing_stop_price: str, active_price: Optional[str] = None, position_idx: int = 0, trigger_direction: Optional[int] = None):
         sent_ts = str(trailing_stop_price) if trailing_stop_price not in ["", None] else "0"
@@ -1805,9 +1820,9 @@ class AdaptiveOrderManager:
                 self.logger.info(f"{'TS_CLEAR_OK' if is_reset else 'TS_APPLY_OK'}: Success for {symbol}, idx={position_idx}")
                 return {"success": True, "result": result}
 
-            if ret_code == 34040:
-                self.logger.info(f"TS_NOOP: Not modified for {symbol}, idx={position_idx} (retCode=34040)")
-                return {"success": True, "noop": True}
+            if ret_code == 34040 or "not modified" in err_msg.lower():
+                self.logger.info(f"TS_APPLY_NOOP: {symbol} idx={position_idx} (no changes)")
+                return { "success": True, "retCode": 34040, "retMsg": "not modified" }
 
             if ret_code == 10001:
                 if is_reset:
@@ -1821,6 +1836,11 @@ class AdaptiveOrderManager:
             return {"success": False, "error": err_msg}
 
         except Exception as e:
+            error_str = str(e).lower()
+            if "34040" in error_str or "not modified" in error_str:
+                self.logger.info(f"TS_APPLY_NOOP: symbol={symbol}, idx={position_idx} (no changes)")
+                return { "success": True, "retCode": 34040, "retMsg": "not modified" }
+
             self.logger.exception(f"TS_EXCEPTION: Unhandled error in place_trailing_stop for {symbol}, idx={position_idx}: {e}")
             return {"success": False, "error": str(e)}
 
@@ -2127,6 +2147,33 @@ class PositionCopyManager:
             # 1) Place the order
             start_time = time.time()
             result = await self.order_manager.place_adaptive_order(copy_order)
+
+            # Fallback logic for positionIdx mismatch (10001)
+            ret_code = result.get("retCode")
+            err_msg = str(result.get("error", "")).lower()
+            if ret_code == 10001 or "position idx not match" in err_msg:
+                original_pos_idx = copy_order.metadata.get("position_idx")
+
+                if original_pos_idx in {None, 0}:
+                    alt_pos_idx = 1 if copy_order.target_side == "Buy" else 2
+                else: # Was 1 or 2, try ONEWAY
+                    alt_pos_idx = 0
+
+                logger.warning(
+                    "IDX_FALLBACK: symbol=%s failed with 10001. Original posIdx=%s. Retrying with positionIdx=%s.",
+                    copy_order.target_symbol,
+                    original_pos_idx,
+                    alt_pos_idx if alt_pos_idx != 0 else 'None'
+                )
+
+                # Modify order for a single retry
+                copy_order.metadata["position_idx"] = alt_pos_idx
+
+                # Log the final used index for clarity
+                logger.info(f"IDX_MAP_MAIN: symbol={copy_order.target_symbol}, main_idx={alt_pos_idx}, side={copy_order.target_side}, reason=fallback")
+
+                result = await self.order_manager.place_adaptive_order(copy_order)
+
             latency_ms = int((time.time() - start_time) * 1000)
             
             # 2) Update order log with the result
@@ -2254,7 +2301,7 @@ class PositionCopyManager:
                 'position_idx': copy_order.source_signal.metadata.get('pos_idx', 0),
                 'open_time': time.time(),
                 'order_id': execution_result.get('order_id'),
-                'raw': execution_result,
+                'metadata': execution_result,
             }
             self.active_positions[symbol] = position_data
 
@@ -2267,7 +2314,7 @@ class PositionCopyManager:
                 "entry_price": position_data['entry_price'],
                 "leverage": position_data['leverage'],
                 "position_idx": position_data['position_idx'],
-                "raw": position_data['raw'],
+                "metadata": position_data['metadata'],
                 "opened_at": datetime.fromtimestamp(position_data['open_time'])
             })
             logger.info(f"DB_LOG_OPEN: Position {symbol} logged to DB.")
@@ -2285,7 +2332,7 @@ class PositionCopyManager:
                     "symbol": symbol,
                     "qty": 0, # qty=0 signals a close
                     "position_idx": copy_order.source_signal.metadata.get('pos_idx', 0),
-                    "raw": execution_result # Pass execution result as raw close data
+                    "metadata": execution_result # Pass execution result as raw close data
                 })
                 logger.info(f"DB_LOG_CLOSE: Position {symbol} closure logged to DB.")
                 del self.active_positions[symbol]
@@ -2455,7 +2502,7 @@ class PositionCopyManager:
             position['quantity'] = new_qty
             position['last_modified_price'] = execution_result.get('avg_price', copy_order.target_price)
             position['last_modified_time'] = time.time()
-            position['raw'] = execution_result
+            position['metadata'] = execution_result
 
             # Log modification to positions_db
             await positions_writer.update_position({
@@ -2466,7 +2513,7 @@ class PositionCopyManager:
                 "entry_price": position['entry_price'], # Entry price doesn't change on modify
                 "leverage": position['leverage'],
                 "position_idx": position['position_idx'],
-                "raw": execution_result,
+                "metadata": { "execution": execution_result },
                 "updated_at": datetime.fromtimestamp(position['last_modified_time'])
             })
             logger.info(f"DB_LOG_MODIFY: Position {symbol} logged to DB.")
@@ -3334,8 +3381,8 @@ class Stage2CopyTradingSystem:
                 main_side = (main_pos.get('side') or '').strip()
                 close_side = 'Sell' if main_side == 'Buy' else 'Buy'
 
-                # Resolve the MAIN position index for the close order.
-                pos_idx_main = await self._resolve_main_pos_idx(symbol, close_side)
+                # Resolve the MAIN position index for the close order based on the ACTUAL open position side.
+                pos_idx_main = 1 if main_side == "Buy" else 2
 
                 # Format quantity and log intent
                 formatted_qty = await format_quantity_for_symbol_live(self.main_client, symbol, main_size, None)
