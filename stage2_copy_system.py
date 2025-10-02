@@ -2167,10 +2167,13 @@ class PositionCopyManager:
                 )
 
                 # Modify order for a single retry
-                copy_order.metadata["position_idx"] = alt_pos_idx
+                if alt_pos_idx in (None, 0):
+                    copy_order.metadata.pop("position_idx", None)  # не отправляем вообще
+                else:
+                    copy_order.metadata["position_idx"] = alt_pos_idx  # 1 или 2
 
                 # Log the final used index for clarity
-                logger.info(f"IDX_MAP_MAIN: symbol={copy_order.target_symbol}, main_idx={alt_pos_idx}, side={copy_order.target_side}, reason=fallback")
+                logger.info(f"IDX_MAP_MAIN: symbol={copy_order.target_symbol}, main_idx={alt_pos_idx if alt_pos_idx not in (None, 0) else 'None'}, side={copy_order.target_side}, reason=fallback")
 
                 result = await self.order_manager.place_adaptive_order(copy_order)
 
