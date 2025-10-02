@@ -1240,7 +1240,7 @@ class DynamicTrailingStopManager:
                 logger.info(f"TS_SKIP_IDENTICAL: symbol={symbol} idx={main_pos_idx} activePrice={curr_ap} trailingStop={curr_ts}")
                 return
 
-            await self.place_trailing_stop(
+            await self.order_manager.place_trailing_stop(
                 symbol=symbol,
                 trailing_stop_price=str(trail_abs),
                 active_price=(None if is_ap_same else str(active_price)),
@@ -2121,8 +2121,7 @@ class PositionCopyManager:
                 qty=copy_order.target_quantity,
                 status=OrderStatus.PENDING.value,
                 exchange_order_id=internal_order_id,
-                attempt=copy_order.retry_count + 1,
-                raw=copy_order.metadata
+                attempt=copy_order.retry_count + 1
             )
 
             # 1) Place the order
@@ -2139,8 +2138,7 @@ class PositionCopyManager:
                     qty=copy_order.target_quantity,
                     status=OrderStatus.PLACED.value, # Assuming market order is placed/filled instantly for logging
                     exchange_order_id=result.get('order_id', internal_order_id),
-                    latency_ms=latency_ms,
-                    raw=result
+                    latency_ms=latency_ms
                 )
 
                 # 3) Update position tracking and log to positions DB
@@ -2218,8 +2216,7 @@ class PositionCopyManager:
                     status=OrderStatus.FAILED.value,
                     reason=result.get('error', 'Unknown error'),
                     exchange_order_id=internal_order_id,
-                    latency_ms=latency_ms,
-                    raw=result
+                    latency_ms=latency_ms
                 )
 
                 # Retry logic
@@ -3320,6 +3317,7 @@ class Stage2CopyTradingSystem:
         """
         Self-contained handler for a single position update in HEDGE mode.
         Calculates delta, determines order parameters, and queues the order.
+        Includes a first-class branch for force-closing positions when the donor closes.
         """
         try:
             symbol = item.get('symbol')
@@ -3330,10 +3328,49 @@ class Stage2CopyTradingSystem:
             main_pos = next((p for p in target_positions if int(p.get('positionIdx', 0)) == pos_idx), None)
             main_size = safe_float(main_pos.get('size')) if main_pos else 0.0
 
+            # --- HEDGE FULL CLOSE ---
+            # This branch handles donor->0 full closes, bypassing normal delta logic and min_qty gates.
+            if donor_size <= 0 and main_size > 0:
+                main_side = (main_pos.get('side') or '').strip()
+                close_side = 'Sell' if main_side == 'Buy' else 'Buy'
+
+                # Resolve the MAIN position index for the close order.
+                pos_idx_main = await self._resolve_main_pos_idx(symbol, close_side)
+
+                # Format quantity and log intent
+                formatted_qty = await format_quantity_for_symbol_live(self.main_client, symbol, main_size, None)
+                logger.info(f"HEDGE_CLOSE_SYNC: symbol={symbol}, idx={pos_idx_main}, qty={formatted_qty}")
+
+                # Create and place the order directly, awaiting the result.
+                close_signal = TradingSignal(
+                    signal_type=SignalType.POSITION_CLOSE, symbol=symbol, side=close_side, size=main_size,
+                    price=0, timestamp=time.time(),
+                    metadata={'reason': 'hedge_full_close', 'reduceOnly': True, 'position_idx': pos_idx_main}
+                )
+                close_order = CopyOrder(
+                    source_signal=close_signal, target_symbol=symbol, target_side=close_side,
+                    target_quantity=main_size, target_price=None,
+                    order_strategy=OrderStrategy.MARKET, kelly_fraction=0.0, priority=0,
+                    metadata={'reason': 'hedge_full_close', 'reduceOnly': True, 'position_idx': pos_idx_main}
+                )
+
+                result = await self.copy_manager.order_manager.place_adaptive_order(close_order)
+
+                if result and result.get("success"):
+                    logger.info(f"HEDGE_CLOSE_OK: Market close for {symbol} idx={pos_idx_main} successful.")
+                    # Immediately clear the trailing stop for the now-closed position.
+                    await self.copy_manager.order_manager.place_trailing_stop(
+                        symbol=symbol, trailing_stop_price="0", position_idx=pos_idx_main
+                    )
+                else:
+                    logger.error(f"HEDGE_CLOSE_FAIL: Market close for {symbol} idx={pos_idx_main} failed. Reason: {result.get('error')}")
+                return # Exit after handling full close
+
             if donor_size <= 0 and main_size <= 0:
                 logger.info(f"NOOP_ZERO: donor_size=0 and MAIN is empty for {symbol} (pos_idx={pos_idx}) - ignoring snapshot.")
                 return
 
+            # --- Standard Incremental Update Logic ---
             main_balance = await self.main_client.get_balance()
             source_balance = await self.source_client.get_balance()
             main_equity = safe_float(main_balance.get("equity") if isinstance(main_balance, dict) else main_balance)
@@ -3453,12 +3490,16 @@ class Stage2CopyTradingSystem:
             is_opening = (main_net == 0 and final_target_net != 0)
             is_full_close = (main_net != 0 and final_target_net == 0)
 
-            action_key = (symbol, 0, side, round(qty, 6))
+            # Always resolve main pos_idx AFTER the final side is determined.
+            final_position_idx = await self._resolve_main_pos_idx(symbol, side)
+            logger.info(f"IDX_MAP_MAIN: symbol={symbol}, main_idx={final_position_idx}, side={side}, source_mode=ONEWAY")
+
+            action_key = (symbol, final_position_idx, side, round(qty, 6))
             if await self._check_and_record_action(action_key):
                 return
 
             await self._queue_copy_order(
-                symbol, entry_price, side, qty, reduce_only, 0, is_opening, is_full_close,
+                symbol, entry_price, side, qty, reduce_only, final_position_idx, is_opening, is_full_close,
                 kelly_fraction, mode, delta=delta, main_qty=main_net, target_qty=final_target_net
             )
 
@@ -3494,6 +3535,17 @@ class Stage2CopyTradingSystem:
 
 
     
+    async def _resolve_main_pos_idx(self, symbol: str, side: str) -> int:
+        """
+        Return correct Bybit v5 positionIdx for the MAIN account state.
+        HEDGE: Buy->1, Sell->2; ONEWAY: 0
+        """
+        main_positions = await self.main_client.get_positions(category="linear", symbol=symbol) or []
+        is_hedge = any(int(p.get("positionIdx", 0)) in (1, 2) for p in main_positions)
+        if is_hedge:
+            return 1 if (side or "").strip() == "Buy" else 2
+        return 0
+
     async def start_system(self):
         """Идемпотентный запуск Stage-2 без повторного старта Stage-1"""
         if getattr(self, "_started", False):
