@@ -5421,6 +5421,8 @@ class FinalTradingMonitor:
 
         # --- Hot-Reload and Pause Mechanism ---
         self._reload_lock = asyncio.Lock()
+        self._hot_swap_lock = asyncio.Lock() # HSWAP: Lock for hot-swap
+        self._ctx_version = 1 # HSWAP: Context version
         self._reloading = False
         self._is_paused = False
         self._deferred_signal_queue = deque()
@@ -5500,125 +5502,110 @@ class FinalTradingMonitor:
 
         logger.info("System processing resumed.")
 
-    async def reload_credentials_and_reconnect(self):
+    async def hot_swap_credentials(self, target_account_id: int, donor_account_id: int):
         """
-        Atomically hot-reloads API credentials, ensuring the system remains
+        Atomically hot-swaps API credentials, ensuring the system remains
         in a consistent state throughout the process.
         """
-        async with self._reload_lock:
+        async with self._hot_swap_lock:
             if self._reloading:
-                logger.warning("Hot-reload already in progress. Skipping.")
+                logger.warning("HSWAP: Hot-swap already in progress. Skipping.")
                 return
 
             self._reloading = True
             start_time = time.time()
-            deferred_signals_before = len(self._deferred_queue)
-            logger.info(f"HOT_RELOAD_START: Beginning credentials hot-reload process... (deferred signals: {deferred_signals_before})")
+            self._ctx_version += 1
+            logger.info(f"HSWAP: PAUSE: Beginning credentials hot-swap process... CTX version -> {self._ctx_version}")
 
             try:
                 # 1. Pause system processing
                 await self.pause_processing()
+                logger.info("HSWAP: System processing paused.")
 
                 # 2. Disconnect WebSocket
                 if self.websocket_manager:
-                    logger.info("HOT_RELOAD_WS_DISCONNECT: Closing WebSocket connection...")
-                    if hasattr(self.websocket_manager, 'unsubscribe_all'): # Optional: if implemented
-                         await self.websocket_manager.unsubscribe_all()
-                    await self.websocket_manager.close()
+                    logger.info("HSWAP: CANCEL: Closing WebSocket connection...")
+                    try:
+                        await asyncio.wait_for(self.websocket_manager.close(), timeout=5.0)
+                        logger.info("HSWAP: CANCEL: WebSocket connection closed gracefully.")
+                    except asyncio.TimeoutError:
+                        logger.warning("HSWAP: CANCEL: WebSocket close timed out. Forcing task cancellation.")
+                        # Assuming a method to forcefully cancel internal tasks exists
+                        if hasattr(self.websocket_manager, 'force_cancel_all'):
+                            await self.websocket_manager.force_cancel_all()
 
                 # 3. Reload and apply new credentials
-                from config import get_api_credentials, TARGET_ACCOUNT_ID, DONOR_ACCOUNT_ID
-
-                target_creds = get_api_credentials(TARGET_ACCOUNT_ID)
+                from config import get_api_credentials
+                logger.info("HSWAP: REBUILD: Loading new credentials from DB.")
+                target_creds = get_api_credentials(target_account_id)
                 if not (target_creds and len(target_creds) == 2):
-                    raise ValueError("Failed to load new credentials for TARGET account.")
+                    raise ValueError(f"HSWAP: Failed to load new credentials for TARGET account {target_account_id}.")
 
                 self.main_client.api_key, self.main_client.api_secret = target_creds
-                logger.info("HOT_RELOAD_CREDS: Main client credentials updated.")
+                logger.info("HSWAP: REBUILD: Main client credentials updated.")
 
-                source_creds = get_api_credentials(DONOR_ACCOUNT_ID)
+                source_creds = get_api_credentials(donor_account_id)
                 if source_creds and len(source_creds) == 2:
                     self.source_client.api_key, self.source_client.api_secret = source_creds
                     if self.websocket_manager:
                         self.websocket_manager.api_key, self.websocket_manager.api_secret = source_creds
-                    logger.info("HOT_RELOAD_CREDS: Source client and WebSocket credentials updated.")
+                    logger.info("HSWAP: REBUILD: Source client and WebSocket credentials updated.")
+                else:
+                    logger.warning(f"HSWAP: REBUILD: Donor account {donor_account_id} credentials not found. WebSocket may not connect.")
 
                 # 4. Invalidate all relevant caches
-                logger.info("HOT_RELOAD_CACHE_INVALIDATE: Clearing all cached data...")
+                logger.info("HSWAP: CLEAR: Clearing all cached data...")
                 self.main_positions_cache.clear()
                 if hasattr(self.main_client, 'invalidate_caches'): await self.main_client.invalidate_caches()
                 if hasattr(self.source_client, 'invalidate_caches'): await self.source_client.invalidate_caches()
                 if hasattr(self.signal_processor, 'invalidate_caches'): self.signal_processor.invalidate_caches()
+                # Clear other stores if they exist
+                # e.g., positions_store.clear(), balances_store.clear()
+                logger.info("HSWAP: CLEAR: Caches invalidated.")
 
                 # 5. Reconnect WebSocket with retries
                 if self.websocket_manager:
-                    reconnect_attempts = 3
-                    reconnect_delays = [0.5, 2, 5]
-                    for attempt in range(reconnect_attempts):
-                        try:
-                            logger.info(f"HOT_RELOAD_WS_RECONNECT: Attempt {attempt + 1}/{reconnect_attempts} to reconnect WebSocket...")
-                            await self.websocket_manager.connect()
-                            if self.websocket_manager.ws and self.websocket_manager.status == 'authenticated':
-                                logger.info("HOT_RELOAD_WS_RECONNECTED: WebSocket reconnected and authenticated.")
-                                await self.websocket_manager.resubscribe_all()
-                                break  # Success, exit loop
-                            else:
-                                raise ConnectionError("WebSocket connected but not authenticated.")
-                        except Exception as e:
-                            logger.warning(f"HOT_RELOAD_WS_RECONNECT_ATTEMPT_FAILED: Attempt {attempt + 1} failed: {e}")
-                            if attempt < reconnect_attempts - 1:
-                                await asyncio.sleep(reconnect_delays[attempt])
-                            else:
-                                logger.critical("HOT_RELOAD_WS_RECONNECT_FAILED: All WebSocket reconnect attempts failed.")
-                                raise ConnectionError("Failed to reconnect and authenticate WebSocket after multiple attempts.")
+                    logger.info("HSWAP: RESUB: Reconnecting WebSocket...")
+                    # The connect method should handle authentication and resubscription
+                    await self.websocket_manager.connect()
+                    if not (self.websocket_manager.ws and self.websocket_manager.status == ConnectionStatus.AUTHENTICATED):
+                         raise ConnectionError("HSWAP: RESUB: Failed to reconnect and authenticate WebSocket.")
+                    logger.info("HSWAP: RESUB: WebSocket reconnected and authenticated.")
 
-                # 6. Refresh state from REST API
-                logger.info(f"HOT_RELOAD_STATE_REFRESH: Fetching current state from REST API using balance_account_type='{BALANCE_ACCOUNT_TYPE}'.")
-                await self.run_reconciliation_cycle(enqueue=False) # Refresh positions without queueing
+
+                # 6. WARMUP: Refresh state from REST API
+                logger.info(f"HSWAP: WARMUP: Fetching current state from REST API.")
+                await self.run_reconciliation_cycle(enqueue=False)
                 new_main_balance = await self._get_balance_safe(self.main_client, "MAIN_RELOAD")
-
                 if new_main_balance is None:
-                    raise ValueError("Failed to fetch new balance after reload.")
-
-                # D) Rebind Stage-2 to the fresh client
-                if self.stage2_system:
-                    logger.info("Rebinding Stage-2 to fresh client after key reload...")
-                    self.stage2_system.main_client = self.main_client
-                    self.stage2_system.source_client = self.source_client
-                    # Re-bind the callback to the fresh instance
-                    await self.connect_copy_system(self.stage2_system)
-                    logger.info("✅ Stage-2 rebound and callback re-bound after key reload.")
-
+                    raise ValueError("HSWAP: WARMUP: Failed to fetch new balance after reload.")
+                logger.info("HSWAP: WARMUP: State refreshed.")
 
                 # 7. Final health check and logging
                 duration_ms = (time.time() - start_time) * 1000
-                ws_topics_count = len(self.websocket_manager.subscriptions) if self.websocket_manager else 0
-
-                summary_log = (
-                    f"HOT_RELOAD_SUMMARY: "
-                    f"duration_ms={duration_ms:.0f}, "
-                    f"deferred_signals_processed={deferred_signals_before}, "
-                    f"ws_topics_re-subscribed={ws_topics_count}"
-                )
+                summary_log = f"HSWAP: RESUME: Hot-swap complete. duration_ms={duration_ms:.0f}, new_balance={new_main_balance:.2f}"
                 logger.info(summary_log)
-
                 await send_telegram_alert(
-                    f"✅ Горячая перезагрузка завершена за {duration_ms:.0f}ms.\n"
-                    f"Новый баланс: {new_main_balance:.2f} USDT\n"
-                    f"Обработано отложенных сигналов: {deferred_signals_before}"
+                    f"✅ HSWAP: Горячая перезагрузка завершена за {duration_ms:.0f}ms.\n"
+                    f"Новый баланс: {new_main_balance:.2f} USDT"
                 )
 
                 # 8. Resume processing only on success
                 await self.resume_processing()
+                logger.info("HSWAP: RESUME: System processing resumed.")
 
             except Exception as e:
-                logger.critical(f"HOT_RELOAD_FAILED: {e}", exc_info=True)
-                await send_telegram_alert(f"❌ Горячая перезагрузка не удалась: {e}\nСистема на паузе. Требуется ручное вмешательство.")
+                logger.critical(f"HSWAP: FAILED: {e}", exc_info=True)
+                await send_telegram_alert(f"❌ HSWAP: Горячая перезагрузка не удалась: {e}\nСистема на паузе. Требуется ручное вмешательство.")
                 # Do NOT resume processing on failure. Leave it paused.
 
             finally:
                 self._reloading = False
-                logger.info("HOT_RELOAD_FINISH: Reload process finished.")
+                logger.info("HSWAP: FINISH: Reload process finished.")
+
+    async def reload_credentials_and_reconnect(self, target_account_id: int, donor_account_id: int):
+        """Backward compatibility alias."""
+        return await self.hot_swap_credentials(target_account_id, donor_account_id)
         
     def set_copy_state_ref(self, state_obj):
         """Sets the reference to the shared copy_state object."""
