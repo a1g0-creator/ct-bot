@@ -19,29 +19,29 @@ BYBIT COPY TRADING SYSTEM - ЭТАП 2: СИСТЕМА КОПИРОВАНИЯ
 """
 
 import asyncio
+import hashlib
 import time
 import json
 import logging
-import numpy as np
-import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple, Any, Union
 from dataclasses import dataclass, field
 from enum import Enum
 from collections import deque, defaultdict, namedtuple
 import math
+import random
 import statistics
-from scipy.optimize import minimize_scalar
-from scipy.stats import norm
 import traceback
 import uuid
+import os
 from decimal import Decimal
 import aiohttp
 
-from app.sys_events_logger import sys_logger
-from app.orders_logger import orders_logger, OrderStatus
-from app.risk_events_logger import risk_events_logger, RiskEventType
-from app.balance_snapshots_logger import balance_logger
+from sys_events_logger import sys_logger
+from orders_logger import orders_logger, OrderStatus
+from risk_events_logger import risk_events_logger, RiskEventType
+from balance_snapshots_logger import balance_logger
+from positions_db_writer import positions_writer
 
 logger = logging.getLogger(__name__)
 
@@ -49,10 +49,12 @@ logger = logging.getLogger(__name__)
 try:
     from enhanced_trading_system_final_fixed import (
         FinalTradingMonitor, ProductionSignalProcessor, TradingSignal, SignalType,
-        EnhancedBybitClient, FinalFixedWebSocketManager, 
+        EnhancedBybitClient, FinalFixedWebSocketManager,
         safe_float, send_telegram_alert, logger, MAIN_API_KEY, MAIN_API_SECRET,
-        MAIN_API_URL, SOURCE_API_KEY, SOURCE_API_SECRET, SOURCE_API_URL
+        MAIN_API_URL, SOURCE_API_KEY, SOURCE_API_SECRET, SOURCE_API_URL,
+        BALANCE_ACCOUNT_TYPE
     )
+    from config import dry_run
     print("✅ Успешно импортированы все компоненты Этапа 1")
 except ImportError as e:
     print(f"❌ Не удалось импортировать компоненты Этапа 1: {e}")
@@ -61,6 +63,8 @@ except ImportError as e:
 
 from risk_state_classes import RiskDataContext, HealthSupervisor
 
+
+def _sign(x: float) -> int: return (x > 0) - (x < 0)
 
 # ================================
 # НАСТРОЙКИ И КОНСТАНТЫ ЭТАПА 2
@@ -78,7 +82,8 @@ COPY_CONFIG = {
     'slippage_tolerance': 0.002,            # Допустимое проскальзывание (0.2%)
     'market_impact_threshold': 0.05,        # Порог воздействия на рынок (5%)
     'kelly_min_mult': 0.5,                  # Kelly не уменьшает размер более чем в 2 раза
-    'kelly_max_mult': 2.0                   # и не увеличивает более чем в 2 раза
+    'kelly_max_mult': 2.0,                  # и не увеличивает более чем в 2 раза
+    'idempotency_window_sec': 5,            # Окно идемпотентности в секундах
 }
 
 # Kelly Criterion настройки
@@ -92,16 +97,26 @@ KELLY_CONFIG = {
     'rebalance_threshold': 0.1              # Порог для ребалансировки (10%)
 }
 
+def _parse_bool_env(var_name: str, default: bool) -> bool:
+    """Parses a boolean value from an environment variable."""
+    value = os.getenv(var_name, str(default)).lower()
+    return value in ("1", "true", "yes", "on")
+
 # Trailing Stop-Loss настройки
 TRAILING_CONFIG = {
+    'enabled': _parse_bool_env('TRAILING_ENABLED', True),
+    'mode': 'conservative', # "aggressive" or "conservative"
+    'activation_pct': 0.015, # 1.5%
+    'step_pct': 0.002, # 0.2%
+    'max_pct': 0.05, # 5%
     'atr_period': 14,
-    'atr_multiplier_conservative': 2.0,
-    'atr_multiplier_moderate': 1.5,
-    'atr_multiplier_aggressive': 1.0,
-    'min_trail_distance': 0.005,
-    'max_trail_distance': 0.05,
-    'update_threshold': 0.001,
-    'min_abs_move': 0.10,    # ✔ новый параметр: минимальный абсолютный сдвиг цены (в $) для апдейта
+    'atr_multiplier': 2.0,
+    'rearm_on_modify': True,
+    'update_on_add': True,
+    'only_on_open': False,
+    'min_notional_for_ts': 100.0, # $100
+    # Deprecated/internal - use mode
+    'use_atr': True,
 }
 
 # Контроль рисков
@@ -114,47 +129,71 @@ RISK_CONFIG = {
     'recovery_mode_threshold': 0.08        # Порог режима восстановления (8%)
 }
 
+# Настройки зеркалирования маржи
+MARGIN_CONFIG = {
+    'enabled': True,
+    'min_usdt_delta': 2.0,
+    'max_pct_of_equity': 0.5,
+    'debounce_sec': 2
+}
+
 async def format_quantity_for_symbol_live(bybit_client, symbol: str, quantity: float, price: float = None) -> str:
     """
-    Форматирование количества на основе реальных биржевых фильтров Bybit.
-    - Если не дотягиваем до минимальной стоимости (min_notional) — поднимаем количество ВВЕРХ.
-    - Во всех остальных случаях округляем ВНИЗ к шагу, чтобы не завышать риск.
+    Formats quantity based on Bybit's live exchange filters.
+    - If the quantity is below the effective minimum (considering min_qty and min_notional), it's bumped UP.
+    - Otherwise, it's rounded DOWN to the nearest quantity step to avoid increasing risk.
     """
     try:
         filters = await bybit_client.get_symbol_filters(symbol, category="linear")
-        # Фоллбеки на случай, если биржа не вернула значения
-        qty_step     = float(filters.get("qty_step") or 0.001)
-        min_qty      = float(filters.get("min_qty") or 0.001)
-        min_notional = float(filters.get("min_notional") or 10.0)
+        qty_step = float(filters.get("qty_step") or 0.001)
+        min_qty = float(filters.get("min_qty") or 0.001)
+        min_notional = float(filters.get("min_notional") or 5.0)
 
+        if qty_step <= 0: # Avoid division by zero
+            return str(quantity)
+
+        # Determine the number of decimal places from the qty_step
         decimals = 0
-        # оценим количество знаков после запятой по шагу
         if qty_step < 1:
             s = f"{qty_step:.12f}".rstrip('0')
             decimals = len(s.split('.')[-1]) if '.' in s else 0
 
-        need_bump_to_min = False
-        if price and price > 0:
-            min_qty_by_value = float(min_notional) / float(price)
-            effective_min    = max(min_qty, min_qty_by_value)
-            if quantity < effective_min:
-                quantity = effective_min
-                need_bump_to_min = True
+        # Calculate the effective minimum quantity
+        notional_min_qty = 0.0
+        effective_min_qty = min_qty
+        if price and price > 0 and min_notional > 0:
+            notional_min_qty = (min_notional / price)
+            # This is the required formula: ceil(min_notional/price/step)*step
+            min_qty_from_notional = math.ceil(notional_min_qty / qty_step) * qty_step
+            effective_min_qty = max(min_qty, min_qty_from_notional)
 
-        steps = quantity / qty_step
-        rounded_qty = (math.ceil(steps) * qty_step) if need_bump_to_min else (math.floor(steps) * qty_step)
-        if rounded_qty < min_qty:
-            rounded_qty = min_qty
+        # Decide on the final quantity
+        if quantity < effective_min_qty:
+            final_qty = effective_min_qty
+        else:
+            # Round down to the nearest step
+            steps = quantity / qty_step
+            final_qty = math.floor(steps) * qty_step
 
-        formatted = f"{rounded_qty:.{decimals}f}".rstrip('0').rstrip('.')
+        # Final check to ensure we don't fall below the absolute min_qty after rounding down
+        if final_qty < min_qty:
+             final_qty = min_qty
+
+        formatted_qty = f"{final_qty:.{decimals}f}"
+        if '.' in formatted_qty:
+            formatted_qty = formatted_qty.rstrip('0').rstrip('.')
+
+        # New logging
         logger.info(
-            f"[live-format] {symbol}: qty_in={quantity:.8f} step={qty_step} "
-            f"min_qty={min_qty} min_notional={min_notional} → qty_out={formatted}"
+            f"[live-format] {symbol}: qty_in={quantity:.8f}, price=${price or 0:.4f}, step={qty_step}, "
+            f"rule_min_qty={min_qty}, min_notional={min_notional}, notional_min_qty={notional_min_qty:.8f}, "
+            f"effective_min_qty={effective_min_qty:.8f} -> final_qty={formatted_qty}"
         )
-        return formatted or "0"
+        return formatted_qty or "0"
+
     except Exception as e:
-        logger.warning(f"format_quantity_for_symbol_live fallback due to: {e}")
-        # Фоллбек: используем прежнюю статическую функцию, чтобы не падать
+        logger.warning(f"format_quantity_for_symbol_live fallback due to: {e}", exc_info=True)
+        # Fallback to the old static function to prevent crashes
         return format_quantity_for_symbol(symbol, quantity, price)
 
 
@@ -275,6 +314,20 @@ class TrailingStop:
     last_update: float = field(default_factory=time.time)
 
 @dataclass
+class CopyState:
+    """A single source of truth for the copy system's readiness."""
+    main_rest_ok: bool = False
+    source_ws_ok: bool = False
+    keys_loaded: bool = False
+    limits_checked: bool = False
+    last_error: Optional[str] = None
+
+    @property
+    def ready(self) -> bool:
+        """The system is ready only if all components are okay."""
+        return all([self.main_rest_ok, self.source_ws_ok, self.keys_loaded, self.limits_checked])
+
+@dataclass
 class CopyOrder:
     """Ордер для копирования"""
     source_signal: TradingSignal
@@ -288,6 +341,95 @@ class CopyOrder:
     retry_count: int = 0
     created_at: float = field(default_factory=time.time)
     metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+class PositionMode(Enum):
+    HEDGE = 1
+    ONEWAY = 0
+
+class DonorPositionModeDetector:
+    """Detects and caches the position mode (Hedge/One-Way) for a given symbol."""
+    def __init__(self, source_client: EnhancedBybitClient, cache_ttl_sec: int = 300):
+        self._source_client = source_client
+        self._cache_ttl = timedelta(seconds=cache_ttl_sec)
+        self._modes_cache: Dict[str, Tuple[PositionMode, datetime]] = {}
+        self._rest_probe_locks = defaultdict(asyncio.Lock)
+        self._last_probe_time: Dict[str, float] = {}
+
+    def _get_cache_key(self, symbol: str, category: str = "linear") -> str:
+        """Creates a standardized cache key."""
+        return f"{category}:{symbol}"
+
+    def update_from_ws(self, symbol: str, positions: list, category: str = "linear") -> None:
+        """Updates the position mode from incoming WebSocket position data."""
+        key = self._get_cache_key(symbol, category)
+        has_hedge_indices = any(p.get('positionIdx') in [1, 2] for p in positions)
+        has_only_oneway_idx = bool(positions) and all(p.get('positionIdx') == 0 for p in positions)
+
+        mode = None
+        if has_hedge_indices:
+            mode = PositionMode.HEDGE
+        elif has_only_oneway_idx and positions:
+            mode = PositionMode.ONEWAY
+
+        if mode is not None:
+            if self._modes_cache.get(key, (None, None))[0] != mode:
+                logger.info(f"POSITION_MODE: symbol={key}, mode={mode.name} (src=ws)")
+            self._modes_cache[key] = (mode, datetime.utcnow())
+
+    async def ensure_rest_probe(self, symbol: str, category: str = "linear") -> None:
+        """
+        Ensures the position mode is known, falling back to a REST API probe if needed.
+        This method is throttled to prevent API spam.
+        """
+        key = self._get_cache_key(symbol, category)
+
+        async with self._rest_probe_locks[key]:
+            # Check if mode is already known or if a probe was sent recently
+            if self.get_mode(symbol, category) is not None:
+                return
+
+            now = time.time()
+            if now - self._last_probe_time.get(key, 0) < 60: # Throttle: 1 probe per 60s
+                return
+
+            # Mark that we are probing now
+            self._last_probe_time[key] = now
+            logger.info(f"MODE_PENDING: Probing REST for position mode for {key}.")
+            try:
+                # A light way to get position info. get_positions is suitable.
+                positions = await self._source_client.get_positions(category=category, symbol=symbol)
+                if positions:
+                    # Logic is same as WS update, but on REST data
+                    self.update_from_ws(symbol, positions, category)
+                    mode = self.get_mode(symbol, category)
+                    if mode:
+                         logger.info(f"POSITION_MODE: symbol={key}, mode={mode.name} (src=rest)")
+                    else:
+                         # This can happen if a symbol has no positions at all.
+                         # We don't cache this, will retry later.
+                         logger.info(f"MODE_PROBE_INCONCLUSIVE: No active positions found for {key} via REST.")
+                else:
+                    logger.warning(f"REST probe for {key} returned no position data.")
+
+            except Exception as e:
+                logger.error(f"ensure_rest_probe for {key} failed: {e}", exc_info=True)
+
+    def get_mode(self, symbol: str, category: str = "linear") -> Optional[PositionMode]:
+        """
+        Retrieves the cached position mode for a symbol if it's not stale.
+        Returns None if the mode is unknown or the cache is expired.
+        """
+        key = self._get_cache_key(symbol, category)
+        cached_data = self._modes_cache.get(key)
+        if cached_data:
+            mode, timestamp = cached_data
+            if datetime.utcnow() - timestamp < self._cache_ttl:
+                return mode
+            else:
+                # Cache expired, remove it
+                del self._modes_cache[key]
+        return None
 
 # ================================
 # KELLY CRITERION IMPLEMENTATION
@@ -330,71 +472,73 @@ class AdvancedKellyCalculator:
     def apply_config(self, cfg: dict) -> None:
         """
         Применяет новую конфигурацию в рантайме.
-        Сбрасывает кэши и обновляет параметры мгновенно.
-
-        Args:
-            cfg: Словарь с параметрами Kelly (из KELLY_CONFIG)
+        Обеспечивает совместимость с Telegram и внутренними механизмами.
         """
         try:
-            # Сохраняем старую конфигурацию для логирования
-            old_config = {
-                'kelly_multiplier': self.kelly_multiplier,
-                'max_position_size': self.max_position_size,
-                'min_position_size': self.min_position_size,
-                'max_drawdown_threshold': self.max_drawdown_threshold,
-                'lookback_window': getattr(self.trade_history, 'maxlen', 100)
-            }
-        
-            # Обновляем множители и лимиты
-            self.kelly_multiplier = float(cfg.get('conservative_factor', self.kelly_multiplier))
-            self.max_position_size = float(cfg.get('max_kelly_fraction', self.max_position_size))
-            self.min_position_size = float(cfg.get('min_position_size', self.min_position_size))
+            # Используем get_config_snapshot для получения "старого" состояния, если метод уже есть
+            old_config = self.get_config_snapshot() if hasattr(self, 'get_config_snapshot') else {}
+
+            # 1. Обновляем атрибуты, которые напрямую читает Telegram
+            self.confidence_threshold = float(cfg.get('confidence_threshold', 0.6))
+            self.max_kelly_fraction = float(cfg.get('max_kelly_fraction', 0.25))
+            self.conservative_factor = float(cfg.get('conservative_factor', 0.5))
+            self.min_trades_required = int(cfg.get('min_trades_required', 30))
+            self.lookback_period = int(cfg.get('lookback_window', 100))  # Важный маппинг
+            self.min_position_size = float(cfg.get('min_position_size', 0.01))
+            self.rebalance_threshold = float(cfg.get('rebalance_threshold', 0.1))
+
+            # 2. Синхронизируем внутренние переменные калькулятора для обратной совместимости
+            self.kelly_multiplier = self.conservative_factor
+            self.max_position_size = self.max_kelly_fraction
             self.default_position_size = max(self.min_position_size, 0.001)
-    
-            # Обновляем пороги
             self.max_drawdown_threshold = float(cfg.get('max_drawdown_threshold', 0.15))
-    
-            # Обновляем размер окна истории если изменился
-            new_lookback = int(cfg.get('lookback_window', 100))
+
+            # 3. Обновляем размер окна истории, если он изменился
+            new_lookback = self.lookback_period
             cache_cleared = False
-            if new_lookback != getattr(self.trade_history, 'maxlen', new_lookback):
+            if not hasattr(self, 'trade_history') or new_lookback != getattr(self.trade_history, 'maxlen', new_lookback):
                 from collections import deque
-                # Сохраняем существующие данные при изменении окна
-                self.trade_history = deque(list(self.trade_history), maxlen=new_lookback)
+                current_history = list(getattr(self, 'trade_history', []))
+                self.trade_history = deque(current_history, maxlen=new_lookback)
                 cache_cleared = True
-        
-            # Сбрасываем кэш для мгновенного эффекта
-            self.kelly_cache.clear()
-        
-            # Логируем изменение конфигурации
+
+            # 4. Сбрасываем кэш для немедленного применения настроек
+            if hasattr(self, 'kelly_cache'):
+                self.kelly_cache.clear()
+
+            # 5. Логируем изменения
+            new_config = self.get_config_snapshot()
             sys_logger.log_event(
-                "INFO",
-                "KellyCalculator",
-                "Kelly configuration updated",
-                {
-                    "old_config": old_config,
-                    "new_config": {
-                        'kelly_multiplier': self.kelly_multiplier,
-                        'max_position_size': self.max_position_size,
-                        'min_position_size': self.min_position_size,
-                        'max_drawdown_threshold': self.max_drawdown_threshold,
-                        'lookback_window': new_lookback
-                    },
-                    "cache_cleared": cache_cleared
-                }
+                "INFO", "KellyCalculator", "Kelly configuration updated",
+                {"old_config": old_config, "new_config": new_config, "cache_cleared": cache_cleared}
             )
-    
-            logger.info(f"Kelly config applied: multiplier={self.kelly_multiplier}, "
-                       f"max_size={self.max_position_size}, lookback={new_lookback}")
-                   
+            logger.info(
+                f"Kelly config applied: multiplier={self.conservative_factor}, "
+                f"max_size={self.max_kelly_fraction}, lookback={self.lookback_period}"
+            )
+
         except Exception as e:
             sys_logger.log_error(
-                "KellyCalculator",
-                f"Failed to apply config: {str(e)}",
+                "KellyCalculator", f"Failed to apply config: {str(e)}",
                 {"config": cfg, "error": str(e)}
             )
-            logger.error(f"Failed to apply Kelly config: {e}")
+            logger.error(f"Failed to apply Kelly config: {e}", exc_info=True)
             raise
+
+    def get_config_snapshot(self) -> dict:
+        """
+        Возвращает снимок текущей конфигурации калькулятора для логов и отладки.
+        """
+        # Используем дефолты из глобального конфига, если атрибут еще не установлен
+        return {
+            'confidence_threshold': getattr(self, 'confidence_threshold', KELLY_CONFIG.get('confidence_threshold')),
+            'max_kelly_fraction': getattr(self, 'max_kelly_fraction', KELLY_CONFIG.get('max_kelly_fraction')),
+            'conservative_factor': getattr(self, 'conservative_factor', KELLY_CONFIG.get('conservative_factor')),
+            'min_trades_required': getattr(self, 'min_trades_required', KELLY_CONFIG.get('min_trades_required')),
+            'lookback_window': getattr(self, 'lookback_period', KELLY_CONFIG.get('lookback_window')),
+            'min_position_size': getattr(self, 'min_position_size', KELLY_CONFIG.get('min_position_size')),
+            'rebalance_threshold': getattr(self, 'rebalance_threshold', KELLY_CONFIG.get('rebalance_threshold')),
+        }
 
     def add_trade_result(self, symbol: str, pnl: float, trade_data: Dict[str, Any]):
         """Добавление результата сделки для анализа"""
@@ -571,11 +715,11 @@ class AdvancedKellyCalculator:
         
             # Основные статистики
             win_rate = len(wins) / len(pnl_values)
-            avg_win = np.mean(wins)
-            avg_loss = np.mean(losses)
+            avg_win = statistics.mean(wins) if wins else 0.0
+            avg_loss = statistics.mean(losses) if losses else 0.0
         
             # Дополнительные метрики
-            profit_factor = (avg_win * len(wins)) / (avg_loss * len(losses))
+            profit_factor = (avg_win * len(wins)) / (avg_loss * len(losses)) if (avg_loss * len(losses)) > 0 else float('inf')
             max_drawdown = self._calculate_max_drawdown(pnl_values)
             sharpe_ratio = self._calculate_sharpe_ratio(pnl_values)
         
@@ -668,25 +812,38 @@ class AdvancedKellyCalculator:
     
     def _calculate_max_drawdown(self, returns: List[float]) -> float:
         """Расчет максимальной просадки"""
-        try:
-            cumulative = np.cumprod([1 + r for r in returns])
-            running_max = np.maximum.accumulate(cumulative)
-            drawdown = (cumulative - running_max) / running_max
-            return abs(np.min(drawdown))
-        except:
+        if not returns:
             return 0.0
-    
+        try:
+            equity_curve = [1.0]
+            for r in returns:
+                equity_curve.append(equity_curve[-1] * (1 + r))
+
+            peak = equity_curve[0]
+            max_drawdown = 0.0
+            for equity in equity_curve:
+                if equity > peak:
+                    peak = equity
+                drawdown = (peak - equity) / peak if peak > 0 else 0
+                if drawdown > max_drawdown:
+                    max_drawdown = drawdown
+            return max_drawdown
+        except Exception:
+            # Fallback for any math errors
+            return 0.0
+
     def _calculate_sharpe_ratio(self, returns: List[float]) -> float:
         """Расчет коэффициента Шарпа"""
         try:
             if len(returns) < 2:
                 return 0.0
-            mean_return = np.mean(returns)
-            std_return = np.std(returns)
+            mean_return = statistics.mean(returns)
+            # Use population standard deviation for consistency with numpy's default
+            std_return = statistics.pstdev(returns)
             if std_return == 0:
                 return 0.0
             return mean_return / std_return
-        except:
+        except Exception:
             return 0.0
     
     def _calculate_confidence_score(self, sample_size: int, sharpe_ratio: float) -> float:
@@ -868,506 +1025,272 @@ class AdvancedKellyCalculator:
 
 class DynamicTrailingStopManager:
     """
-    Продвинутая система динамических Trailing Stop-Loss
-    
-    Основано на:
-    - ATR (Average True Range) для измерения волатильности
-    - Адаптивные алгоритмы на основе рыночных условий
-    - Множественные стили трейлинга
+    Manages native exchange trailing stop orders. It is self-contained and backward-compatible.
+    It stores its configuration in `self.cfg` but also sets legacy attributes like `self.atr_period`
+    to ensure old code that references them continues to work.
     """
-    
-    def __init__(self):
-        self.active_stops = {}  # symbol -> TrailingStop
-        self.price_history = defaultdict(lambda: deque(maxlen=50))
-        self.atr_cache = {}
-        self.last_update = defaultdict(float)
-        
-    def reload_config(self, cfg: dict) -> None:
-        """
-        Перезагружает конфигурацию Trailing Stop в рантайме.
-    
-        Args:
-            cfg: Словарь с параметрами trailing (из TRAILING_CONFIG)
-        """
-        try:
-            # Сохраняем старую конфигурацию для логирования
-            old_config = {
-                'atr_period': self.atr_period,
-                'atr_multiplier_conservative': self.atr_multiplier_conservative,
-                'atr_multiplier_moderate': self.atr_multiplier_moderate,
-                'atr_multiplier_aggressive': self.atr_multiplier_aggressive,
-                'min_trail_distance': self.min_trail_distance,
-                'max_trail_distance': self.max_trail_distance,
-                'update_threshold': self.update_threshold
-            }
-        
-            # Обновляем параметры ATR
-            self.atr_period = int(cfg.get('atr_period', 14))
-            self.atr_multiplier_conservative = float(cfg.get('atr_multiplier_conservative', 2.0))
-            self.atr_multiplier_moderate = float(cfg.get('atr_multiplier_moderate', 1.5))
-            self.atr_multiplier_aggressive = float(cfg.get('atr_multiplier_aggressive', 1.0))
-        
-            # Обновляем лимиты
-            self.min_trail_distance = float(cfg.get('min_trail_distance', 0.005))
-            self.max_trail_distance = float(cfg.get('max_trail_distance', 0.05))
-            self.update_threshold = float(cfg.get('update_threshold', 0.001))
-        
-            # Сбрасываем кэш ATR для пересчёта с новыми параметрами
-            cache_size_before = len(self.atr_cache)
-            self.atr_cache.clear()
-        
-            # Логируем изменение конфигурации
-            sys_logger.log_event(
-                "INFO",
-                "TrailingStopManager",
-                "Trailing stop configuration updated",
-                {
-                    "old_config": old_config,
-                    "new_config": {
-                        'atr_period': self.atr_period,
-                        'atr_multiplier_conservative': self.atr_multiplier_conservative,
-                        'atr_multiplier_moderate': self.atr_multiplier_moderate,
-                        'atr_multiplier_aggressive': self.atr_multiplier_aggressive,
-                        'min_trail_distance': self.min_trail_distance,
-                        'max_trail_distance': self.max_trail_distance,
-                        'update_threshold': self.update_threshold
-                    },
-                    "active_stops_count": len(self.trailing_stops),
-                    "atr_cache_cleared": cache_size_before
-                }
-            )
-        
-            logger.info(f"Trailing config reloaded: ATR period={self.atr_period}")
-        
-        except Exception as e:
-            sys_logger.log_error(
-                "TrailingStopManager",
-                f"Config reload failed: {str(e)}",
-                {"config": cfg, "error": str(e)}
-            )
-            logger.error(f"Failed to reload trailing config: {e}")
-            raise
+    def __init__(self, main_client: EnhancedBybitClient, order_manager, trailing_config: dict):
+        self.main_client = main_client
+        self.order_manager = order_manager
 
-    def calculate_atr(self, symbol: str, price_data: List[Dict[str, float]], period: int = None) -> float:
+        # 1. Establish complete defaults
+        self.cfg = {
+            "enabled": True,
+            "mode": "conservative",
+            "activation_pct": 0.02,
+            "step_pct": 0.003,
+            "max_pct": 0.05,
+            "atr_period": 14,
+            "atr_multiplier": 1.5,
+        }
+
+        # 2. Normalize and merge incoming config
+        normalized_initial_cfg = self._normalize_keys(trailing_config)
+        self.cfg.update(normalized_initial_cfg)
+
+        # 3. Rebind legacy attributes to ensure they exist
+        self._rebind_legacy_attrs()
+        self._stops_cache = []  # list[dict]: локальный кэш открытых стоп/трейлинг ордеров
+        self._ts_update_timestamps = {} # For debounce mechanism
+
+        logger.info(f"DynamicTrailingStopManager initialized with config: {self.cfg}")
+
+    def get_all_stops(self, symbol: Optional[str] = None) -> list:
         """
-        Расчет Average True Range (ATR)
-        
-        ATR = SMA(TR, period)
-        где TR = max(H-L, |H-C_prev|, |L-C_prev|)
+        Back-compat для Telegram UI: синхронно возвращает список стоп-ордеров.
+        Меню использует только len(...) и первые несколько элементов.
         """
         try:
-            if period is None:
-                period = TRAILING_CONFIG['atr_period']
-                
-            if len(price_data) < period:
-                return 0.01  # Дефолтное значение
-            
-            true_ranges = []
-            
-            for i in range(1, len(price_data)):
-                high = price_data[i]['high']
-                low = price_data[i]['low']
-                prev_close = price_data[i-1]['close']
-                
-                tr1 = high - low
-                tr2 = abs(high - prev_close)
-                tr3 = abs(low - prev_close)
-                
-                true_range = max(tr1, tr2, tr3)
-                true_ranges.append(true_range)
-            
-            if len(true_ranges) >= period:
-                atr = np.mean(true_ranges[-period:])
-                
-                # Кэшируем результат
-                self.atr_cache[symbol] = {
-                    'value': atr,
-                    'timestamp': time.time()
-                }
-                
-                return atr
-            
-            return 0.01
-            
+            cache = self._stops_cache
+        except AttributeError:
+            self._stops_cache = []
+            cache = self._stops_cache
+        if symbol:
+            return [s for s in cache if s.get("symbol") == symbol]
+        return list(cache)
+
+    async def refresh_stops_cache(self, symbol: Optional[str] = None) -> list:
+        """
+        Опционально: подтянуть открытые стоп/TS ордера с биржи и обновить локальный кэш.
+        Не используется телеграм-меню напрямую (оно вызывает sync get_all_stops()).
+        """
+        try:
+            params = {"category": "linear"}
+            if symbol:
+                params["symbol"] = symbol
+            params["orderFilter"] = "StopOrder"
+            res = await self.main_client._make_request_with_retry("GET", "open-orders", params)
+
+            items = (res or {}).get("result", {}).get("list", []) if (res and res.get("retCode") == 0) else []
+            norm = [{
+                "symbol": it.get("symbol"),
+                "orderId": it.get("orderId"),
+                "orderType": it.get("orderType"),
+                "stopOrderType": it.get("stopOrderType"),
+                "activatePrice": it.get("triggerPrice") or it.get("activatePrice"),
+            } for it in items]
+
+            # если фильтровали по символу — обновим только его; иначе заменим целиком
+            if symbol:
+                self._stops_cache = [s for s in self._stops_cache if s.get("symbol") != symbol] + norm
+            else:
+                self._stops_cache = norm
+            return self.get_all_stops(symbol)
         except Exception as e:
-            logger.error(f"ATR calculation error for {symbol}: {e}")
-            return 0.01
-    
-    def determine_trailing_style(self, market_conditions: MarketConditions) -> TrailingStyle:
-        """Определение стиля трейлинга на основе рыночных условий"""
-        try:
-            volatility = market_conditions.volatility
-            trend_strength = market_conditions.trend_strength
-            volume_ratio = market_conditions.volume_ratio
-            liquidity_score = market_conditions.liquidity_score
-            
-            # Высокая волатильность = консервативный трейлинг
-            if volatility > 0.03:
-                return TrailingStyle.CONSERVATIVE
-            
-            # Сильный тренд + высокий объем = агрессивный трейлинг
-            if trend_strength > 0.7 and volume_ratio > 1.5:
-                return TrailingStyle.AGGRESSIVE
-            
-            # Низкая ликвидность = консервативный трейлинг
-            if liquidity_score < 0.5:
-                return TrailingStyle.CONSERVATIVE
-            
-            # По умолчанию умеренный
-            return TrailingStyle.MODERATE
-            
-        except Exception as e:
-            logger.error(f"Error determining trailing style: {e}")
-            return TrailingStyle.MODERATE
-    
-    def create_trailing_stop(self, symbol: str, side: str, current_price: float, 
-                             position_size: float, market_conditions: MarketConditions = None) -> TrailingStop:
+            logger.warning(f"refresh_stops_cache failed: {e}")
+            return self.get_all_stops(symbol)
+
+    @staticmethod
+    def _normalize_keys(in_cfg: dict) -> dict:
+        """Maps legacy keys to new keys and normalizes values."""
+        if not in_cfg:
+            return {}
+
+        out = {}
+
+        # Map legacy keys
+        if 'min_trail_distance' in in_cfg:
+            out['activation_pct'] = in_cfg['min_trail_distance']
+        if 'update_threshold' in in_cfg:
+            out['step_pct'] = in_cfg['update_threshold']
+        if 'max_trail_distance' in in_cfg:
+            out['max_pct'] = in_cfg['max_trail_distance']
+        if 'aggressive_mode' in in_cfg:
+            out['mode'] = "aggressive" if in_cfg['aggressive_mode'] else "conservative"
+
+        # Pass through new-style keys
+        for key in ["activation_pct", "step_pct", "max_pct", "mode", "enabled", "atr_period", "atr_multiplier"]:
+            if key in in_cfg:
+                out[key] = in_cfg[key]
+
+        return out
+
+    def _rebind_legacy_attrs(self):
+        """Sets legacy attributes from the self.cfg dictionary for backward compatibility."""
+        # Percent-based
+        self.default_distance_percent = float(self.cfg.get('activation_pct', 0.015))
+        self.min_trail_step           = float(self.cfg.get('step_pct', 0.002))
+        self.max_distance_percent     = float(self.cfg.get('max_pct', 0.05))
+        # ATR
+        self.atr_period               = int(self.cfg.get('atr_period', 14))
+        self.atr_multiplier           = float(self.cfg.get('atr_multiplier', 2.0))
+        # Mode flag
+        self.aggressive_mode          = (str(self.cfg.get('mode', 'conservative')).lower() == 'aggressive')
+
+    def reload_config(self, new_cfg_or_patch: dict) -> dict:
         """
-        Создание trailing stop с ИСПРАВЛЕННЫМ расчетом дистанции
-        Гарантирует разумные значения даже при отсутствии ATR данных
+        Updates the trailing stop configuration at runtime, normalizes keys,
+        and rebinds legacy attributes to maintain compatibility.
         """
+        old_cfg = self.cfg.copy()
+
+        normalized_patch = self._normalize_keys(new_cfg_or_patch)
+        self.cfg.update(normalized_patch)
+
+        self._rebind_legacy_attrs() # Ensure legacy attrs are always in sync
+
+        logger.info("Trailing stop config updated.")
+        sys_logger.log_event(
+            "INFO", "TrailingStopManager", "Trailing stop configuration updated",
+            {"old_config": old_cfg, "new_config": self.cfg}
+        )
+        return self.get_config_snapshot()
+
+    def get_config_snapshot(self) -> dict:
+        """
+        Returns a snapshot of the current configuration, ensuring values are
+        consistent with the active (and backward-compatible) legacy attributes.
+        """
+        snap = dict(self.cfg)
+        # also mirror legacy names to help any other code paths:
+        snap.update({
+            "activation_pct": self.default_distance_percent,
+            "step_pct": self.min_trail_step,
+            "max_pct": self.max_distance_percent,
+            "mode": "aggressive" if self.aggressive_mode else "conservative",
+            "atr_period": self.atr_period,
+            "atr_multiplier": self.atr_multiplier,
+        })
+        return snap
+
+    def _round_to_tick(self, value: float, tick_size: float) -> float:
+        """Rounds a value to the nearest tick size."""
+        if tick_size <= 0:
+            return value
+        return round(value / tick_size) * tick_size
+
+    async def create_or_update_trailing_stop(self, position_data: Dict[str, Any], ref_price_type: str = "entry"):
+        """
+        Calculates and sets a trailing stop using Bybit v5 API.
+        Determines the correct MAIN positionIdx (ignores donor's), applies debounce and idempotency.
+        """
+        symbol = position_data.get("symbol")
+        donor_pos_idx = int(position_data.get("position_idx", 0))  # logging only
+        donor_side = (position_data.get("side") or "").strip()
         try:
-            # Определяем стиль трейлинга
-            if market_conditions:
-                trail_style = self.determine_trailing_style(market_conditions)
-                volatility = market_conditions.volatility
+            main_positions = await self.main_client.get_positions(category="linear", symbol=symbol) or []
+            active_positions = [p for p in main_positions if safe_float(p.get("size")) > 0]
+            if not active_positions:
+                logger.info(f"TS_SKIP: No active position on MAIN for {symbol}.")
+                return
+            is_hedge_main = any(int(p.get("positionIdx", 0)) in (1, 2) for p in active_positions)
+            if is_hedge_main:
+                target_side = "Buy" if donor_pos_idx == 1 else "Sell" if donor_pos_idx == 2 else donor_side
+                current_pos = next((p for p in active_positions if (p.get("side") or "").strip() == target_side), active_positions[0])
             else:
-                trail_style = TrailingStyle.MODERATE
-                volatility = 0.01
-        
-            # Получаем ATR (используем кэш если доступен)
-            atr_value = 0.01
-            if symbol in self.atr_cache:
-                cache_data = self.atr_cache[symbol]
-                if time.time() - cache_data['timestamp'] < 300:  # 5 минут кэш
-                    atr_value = cache_data['value']
-        
-            # Выбираем множитель на основе стиля
-            multiplier_map = {
-                TrailingStyle.CONSERVATIVE: TRAILING_CONFIG.get('atr_multiplier_conservative', 2.0),
-                TrailingStyle.MODERATE: TRAILING_CONFIG.get('atr_multiplier_moderate', 1.5),
-                TrailingStyle.AGGRESSIVE: TRAILING_CONFIG.get('atr_multiplier_aggressive', 1.0)
-            }
-            multiplier = multiplier_map[trail_style]
-        
-            # ===== ИСПРАВЛЕННЫЙ РАСЧЕТ БАЗОВОЙ ДИСТАНЦИИ =====
-            # Проверяем адекватность ATR
-            if atr_value < current_price * 0.001:  # ATR слишком мал (менее 0.1% от цены)
-                # Используем процент от цены вместо ATR
-                if trail_style == TrailingStyle.CONSERVATIVE:
-                    base_distance = current_price * 0.02  # 2%
-                elif trail_style == TrailingStyle.MODERATE:
-                    base_distance = current_price * 0.01  # 1%
-                else:  # AGGRESSIVE
-                    base_distance = current_price * 0.015  # 1.5%
-            
-                logger.warning(f"ATR too small for {symbol} ({atr_value:.6f}), using percentage-based distance")
-            else:
-                # Используем ATR-based расчет
-                base_distance = atr_value * multiplier
-            
-                # Дополнительная проверка на разумность
-                min_reasonable = current_price * 0.005  # Минимум 0.5%
-                max_reasonable = current_price * 0.03   # Максимум 3%
-            
-                if base_distance < min_reasonable:
-                    logger.warning(f"ATR distance too small for {symbol}, adjusting to minimum")
-                    base_distance = min_reasonable
-                elif base_distance > max_reasonable:
-                    logger.warning(f"ATR distance too large for {symbol}, adjusting to maximum")
-                    base_distance = max_reasonable
-        
-            # Адаптация к размеру позиции (больше позиция = больше дистанция)
-            position_factor = min(2.0, max(1.0, (position_size / 1000) * 0.1))
-            adjusted_distance = base_distance * position_factor
-        
-            # Финальные ограничения из конфига
-            min_distance = current_price * TRAILING_CONFIG.get('min_trail_distance', 0.005)
-            max_distance = current_price * TRAILING_CONFIG.get('max_trail_distance', 0.05)
-            final_distance = max(min_distance, min(max_distance, adjusted_distance))
-        
-            # Расчет стоп-цены (правильная логика для Buy/Sell)
-            if side.upper() == 'BUY':
-                stop_price = current_price - final_distance  # Для лонга стоп НИЖЕ
-            else:
-                stop_price = current_price + final_distance  # Для шорта стоп ВЫШЕ
-        
-            # Расчет процента дистанции
-            distance_percent = final_distance / current_price  # В долях (0.01 = 1%)
-        
-            # Создаем объект TrailingStop
-            trailing_stop = TrailingStop(
+                current_pos = active_positions[0]
+
+            main_pos_idx = int(current_pos.get("positionIdx", 0))
+            logger.info(f"IDX_MAP: symbol={symbol}, donor_idx={donor_pos_idx}, main_idx={main_pos_idx}, main_side={(current_pos.get('side') or '').strip()}")
+
+            now = time.time()
+            key = (symbol, main_pos_idx)
+            if now - self._ts_update_timestamps.get(key, 0) < 2:
+                logger.info(f"TS_DEBOUNCE: Skip {symbol} idx={main_pos_idx}")
+                return
+            self._ts_update_timestamps[key] = now
+
+            if not self.cfg.get('enabled'):
+                return
+
+            entry_price = safe_float(current_pos.get("entryPrice")) or safe_float(current_pos.get("markPrice")) or safe_float(current_pos.get("lastPrice"))
+            position_value = safe_float(current_pos.get("size")) * entry_price
+            if position_value < self.cfg.get('min_notional_for_ts', 0):
+                logger.info(f"TS_SKIP: Position value ${position_value:.2f} for {symbol} idx={main_pos_idx} is below threshold.")
+                return
+
+            curr_ts = safe_float(current_pos.get("trailingStop"))
+            curr_ap = safe_float(current_pos.get("activePrice"))
+            side = (current_pos.get("side") or "").strip()  # 'Buy' | 'Sell'
+            ref_price = safe_float(current_pos.get("markPrice")) or entry_price
+            filters = await self.main_client.get_symbol_filters(symbol, category="linear")
+            tick = float(filters.get("tick_size") or 0.01)
+            activation_pct = float(self.cfg.get('activation_pct', 0.015))
+            step_pct = float(self.cfg.get('step_pct', 0.002))
+
+            if side not in ("Buy", "Sell"):
+                logger.error(f"TS_FAIL: Invalid side '{side}' for {symbol} on MAIN.")
+                return
+            active_price = self._round_to_tick(ref_price * (1 + activation_pct if side == "Buy" else 1 - activation_pct), tick)
+            trail_abs    = self._round_to_tick(ref_price * step_pct, tick)   # absolute distance
+            trigger_dir  = 2 if side == "Buy" else 1
+
+            is_ts_same = curr_ts and abs(curr_ts - trail_abs) < (tick / 2)
+            is_ap_same = curr_ap and abs(curr_ap - active_price) < (tick / 2)
+            if is_ts_same and is_ap_same:
+                logger.info(f"TS_SKIP_IDENTICAL: symbol={symbol} idx={main_pos_idx} activePrice={curr_ap} trailingStop={curr_ts}")
+                return
+
+            await self.order_manager.place_trailing_stop(
                 symbol=symbol,
-                side=side,
-                current_price=current_price,
-                stop_price=stop_price,
-                distance=final_distance,
-                distance_percent=distance_percent,
-                trail_style=trail_style,
-                atr_value=atr_value
+                trailing_stop_price=str(trail_abs),
+                active_price=(None if is_ap_same else str(active_price)),
+                position_idx=main_pos_idx,
+                trigger_direction=trigger_dir,
             )
-        
-            # Сохраняем в активные стопы (проверяем дубликаты)
-            if symbol not in self.active_stops:
-                self.active_stops[symbol] = trailing_stop
-                logger.info(f"Created trailing stop for {symbol} {side}: "
-                           f"style={trail_style.value}, "
-                           f"distance=${final_distance:.2f} ({distance_percent:.1%}), "
-                           f"stop=${stop_price:.2f}, current=${current_price:.2f}")
-            else:
-                # Обновляем существующий
-                existing = self.active_stops[symbol]
-                existing.current_price = current_price
-                existing.stop_price = stop_price
-                existing.distance = final_distance
-                existing.distance_percent = distance_percent
-                trailing_stop = existing
-                logger.debug(f"Updated existing trailing stop for {symbol}")
-        
-            return trailing_stop
-        
         except Exception as e:
-            logger.error(f"Error creating trailing stop for {symbol}: {e}")
-        
-            # В случае ошибки возвращаем безопасный дефолтный trailing stop
-            safe_distance = current_price * 0.015  # 1.5% по умолчанию
-        
-            return TrailingStop(
+            logger.error(f"TS_FAIL(create_or_update): Failed for {symbol} (donor_idx={donor_pos_idx})", exc_info=True)
+
+    # --- Adapter Methods for Lifecycle Integration ---
+
+    async def create_trailing_stop(self, position: Dict[str, Any]):
+        """Adapter to create a trailing stop for a new position."""
+        logger.info(f"TS_ADAPTER(create): Triggered for {position.get('symbol')}")
+        await self.create_or_update_trailing_stop(position, ref_price_type='entry')
+
+    async def update_trailing_stop(self, position: Dict[str, Any]):
+        """Adapter to update a trailing stop for a modified position."""
+        logger.info(f"TS_ADAPTER(update): Triggered for {position.get('symbol')}")
+        await self.create_or_update_trailing_stop(position, ref_price_type='mark') # Or entry, based on config
+
+    async def remove_trailing_stop(self, position: Dict[str, Any]):
+        """Adapter to remove a trailing stop by setting it to '0'."""
+        symbol = position.get('symbol')
+        position_idx = int(position.get('position_idx', 0))
+        logger.info(f"TS_ADAPTER(remove): Triggered for {symbol}")
+        try:
+            # Pre-check: only attempt to reset if there is an active position on MAIN.
+            main_positions = await self.main_client.get_positions(category="linear", symbol=symbol)
+            active_pos = next((p for p in main_positions if safe_float(p.get('size', 0)) > 0 and int(p.get('positionIdx', -1)) == position_idx), None)
+
+            if not active_pos:
+                logger.debug(f"TS_RESET_SKIP: {symbol} (no active position)")
+                return
+
+            # According to Bybit V5 API, sending "0" resets the trailing stop.
+            result = await self.order_manager.place_trailing_stop(
                 symbol=symbol,
-                side=side,
-                current_price=current_price,
-                stop_price=current_price - safe_distance if side.upper() == 'BUY' else current_price + safe_distance,
-                distance=safe_distance,
-                distance_percent=0.015,  # 1.5%
-                trail_style=TrailingStyle.MODERATE,
-                atr_value=0.0
+                trailing_stop_price="0",
+                position_idx=position_idx
             )
-    
-    def update_trailing_stop(self, symbol: str, new_price: float) -> Optional[TrailingStop]:
-        """
-        Обновление trailing stop с поддержанием ПРОЦЕНТНОЙ дистанции
-        + защита от шумовых микросдвигов (относительный и абсолютный пороги).
-        """
-        try:
-            if symbol not in self.active_stops:
-                return None
-
-            stop = self.active_stops[symbol]
-
-            # 1) Относительный порог (в долях)
-            rel_change = abs(new_price - stop.current_price) / max(1e-12, stop.current_price)
-            if rel_change < TRAILING_CONFIG.get('update_threshold', 0.001):
-                return stop  # слишком маленькое относительное изменение
-
-            # 2) Абсолютный порог (в долларах)
-            min_abs = TRAILING_CONFIG.get('min_abs_move', 0.0)
-            if min_abs and abs(new_price - stop.current_price) < min_abs:
-                return stop  # слишком маленькое абсолютное изменение
-
-            should_update  = False
-            new_stop_price = stop.stop_price
-
-            if stop.side.upper() == 'BUY':
-                # для лонга стоп только вверх
-                if new_price > stop.current_price:
-                    new_stop_price = new_price * (1 - stop.distance_percent)
-                    should_update = new_stop_price > stop.stop_price
+            if result.get("success"):
+                logger.info(f"TS_RESET_OK: Trailing stop for {symbol} reset successfully.")
             else:
-                # для шорта стоп только вниз
-                if new_price < stop.current_price:
-                    new_stop_price = new_price * (1 + stop.distance_percent)
-                    should_update = new_stop_price < stop.stop_price
-
-            if not should_update:
-                return stop
-
-            old_stop          = stop.stop_price
-            old_distance_pct  = stop.distance_percent
-            stop.stop_price   = new_stop_price
-            stop.current_price= new_price
-            stop.distance     = abs(new_price - new_stop_price)  # пересчёт абсолютной дистанции
-            stop.last_update  = time.time()
-
-            logger.info(
-                f"Updated trailing stop for {symbol}: ${old_stop:.2f} -> ${new_stop_price:.2f} "
-                f"(maintaining {old_distance_pct:.1%} distance)"
-            )
-            return stop
+                # The place_trailing_stop method already logs detailed errors.
+                logger.error(f"TS_ADAPTER_FAIL(remove): place_trailing_stop failed for {symbol}.")
 
         except Exception as e:
-            logger.error(f"Trailing stop update error: {e}")
-            return None
-
-    
-    def check_stop_triggered(self, symbol: str, current_price: float) -> bool:
-        """Проверка срабатывания trailing stop - ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ"""
-        try:
-            if symbol not in self.active_stops:
-                return False
-        
-            stop = self.active_stops[symbol]
-    
-            # Правильная логика для лонгов и шортов
-            if stop.side.upper() == 'BUY':
-                # Для ЛОНГОВ: стоп срабатывает когда цена ПАДАЕТ НИЖЕ стоп-цены
-                triggered = current_price <= stop.stop_price
-                if triggered:
-                    # НОВОЕ: Логируем в risk_events
-                    risk_events_logger.log_risk_event(
-                        account_id=2,
-                        event=RiskEventType.TRAILING_STOP_HIT,
-                        reason=f"{symbol} LONG: Price ${current_price:.2f} hit stop ${stop.stop_price:.2f}",
-                        value=float(stop.stop_price)
-                    )
-                
-                    logger.warning(f"📉 Trailing stop TRIGGERED for LONG {symbol}: "
-                                 f"current_price={current_price:.2f} <= stop={stop.stop_price:.2f}")
-            else:
-                # Для ШОРТОВ: стоп срабатывает когда цена ПОДНИМАЕТСЯ ВЫШЕ стоп-цены
-                triggered = current_price >= stop.stop_price
-                if triggered:
-                    # НОВОЕ: Логируем в risk_events
-                    risk_events_logger.log_risk_event(
-                        account_id=2,
-                        event=RiskEventType.TRAILING_STOP_HIT,
-                        reason=f"{symbol} SHORT: Price ${current_price:.2f} hit stop ${stop.stop_price:.2f}",
-                        value=float(stop.stop_price)
-                    )
-                
-                    logger.warning(f"📈 Trailing stop TRIGGERED for SHORT {symbol}: "
-                                 f"current_price={current_price:.2f} >= stop={stop.stop_price:.2f}")
-    
-            return triggered
-    
-        except Exception as e:
-            logger.error(f"Error checking trailing stop for {symbol}: {e}")
-            return False
-
-# ================================================
-# ИСПРАВЛЕННЫЙ МЕТОД execute_trailing_stop
-# ================================================
-
-    async def execute_trailing_stop(self, symbol: str, stop: Any) -> bool:
-        """
-        ИСПРАВЛЕННОЕ исполнение trailing stop
-        """
-        try:
-            logger.info(f"🛑 Executing trailing stop for {symbol}")
-        
-            # Получаем позиции напрямую с биржи
-            positions = None
-            if hasattr(self, 'copy_manager') and hasattr(self.copy_manager, 'main_client'):
-                positions = await self.copy_manager.main_client.get_positions()
-            elif hasattr(self, 'base_monitor') and hasattr(self.base_monitor, 'main_client'):
-                positions = await self.base_monitor.main_client.get_positions()
-        
-            if not positions:
-                logger.error("Cannot get positions from exchange")
-                return False
-        
-            # Находим нужную позицию
-            position_data = None
-            for pos in positions:
-                if pos.get('symbol') == symbol:
-                    size = safe_float(pos.get('size', 0))
-                    if size > 0:
-                        position_data = pos
-                        break
-        
-            if not position_data:
-                logger.warning(f"No open position found for {symbol}, removing trailing stop")
-                if hasattr(self, 'active_stops') and symbol in self.active_stops:
-                    del self.active_stops[symbol]
-                return True  # Позиция уже закрыта
-        
-            # Получаем параметры позиции
-            position_size = safe_float(position_data.get('size', 0))
-            position_side = position_data.get('side', 'Buy')
-        
-            if position_size <= 0:
-                logger.error(f"Invalid position size: {position_size}")
-                return False
-        
-            # Определяем сторону закрытия
-            close_side = 'Sell' if position_side == 'Buy' else 'Buy'
-        
-            logger.info(f"Closing position: {symbol} {close_side} size={position_size:.6f}")
-        
-            # Подготовка ордера для Bybit
-            order_data = {
-                "category": "linear",
-                "symbol": symbol,
-                "side": close_side,
-                "orderType": "Market",
-                "qty": str(position_size),
-                "timeInForce": "IOC",
-                "reduceOnly": True,
-                "closeOnTrigger": False
-            }
-        
-            # Отправляем ордер
-            client = None
-            if hasattr(self, 'copy_manager') and hasattr(self.copy_manager, 'main_client'):
-                client = self.copy_manager.main_client
-            elif hasattr(self, 'base_monitor') and hasattr(self.base_monitor, 'main_client'):
-                client = self.base_monitor.main_client
-        
-            if not client:
-                logger.error("No client available for order placement")
-                return False
-        
-            result = await client._make_request_with_retry("POST", "order/create", data=order_data)
-        
-            if result and result.get('retCode') == 0:
-                order_id = result['result'].get('orderId')
-                logger.info(f"✅ Trailing stop order placed: {order_id}")
-            
-                # Удаляем trailing stop
-                if hasattr(self, 'active_stops') and symbol in self.active_stops:
-                    del self.active_stops[symbol]
-            
-                # Очищаем из активных позиций
-                if hasattr(self, 'copy_manager') and hasattr(self.copy_manager, 'active_positions'):
-                    if symbol in self.copy_manager.active_positions:
-                        del self.copy_manager.active_positions[symbol]
-            
-                # Отправляем уведомление
-                await send_telegram_alert(
-                    f"🛑 **TRAILING STOP EXECUTED**\n"
-                    f"Symbol: {symbol}\n"
-                    f"Size: {position_size:.6f}\n"
-                    f"Stop: ${stop.stop_price:.2f}\n"
-                    f"Order: {order_id}"
-                )
-            
-                return True
-            else:
-                error_msg = result.get('retMsg', 'Unknown') if result else 'No response'
-                logger.error(f"Order failed: {error_msg}")
-            
-                # Если позиция уже закрыта
-                if 'reduce only' in error_msg.lower():
-                    if hasattr(self, 'active_stops') and symbol in self.active_stops:
-                        del self.active_stops[symbol]
-                    return True
-            
-                return False
-            
-        except Exception as e:
-            logger.error(f"Trailing stop execution error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return False
-
-    def remove_trailing_stop(self, symbol: str):
-        """Удаление trailing stop"""
-        if symbol in self.active_stops:
-            del self.active_stops[symbol]
-            logger.info(f"Removed trailing stop for {symbol}")
-    
-    def get_all_stops(self) -> Dict[str, TrailingStop]:
-        """Получение всех активных trailing stops"""
-        return self.active_stops.copy()
+            logger.error(f"TS_ADAPTER_FAIL(remove): Unhandled exception for {symbol}", exc_info=True)
 
 # ================================
 # СИСТЕМА УПРАВЛЕНИЯ ОРДЕРАМИ
@@ -1393,6 +1316,7 @@ class AdaptiveOrderManager:
         self.client = main_client
         self.order_formatter = order_formatter
         self.risk_manager = risk_manager
+        self.ensure_trade_mode_and_leverage_cb = None #туут
 
         # гарантируем наличие логгера (и совместимый алиас self.log)
         self.logger = logger or logging.getLogger("AdaptiveOrderManager")
@@ -1404,7 +1328,33 @@ class AdaptiveOrderManager:
         self.order_history = deque(maxlen=1000)
         self.execution_stats = defaultdict(lambda: {'success': 0, 'failed': 0, 'avg_time': 0})
 
-        
+        # кэш сигнатур trailing stop по (symbol, positionIdx)
+        self._ts_sig_cache = {}  # type: dict[tuple[str, int], str]
+
+
+    async def get_min_order_qty(self, symbol: str, price: float) -> float:
+        """
+        Получает минимально допустимый для ордера размер (в единицах qty) для символа.
+        Учитывает как minQty, так и minNotional из фильтров биржи.
+        """
+        try:
+            filters = await self.main_client.get_symbol_filters(symbol, category="linear")
+            min_qty = float(filters.get("min_qty", 0.001))
+            min_notional = float(filters.get("min_notional", 5.0))
+
+            if price and price > 0 and min_notional > 0:
+                min_qty_by_notional = min_notional / price
+                effective_min_qty = max(min_qty, min_qty_by_notional)
+                self.logger.info(f"get_min_order_qty for {symbol}: min_qty={min_qty}, min_notional={min_notional}, price={price} -> effective_min_qty={effective_min_qty}")
+                return effective_min_qty
+
+            return min_qty
+        except Exception as e:
+            self.logger.warning(f"get_min_order_qty failed for {symbol}, falling back to default: {e}")
+            # Возвращаем безопасное, но не нулевое значение по умолчанию
+            return 0.001
+
+
     async def get_market_analysis(self, symbol: str) -> MarketConditions:
         """Анализ рыночных условий для символа"""
         try:
@@ -1606,11 +1556,10 @@ class AdaptiveOrderManager:
 
     async def _place_market_order(self, copy_order: CopyOrder) -> Dict[str, Any]:
         """
-        Размещение рыночного ордера (v5) с orderLinkId и live‑форматированием количества.
-        Единственный источник истины по учёту успешной сделки — retCode == 0.
+        Market + блокирующая синхронизация tradeMode/leverage и one-shot fallback на 10001.
         """
         try:
-            # 1) Текущая цена
+            # 1) Цена
             current_price = copy_order.target_price
             if not current_price or current_price <= 0:
                 params = {"category": "linear", "symbol": copy_order.target_symbol}
@@ -1619,143 +1568,110 @@ class AdaptiveOrderManager:
                     lst = tickers.get("result", {}).get("list", [])
                     if lst:
                         current_price = float(lst[0].get("lastPrice") or 0.0)
-
             if not current_price or current_price <= 0:
                 raise RuntimeError("Unable to obtain current price for market order")
 
-            # 2) Количество с учётом реальных фильтров (stepSize, minQty, minNotional)
+            # 2) Количество
             formatted_qty = await format_quantity_for_symbol_live(
                 self.main_client, copy_order.target_symbol, copy_order.target_quantity, current_price
             )
 
-            # Подстрахуем min notional (часть бирж возвращает через instruments-info; форматер это учитывает,
-            # но оставим safety‑check на $5 как разумный нижний порог)
-            order_value = float(formatted_qty) * float(current_price)
-            if order_value < 5.0:
-                min_qty = 5.0 / float(current_price)
-                formatted_qty = await format_quantity_for_symbol_live(
-                    self.main_client, copy_order.target_symbol, min_qty, current_price
-                )
-                order_value = float(formatted_qty) * float(current_price)
-
-            # 3) Идемпотентность на уровне ордера
-            link_id = f"copy:{copy_order.target_symbol}:{int(time.time()*1000)}:{uuid.uuid4().hex[:8]}"
-
-            order_data = {
-                "category": "linear",
-                "symbol": copy_order.target_symbol,
-                "side": copy_order.target_side,          # 'Buy' / 'Sell'
-                "orderType": "Market",
-                "qty": formatted_qty,                     # строка, как требует v5
-                "timeInForce": "IOC",
-                "orderLinkId": link_id
-            }
-
-            self.logger.info(
-                f"Placing MARKET: {copy_order.target_symbol} {copy_order.target_side} "
-                f"qty={formatted_qty} value=${order_value:.2f}"
-            )
-
-            result = await self.main_client._make_request_with_retry("POST", "order/create", data=order_data)
-
-            if result and result.get("retCode") == 0:
-                order_id = result.get("result", {}).get("orderId")
-                self.logger.info(f"Market order placed successfully: {order_id} link={link_id}")
-                return {
-                    "success": True,
-                    "order_id": order_id,
-                    "order_link_id": link_id,
-                    "type": "market",
-                    "qty": formatted_qty,
-                    "price": current_price
-                }
-
-            err = (result or {}).get("retMsg") or "No response"
-            self.logger.error(f"Market order failed: {err}")
-            if "Qty invalid" in err:
-                self.logger.error(
-                    f"Qty details: formatted={formatted_qty}, value=${float(formatted_qty) * float(current_price):.2f}, "
-                    f"price=${float(current_price):.2f}"
-                )
-            return {"success": False, "error": err}
-
-        except Exception as e:
-            self.logger.exception(f"Market order error: {e}")
-            return {"success": False, "error": str(e)}
-
-
-    async def _place_smart_limit_order(self, copy_order: CopyOrder, market_conditions: MarketConditions) -> Dict[str, Any]:
-        """
-        Умный лимит с учётом лучшего bid/ask и orderLinkId.
-        Цена округляется до двух знаков — при желании можно расширить до tickSize.
-        """
-        try:
-            params = {"category": "linear", "symbol": copy_order.target_symbol}
-            tickers = await self.main_client._make_request_with_retry("GET", "market/tickers", params)
-            if not tickers or tickers.get("retCode") != 0:
-                return await self._place_market_order(copy_order)
-
-            lst = tickers.get("result", {}).get("list", [])
-            if not lst:
-                return await self._place_market_order(copy_order)
-
-            t = lst[0]
-            best_bid = float(t.get("bid1Price") or 0.0)
-            best_ask = float(t.get("ask1Price") or 0.0)
-            if best_bid <= 0 or best_ask <= 0:
-                return await self._place_market_order(copy_order)
-
-            spread = best_ask - best_bid
-            if copy_order.target_side.lower() == "buy":
-                limit_price = best_bid + spread * 0.30
-            else:
-                limit_price = best_ask - spread * 0.30
-
-            formatted_qty = await format_quantity_for_symbol_live(
-                self.main_client, copy_order.target_symbol, copy_order.target_quantity, limit_price
-            )
-
+            # 3) Идемпотентность
             link_id = f"copy:{copy_order.target_symbol}:{int(time.time()*1000)}:{uuid.uuid4().hex[:8]}"
 
             order_data = {
                 "category": "linear",
                 "symbol": copy_order.target_symbol,
                 "side": copy_order.target_side,
-                "orderType": "Limit",
+                "orderType": "Market",
                 "qty": formatted_qty,
-                "price": f"{limit_price:.2f}",     # при желании можно округлять к tickSize (см. примечание выше)
-                "timeInForce": "GTC",
-                "orderLinkId": link_id
+                "timeInForce": "IOC",
+                "orderLinkId": link_id,
             }
 
-            result = await self.main_client._make_request_with_retry("POST", "order/create", data=order_data)
-            if result and result.get("retCode") == 0:
-                order_id = result.get("result", {}).get("orderId")
-                self.logger.info(
-                    f"Smart LIMIT placed: {copy_order.target_symbol} {copy_order.target_side} "
-                    f"{formatted_qty} @ {limit_price:.2f} (ID: {order_id}, link={link_id})"
-                )
-                return {
-                    "success": True,
-                    "order_id": order_id,
-                    "order_link_id": link_id,
-                    "type": "smart_limit",
-                    "price": limit_price,
-                    "qty": formatted_qty
-                }
+            # включаем только если именно 1/2
+            pos_idx = copy_order.metadata.get("position_idx")
+            if pos_idx in (1, 2):
+                order_data["positionIdx"] = pos_idx
 
-            err = (result or {}).get("retMsg") or "No response"
-            self.logger.error(f"Smart limit order failed: {err}")
-            return {"success": False, "error": err}
+            reduce_only = bool(copy_order.metadata.get('reduceOnly', False))
+            order_data['reduceOnly'] = reduce_only
+
+            # 4) Синхронизация режима и плеча через колбэк (ровно перед order/create)
+            # ИСПРАВЛЕНО: извлекаем из ОБОИХ источников
+            signal_meta = copy_order.source_signal.metadata or {}
+            order_meta = copy_order.metadata or {}
+        
+            donor_trade_mode = (
+                signal_meta.get("tradeMode") or signal_meta.get("trade_mode") or
+                order_meta.get("tradeMode") or order_meta.get("trade_mode")
+            )
+            donor_lev_buy = (
+                signal_meta.get("leverage_buy") or signal_meta.get("leverage") or
+                order_meta.get("leverage_buy") or order_meta.get("leverage")
+            )
+            donor_lev_sell = (
+                signal_meta.get("leverage_sell") or signal_meta.get("leverage") or
+                order_meta.get("leverage_sell") or order_meta.get("leverage")
+            )
+        
+            # Диагностический лог
+            logger.info(
+                f"SYNC_EXTRACT: {copy_order.target_symbol} tm={donor_trade_mode} "
+                f"lev_buy={donor_lev_buy} lev_sell={donor_lev_sell} "
+                f"from_signal={bool(signal_meta.get('tradeMode') or signal_meta.get('leverage'))} "
+                f"from_order={bool(order_meta.get('tradeMode') or order_meta.get('leverage'))}"
+            )
+
+            if callable(self.ensure_trade_mode_and_leverage_cb):
+                await self.ensure_trade_mode_and_leverage_cb(
+                    symbol=copy_order.target_symbol,
+                    donor_trade_mode=donor_trade_mode,
+                    donor_lev_buy=donor_lev_buy,
+                    donor_lev_sell=donor_lev_sell,
+                    reduce_only=reduce_only,
+                )
+            else:
+                self.logger.debug(f"SYNC_SKIP_CB: ensure_trade_mode_and_leverage_cb is not set for {copy_order.target_symbol}")
+
+            # 5) Первая попытка
+            res = await self.main_client._make_request_with_retry("POST", "order/create", data=order_data)
+            rc = (res or {}).get("retCode")
+            msg = (res or {}).get("retMsg", "")
+
+            # 6) Фоллбэк ровно один раз при 10001
+            if rc == 10001 or "position idx not match" in str(msg).lower():
+                if "positionIdx" in order_data:
+                    # было HEDGE — пробуем ONEWAY (без индекса)
+                    order_data.pop("positionIdx", None)
+                    self.logger.warning(f"IDX_FALLBACK: {copy_order.target_symbol} retry without positionIdx")
+                else:
+                    # было ONEWAY — пробуем HEDGE (индекс по стороне)
+                    alt_idx = 1 if copy_order.target_side == "Buy" else 2
+                    order_data["positionIdx"] = alt_idx
+                    self.logger.warning(f"IDX_FALLBACK: {copy_order.target_symbol} retry with positionIdx={alt_idx}")
+
+                res = await self.main_client._make_request_with_retry("POST", "order/create", data=order_data)
+                rc = (res or {}).get("retCode")
+                msg = (res or {}).get("retMsg", "")
+
+            if rc == 0:
+                oid = (res.get("result") or {}).get("orderId")
+                self.logger.info(f"MARKET_OK: {copy_order.target_symbol} id={oid} link={link_id}")
+                return {"success": True, "order_id": oid, "order_link_id": link_id, "type": "market",
+                        "qty": formatted_qty, "price": current_price}
+
+            self.logger.error(f"MARKET_FAIL: {copy_order.target_symbol} rc={rc} msg={msg}")
+            return {"success": False, "error": msg, "retCode": rc}
 
         except Exception as e:
-            self.logger.exception(f"Smart limit order error: {e}")
-            return {"success": False, "error": str(e)}
+            self.logger.exception(f"MARKET_EXC: {copy_order.target_symbol} error: {e}")
+            return {"success": False, "error": str(e), "retCode": -1}
 
 
-    async def _place_aggressive_limit_order(self, copy_order: CopyOrder, market_conditions: MarketConditions) -> Dict[str, Any]:
+    async def _place_smart_limit_order(self, copy_order: CopyOrder, market_conditions: MarketConditions) -> Dict[str, Any]:
         """
-        Агрессивный лимит по лучшей стороне (IOC) с orderLinkId и live‑форматированием qty.
+        Лимит по лучшей стороне, синхронизация режима/плеч и one-shot fallback на 10001.
         """
         try:
             params = {"category": "linear", "symbol": copy_order.target_symbol}
@@ -1763,7 +1679,7 @@ class AdaptiveOrderManager:
             if not tickers or tickers.get("retCode") != 0:
                 return await self._place_market_order(copy_order)
 
-            lst = tickers.get("result", {}).get("list", [])
+            lst = (tickers.get("result") or {}).get("list") or []
             if not lst:
                 return await self._place_market_order(copy_order)
 
@@ -1787,36 +1703,304 @@ class AdaptiveOrderManager:
                 "side": copy_order.target_side,
                 "orderType": "Limit",
                 "qty": formatted_qty,
-                "price": f"{limit_price:.2f}",
+                "price": f"{limit_price:.4f}",
+                "timeInForce": "GTC",
+                "orderLinkId": link_id
+            }
+
+            pos_idx = copy_order.metadata.get("position_idx")
+            if pos_idx in (1, 2):
+                order_data["positionIdx"] = pos_idx
+
+            reduce_only = bool(copy_order.metadata.get("reduceOnly", False))
+            order_data['reduceOnly'] = reduce_only
+
+            # Синхронизация через колбэк (ровно перед order/create)
+            # ИСПРАВЛЕНО: извлекаем из ОБОИХ источников
+            signal_meta = copy_order.source_signal.metadata or {}
+            order_meta = copy_order.metadata or {}
+        
+            donor_trade_mode = (
+                signal_meta.get("tradeMode") or signal_meta.get("trade_mode") or
+                order_meta.get("tradeMode") or order_meta.get("trade_mode")
+            )
+            donor_lev_buy = (
+                signal_meta.get("leverage_buy") or signal_meta.get("leverage") or
+                order_meta.get("leverage_buy") or order_meta.get("leverage")
+            )
+            donor_lev_sell = (
+                signal_meta.get("leverage_sell") or signal_meta.get("leverage") or
+                order_meta.get("leverage_sell") or order_meta.get("leverage")
+            )
+        
+            logger.info(
+                f"SYNC_EXTRACT: {copy_order.target_symbol} tm={donor_trade_mode} "
+                f"lev_buy={donor_lev_buy} lev_sell={donor_lev_sell}"
+            )
+
+            if callable(self.ensure_trade_mode_and_leverage_cb):
+                await self.ensure_trade_mode_and_leverage_cb(
+                    symbol=copy_order.target_symbol,
+                    donor_trade_mode=donor_trade_mode,
+                    donor_lev_buy=donor_lev_buy,
+                    donor_lev_sell=donor_lev_sell,
+                    reduce_only=reduce_only,
+                )
+            else:
+                self.logger.debug(f"SYNC_SKIP_CB: ensure_trade_mode_and_leverage_cb is not set for {copy_order.target_symbol}")
+
+            # Первая попытка
+            res = await self.main_client._make_request_with_retry("POST", "order/create", data=order_data)
+            rc = (res or {}).get("retCode")
+            msg = (res or {}).get("retMsg", "")
+
+            # Фоллбэк
+            if rc == 10001 or "position idx not match" in str(msg).lower():
+                if "positionIdx" in order_data:
+                    order_data.pop("positionIdx", None)
+                    self.logger.warning(f"IDX_FALLBACK: {copy_order.target_symbol} retry without positionIdx")
+                else:
+                    alt_idx = 1 if copy_order.target_side == "Buy" else 2
+                    order_data["positionIdx"] = alt_idx
+                    self.logger.warning(f"IDX_FALLBACK: {copy_order.target_symbol} retry with positionIdx={alt_idx}")
+                res = await self.main_client._make_request_with_retry("POST", "order/create", data=order_data)
+                rc = (res or {}).get("retCode")
+                msg = (res or {}).get("retMsg", "")
+
+            if rc == 0:
+                oid = (res.get("result") or {}).get("orderId")
+                self.logger.info(
+                    f"SLIMIT_OK: {copy_order.target_symbol} {copy_order.target_side} {formatted_qty} @ {limit_price:.4f} id={oid}"
+                )
+                return {"success": True, "order_id": oid, "order_link_id": link_id, "type": "smart_limit",
+                        "price": limit_price, "qty": formatted_qty}
+
+            self.logger.error(f"SLIMIT_FAIL: {copy_order.target_symbol} rc={rc} msg={msg}")
+            return {"success": False, "error": msg, "retCode": rc}
+
+        except Exception as e:
+            self.logger.exception(f"SLIMIT_EXC: {copy_order.target_symbol} error: {e}")
+            return {"success": False, "error": str(e), "retCode": -1}
+
+    async def _place_aggressive_limit_order(self, copy_order: CopyOrder, market_conditions: MarketConditions) -> Dict[str, Any]:
+        """
+        Агрессивный лимит (IOC), синхронизация режима/плеч и one-shot fallback на 10001.
+        """
+        try:
+            params = {"category": "linear", "symbol": copy_order.target_symbol}
+            tickers = await self.main_client._make_request_with_retry("GET", "market/tickers", params)
+            if not tickers or tickers.get("retCode") != 0:
+                return await self._place_market_order(copy_order)
+
+            lst = (tickers.get("result") or {}).get("list") or []
+            if not lst:
+                return await self._place_market_order(copy_order)
+
+            t = lst[0]
+            best_bid = float(t.get("bid1Price") or 0.0)
+            best_ask = float(t.get("ask1Price") or 0.0)
+            if best_bid <= 0 or best_ask <= 0:
+                return await self._place_market_order(copy_order)
+
+            limit_price = best_ask if copy_order.target_side.lower() == "buy" else best_bid
+
+            formatted_qty = await format_quantity_for_symbol_live(
+                self.main_client, copy_order.target_symbol, copy_order.target_quantity, limit_price
+            )
+
+            link_id = f"copy:{copy_order.target_symbol}:{int(time.time()*1000)}:{uuid.uuid4().hex[:8]}"
+
+            order_data = {
+                "category": "linear",
+                "symbol": copy_order.target_symbol,
+                "side": copy_order.target_side,
+                "orderType": "Limit",
+                "qty": formatted_qty,
+                "price": f"{limit_price:.4f}",
                 "timeInForce": "IOC",
                 "orderLinkId": link_id
             }
 
-            result = await self.main_client._make_request_with_retry("POST", "order/create", data=order_data)
-            if result and result.get("retCode") == 0:
-                order_id = result.get("result", {}).get("orderId")
-                self.logger.info(
-                    f"Aggressive LIMIT placed: {copy_order.target_symbol} {copy_order.target_side} "
-                    f"{formatted_qty} @ {limit_price:.2f} (ID: {order_id}, link={link_id})"
-                )
-                return {
-                    "success": True,
-                    "order_id": order_id,
-                    "order_link_id": link_id,
-                    "type": "aggressive_limit",
-                    "price": limit_price,
-                    "qty": formatted_qty
-                }
+            pos_idx = copy_order.metadata.get("position_idx")
+            if pos_idx in (1, 2):
+                order_data["positionIdx"] = pos_idx
 
-            err = (result or {}).get("retMsg") or "No response"
-            self.logger.error(f"Aggressive limit order failed: {err}")
-            return {"success": False, "error": err}
+            reduce_only = bool(copy_order.metadata.get("reduceOnly", False))
+            order_data['reduceOnly'] = reduce_only
+
+            # Синхронизация через колбэк (ровно перед order/create)
+            # ИСПРАВЛЕНО: извлекаем из ОБОИХ источников
+            signal_meta = copy_order.source_signal.metadata or {}
+            order_meta = copy_order.metadata or {}
+        
+            donor_trade_mode = (
+                signal_meta.get("tradeMode") or signal_meta.get("trade_mode") or
+                order_meta.get("tradeMode") or order_meta.get("trade_mode")
+            )
+            donor_lev_buy = (
+                signal_meta.get("leverage_buy") or signal_meta.get("leverage") or
+                order_meta.get("leverage_buy") or order_meta.get("leverage")
+            )
+            donor_lev_sell = (
+                signal_meta.get("leverage_sell") or signal_meta.get("leverage") or
+                order_meta.get("leverage_sell") or order_meta.get("leverage")
+            )
+        
+            logger.info(
+                f"SYNC_EXTRACT: {copy_order.target_symbol} tm={donor_trade_mode} "
+                f"lev_buy={donor_lev_buy} lev_sell={donor_lev_sell}"
+            )
+
+            if callable(self.ensure_trade_mode_and_leverage_cb):
+                await self.ensure_trade_mode_and_leverage_cb(
+                    symbol=copy_order.target_symbol,
+                    donor_trade_mode=donor_trade_mode,
+                    donor_lev_buy=donor_lev_buy,
+                    donor_lev_sell=donor_lev_sell,
+                    reduce_only=reduce_only,
+                )
+            else:
+                self.logger.debug(f"SYNC_SKIP_CB: ensure_trade_mode_and_leverage_cb is not set for {copy_order.target_symbol}")
+
+            # Первая попытка
+            res = await self.main_client._make_request_with_retry("POST", "order/create", data=order_data)
+            rc = (res or {}).get("retCode")
+            msg = (res or {}).get("retMsg", "")
+
+            # Фоллбэк
+            if rc == 10001 or "position idx not match" in str(msg).lower():
+                if "positionIdx" in order_data:
+                    order_data.pop("positionIdx", None)
+                    self.logger.warning(f"IDX_FALLBACK: {copy_order.target_symbol} retry without positionIdx")
+                else:
+                    alt_idx = 1 if copy_order.target_side == "Buy" else 2
+                    order_data["positionIdx"] = alt_idx
+                    self.logger.warning(f"IDX_FALLBACK: {copy_order.target_symbol} retry with positionIdx={alt_idx}")
+                res = await self.main_client._make_request_with_retry("POST", "order/create", data=order_data)
+                rc = (res or {}).get("retCode")
+                msg = (res or {}).get("retMsg", "")
+
+            if rc == 0:
+                oid = (res.get("result") or {}).get("orderId")
+                self.logger.info(
+                    f"ALIMIT_OK: {copy_order.target_symbol} {copy_order.target_side} {formatted_qty} @ {limit_price:.4f} id={oid}"
+                )
+                return {"success": True, "order_id": oid, "order_link_id": link_id, "type": "aggressive_limit",
+                        "price": limit_price, "qty": formatted_qty}
+
+            self.logger.error(f"ALIMIT_FAIL: {copy_order.target_symbol} rc={rc} msg={msg}")
+            return {"success": False, "error": msg, "retCode": rc}
 
         except Exception as e:
-            self.logger.exception(f"Aggressive limit order error: {e}")
+            self.logger.exception(f"ALIMIT_EXC: {copy_order.target_symbol} error: {e}")
+            return {"success": False, "error": str(e), "retCode": -1}
+
+    async def place_trailing_stop(
+        self,
+        symbol: str,
+        trailing_stop_price: str,
+        active_price: Optional[str] = None,
+        position_idx: int = 0,
+        trigger_direction: Optional[int] = None
+    ):
+        """
+        Правильное формирование payload (не отправлять positionIdx, если он не 1/2),
+        и корректная обработка NOOP (34040 / "not modified") с дебаунсом запросов.
+        """
+        sent_ts = str(trailing_stop_price) if trailing_stop_price not in ["", None] else "0"
+        is_reset = sent_ts in ("0", "0.0")
+
+        try:
+            data = {
+                "category": "linear",
+                "symbol": symbol,
+                "trailingStop": sent_ts,
+            }
+            if active_price not in (None, "", "0", "0.0"):
+                data["activePrice"] = str(active_price)
+            if trigger_direction in (1, 2):
+                data["triggerDirection"] = trigger_direction
+
+            # Ключевой момент: НЕ отправляем 0/None
+            if position_idx in (1, 2):
+                data["positionIdx"] = position_idx
+
+            # --- ДЕБАУНС ВЫЗОВОВ ПО ПАРАМЕТРАМ ---
+            # Локальные импорты (исключают NameError при отсутствии модульных импортов)
+            import hashlib, json  # noqa: WPS433
+
+            # Гарантируем наличие кэша в инстансе (страховка, если не инициализирован в __init__)
+            if not hasattr(self, "_ts_sig_cache"):
+                self._ts_sig_cache = {}
+
+            cache_key = (symbol, position_idx)
+            params_only = {
+                "trailingStop": data.get("trailingStop"),
+                "activePrice": data.get("activePrice"),
+                "tpTriggerBy": data.get("tpTriggerBy"),
+                "slTriggerBy": data.get("slTriggerBy"),
+                "tpslMode": data.get("tpslMode"),
+            }
+            sig = hashlib.md5(json.dumps(params_only, sort_keys=True).encode()).hexdigest()
+
+            # Если параметры не изменились — не трогаем API
+            if self._ts_sig_cache.get(cache_key) == sig:
+                self.logger.debug(f"TS_DEBOUNCE: {symbol} idx={position_idx} unchanged")
+                return {"success": True, "cached": True, "message": "Trailing stop unchanged"}
+
+            # Вызываем API
+            result = await self.main_client._make_request_with_retry(
+                "POST", "position/trading-stop", data=data
+            )
+            rc = (result or {}).get("retCode")
+            msg = (result or {}).get("retMsg", "")
+
+            # Обновляем кэш при успехе или NOOP
+            if rc == 0:
+                self._ts_sig_cache[cache_key] = sig
+                self.logger.info(f"{'TS_CLEAR_OK' if is_reset else 'TS_APPLY_OK'}: {symbol} idx={position_idx}")
+                return {"success": True, "retCode": rc, "message": "Trailing stop set"}
+            elif rc in (34040,):  # not modified
+                self._ts_sig_cache[cache_key] = sig
+                self.logger.info(f"TS_NOOP: {symbol} idx={position_idx} (not modified)")
+                return {"success": True, "retCode": rc, "message": "Trailing stop unchanged (NOOP)"}
+            elif rc == 10001:  # zero position -> почистить кэш
+                self._ts_sig_cache.pop(cache_key, None)
+                self.logger.warning(f"TS_WARN: {symbol} idx={position_idx} zero position (10001)")
+                return {"success": False, "retCode": rc, "error": "Zero position"}
+            else:
+                self.logger.error(f"TS_FAIL: {symbol} idx={position_idx} rc={rc} msg={msg}")
+                return {"success": False, "retCode": rc, "error": msg}
+
+        except Exception as e:
+            self.logger.exception(f"TS_EXC: {symbol} idx={position_idx} error: {e}")
+            return {"success": False, "error": str(e), "retCode": -1}
+
+    async def cancel_all_symbol_orders(self, symbol: str, order_type_filter: Optional[str] = None) -> Dict[str, Any]:
+        """Cancels all open orders for a symbol, optionally filtering by type (e.g., 'Stop')."""
+        try:
+            self.logger.info(f"Canceling all '{order_type_filter or 'All'}' orders for {symbol}...")
+
+            data = {
+                "category": "linear",
+                "symbol": symbol,
+            }
+            if order_type_filter and order_type_filter.lower() == 'stop':
+                data["orderFilter"] = "StopOrder"
+
+            result = await self.main_client._make_request_with_retry("POST", "order/cancel-all", data=data)
+
+            if result and result.get("retCode") == 0:
+                cancelled_ids = [item.get('orderId') for item in result.get('result', {}).get('list', [])]
+                self.logger.info(f"Successfully canceled {len(cancelled_ids)} orders for {symbol}. IDs: {cancelled_ids}")
+                return {"success": True, "cancelled_ids": cancelled_ids}
+
+            err = (result or {}).get("retMsg") or "No response"
+            self.logger.error(f"Failed to cancel orders for {symbol}: {err}")
+            return {"success": False, "error": err}
+        except Exception as e:
+            self.logger.exception(f"Exception in cancel_all_symbol_orders for {symbol}: {e}")
             return {"success": False, "error": str(e)}
-
-
 
     async def _monitor_order_execution(self, order_id: str, timeout: float = 30) -> Dict[str, Any]:
         """Мониторинг исполнения ордера"""
@@ -1929,14 +2113,14 @@ class PositionCopyManager:
     - Synchronization Manager для минимизации задержек
     """
     
-    def __init__(self, source_client: EnhancedBybitClient, main_client: EnhancedBybitClient):
+    def __init__(self, source_client: EnhancedBybitClient, main_client: EnhancedBybitClient, trailing_config: dict):
         self.source_client = source_client
         self.main_client = main_client
         
         # Основные компоненты
         self.kelly_calculator = AdvancedKellyCalculator()
         self.order_manager = AdaptiveOrderManager(main_client)
-        self.trailing_manager = DynamicTrailingStopManager()
+        self.trailing_manager = DynamicTrailingStopManager(main_client, self.order_manager, trailing_config)
         
         # Состояние системы
         self.copy_mode = CopyMode.KELLY_OPTIMAL
@@ -2067,293 +2251,237 @@ class PositionCopyManager:
             self._processed_link_ids.add(link_id)
 
             # Инкременты — здесь и только здесь
-            self.system_stats['successful_copies'] = self.system_stats.get('successful_copies', 0) + 1
+            if hasattr(self, 'system_stats') and self.system_stats is not None:
+                self.system_stats['successful_copies'] = self.system_stats.get('successful_copies', 0) + 1
             if hasattr(self, 'copy_stats'):
                 self.copy_stats['positions_copied'] = self.copy_stats.get('positions_copied', 0) + 1
             return True
 
 
     async def _execute_copy_order(self, copy_order: CopyOrder, queue_timestamp: float):
-        """Выполнение ордера копирования с логированием в orders_log"""
-        execution_id = str(uuid.uuid4())[:8]
-    
+        """Выполнение ордера копирования с логированием в orders_log и positions_db"""
+        internal_order_id = str(uuid.uuid4())
         try:
             sync_delay = time.time() - queue_timestamp
-        
-            # Логируем начало выполнения в sys_events
-            sys_logger.log_event(
-                "INFO",
-                "PositionCopyManager",
-                f"Executing copy order for {copy_order.target_symbol}",
-                {
-                    "execution_id": execution_id,
-                    "symbol": copy_order.target_symbol,
-                    "side": copy_order.target_side,
-                    "quantity": float(copy_order.target_quantity),
-                    "kelly_fraction": float(copy_order.kelly_fraction),
-                    "sync_delay_ms": round(sync_delay * 1000, 2),
-                    "order_strategy": copy_order.order_strategy.value,
-                    "retry_count": copy_order.retry_count
-                }
-            )
-        
             logger.info(f"Executing copy order for {copy_order.target_symbol} (delay: {sync_delay:.3f}s)")
-        
-            # НОВОЕ: Логируем начало размещения ордера в orders_log
+
+            # Log pending order to DB
             orders_logger.log_order(
-                account_id=2,  # Основной аккаунт
+                account_id=1, # MAIN account
                 symbol=copy_order.target_symbol,
                 side=copy_order.target_side,
                 qty=copy_order.target_quantity,
                 status=OrderStatus.PENDING.value,
-                exchange_order_id=execution_id,
+                exchange_order_id=internal_order_id,
                 attempt=copy_order.retry_count + 1
             )
 
-            # 1) Размещаем ордер (AdaptiveOrderManager уже возвращает order_link_id)
+            # 1) Place the order
             start_time = time.time()
             result = await self.order_manager.place_adaptive_order(copy_order)
-            execution_time = time.time() - start_time
-            latency_ms = int(execution_time * 1000)
 
+            # Fallback logic for positionIdx mismatch (10001)
+            ret_code = result.get("retCode")
+            err_msg = str(result.get("error", "")).lower()
+            if ret_code == 10001 or "position idx not match" in err_msg:
+                original_pos_idx = copy_order.metadata.get("position_idx")
+
+                if original_pos_idx in {None, 0}:
+                    alt_pos_idx = 1 if copy_order.target_side == "Buy" else 2
+                else: # Was 1 or 2, try ONEWAY
+                    alt_pos_idx = 0
+
+                logger.warning(
+                    "IDX_FALLBACK: symbol=%s failed with 10001. Original posIdx=%s. Retrying with positionIdx=%s.",
+                    copy_order.target_symbol,
+                    original_pos_idx,
+                    alt_pos_idx if alt_pos_idx != 0 else 'None'
+                )
+
+                # Modify order for a single retry
+                if alt_pos_idx in (None, 0):
+                    copy_order.metadata.pop("position_idx", None)  # не отправляем вообще
+                else:
+                    copy_order.metadata["position_idx"] = alt_pos_idx  # 1 или 2
+
+                # Log the final used index for clarity
+                logger.info(f"IDX_MAP_MAIN: symbol={copy_order.target_symbol}, main_idx={alt_pos_idx if alt_pos_idx not in (None, 0) else 'None'}, side={copy_order.target_side}, reason=fallback")
+
+                result = await self.order_manager.place_adaptive_order(copy_order)
+
+            latency_ms = int((time.time() - start_time) * 1000)
+            
+            # 2) Update order log with the result
             if result.get('success'):
-                # НОВОЕ: Обновляем статус ордера на FILLED/PLACED
-                orders_logger.update_order_status(
-                    exchange_order_id=execution_id,
-                    new_status=OrderStatus.FILLED.value if result.get('filled') else OrderStatus.PLACED.value,
+                orders_logger.log_order(
+                    account_id=1,
+                    symbol=copy_order.target_symbol,
+                    side=copy_order.target_side,
+                    qty=copy_order.target_quantity,
+                    status=OrderStatus.PLACED.value, # Assuming market order is placed/filled instantly for logging
+                    exchange_order_id=result.get('order_id', internal_order_id),
                     latency_ms=latency_ms
                 )
-            
-                # Логируем успешное выполнение в sys_events
-                sys_logger.log_event(
-                    "INFO",
-                    "PositionCopyManager",
-                    f"Order executed successfully: {copy_order.target_symbol}",
-                    {
-                        "execution_id": execution_id,
-                        "order_id": result.get('order_id'),
-                        "order_link_id": result.get('order_link_id'),
-                        "symbol": copy_order.target_symbol,
-                        "executed_qty": float(result.get('executed_qty', copy_order.target_quantity)),
-                        "avg_price": float(result.get('avg_price', 0)),
-                        "execution_time_ms": round(execution_time * 1000, 2),
-                        "status": "success"
-                    }
-                )
-            
-                # 2) СЧЁТЧИКИ — только через идемпотентную точку
+
+                # 3) Update position tracking and log to positions DB
                 accounted = await self._account_success_once(result, copy_order)
-                if not accounted:
-                    logger.warning(
-                        f"Duplicate success ignored for link={result.get('order_link_id') or result.get('order_id')}"
-                    )
+                if accounted:
+                    if copy_order.source_signal.signal_type == SignalType.POSITION_OPEN:
+                        await self._setup_position_tracking(copy_order, result)
+                    elif copy_order.source_signal.signal_type == SignalType.POSITION_MODIFY:
+                        await self._handle_position_modify(copy_order, result)
+                    elif copy_order.source_signal.signal_type == SignalType.POSITION_CLOSE:
+                        await self._cleanup_position_tracking(copy_order, result)
 
-                # 3) Позиционный трекинг
-                if copy_order.source_signal.signal_type == SignalType.POSITION_OPEN:
-                    await self._setup_position_tracking(copy_order, result)
-                elif copy_order.source_signal.signal_type == SignalType.POSITION_CLOSE:
-                    await self._cleanup_position_tracking(copy_order)
+                    # 4) Manage Trailing Stop (Asynchronously with Retries)
+                    try:
+                        signal_type = copy_order.source_signal.signal_type
+                        # Trigger for OPEN or MODIFY that increases position size
+                        is_increase = (signal_type == SignalType.POSITION_OPEN or
+                                       (signal_type == SignalType.POSITION_MODIFY and not copy_order.metadata.get('reduceOnly', False)))
 
-                # 4) Kelly — запись результата (если есть средняя цена)
-                if 'avg_price' in result:
-                    pnl_estimate = self._estimate_trade_pnl(copy_order, result)
-                    self.kelly_calculator.add_trade_result(
-                        copy_order.target_symbol,
-                        pnl_estimate,
-                        {'copy_order': copy_order, 'result': result}
-                    )
+                        if is_increase:
+                            logger.info(f"Scheduling trailing stop for {copy_order.target_symbol} (signal: {signal_type.value})")
 
-                # 5) Уведомление
+                            async def _set_trailing_with_retry(order_to_trail: CopyOrder):
+                                """Retries setting the trailing stop until the position is visible on the main account."""
+                                max_retries = 10
+                                delay = 0.2  # Initial delay
+                                for attempt in range(max_retries):
+                                    try:
+                                        pos_idx = order_to_trail.metadata.get('position_idx', 0)
+                                        symbol = order_to_trail.target_symbol
+
+                                        positions = await self.main_client.get_positions(category="linear", symbol=symbol)
+                                        main_pos = next((p for p in positions if int(p.get('positionIdx', -1)) == pos_idx), None)
+
+                                        if main_pos and safe_float(main_pos.get('size', 0)) > 0:
+                                            logger.info(f"Position {symbol} (idx={pos_idx}) found on MAIN. Setting/updating trailing stop (attempt {attempt + 1}).")
+                                            await self.trailing_manager.create_or_update_trailing_stop(main_pos)
+                                            return  # Success
+                                        else:
+                                            logger.info(f"Trailing deferred for {symbol} (idx={pos_idx}), position not yet visible. Attempt {attempt + 1}/{max_retries}.")
+
+                                    except Exception as e:
+                                        logger.error(f"Error in trailing stop retry task (attempt {attempt + 1}): {e}", exc_info=True)
+
+                                    await asyncio.sleep(delay)
+                                    delay = min(delay * 2, 15)  # Exponential backoff up to 15s
+
+                                logger.error(f"Failed to set trailing stop for {order_to_trail.target_symbol} after {max_retries} retries.")
+
+                            # Create the background task to avoid blocking the copy pipeline
+                            asyncio.create_task(_set_trailing_with_retry(copy_order))
+
+                        elif signal_type == SignalType.POSITION_CLOSE:
+                            # For full close, we can still attempt to remove the trailing stop
+                            await self.trailing_manager.remove_trailing_stop({
+                                'symbol': copy_order.target_symbol,
+                                'position_idx': copy_order.metadata.get('position_idx', 0)
+                            })
+
+                    except Exception as e:
+                        logger.error(f"TS_LIFECYCLE_FAIL: Unhandled exception in trailing stop management for {copy_order.target_symbol}", exc_info=True)
+
+                # 5) Send notification
                 await send_telegram_alert(
                     f"✅ Position copied: {copy_order.target_symbol} {copy_order.target_side} "
-                    f"{copy_order.target_quantity:.6f} (Kelly: {copy_order.kelly_fraction:.3f})"
+                    f"{copy_order.target_quantity:.6f}"
                 )
-
             else:
-                # НОВОЕ: Логируем неудачу в orders_log
-                orders_logger.update_order_status(
-                    exchange_order_id=execution_id,
-                    new_status=OrderStatus.FAILED.value,
-                    latency_ms=latency_ms,
-                    reason=result.get('error', 'Unknown error')
+                # Log failed order
+                orders_logger.log_order(
+                    account_id=1,
+                    symbol=copy_order.target_symbol,
+                    side=copy_order.target_side,
+                    qty=copy_order.target_quantity,
+                    status=OrderStatus.FAILED.value,
+                    reason=result.get('error', 'Unknown error'),
+                    exchange_order_id=internal_order_id,
+                    latency_ms=latency_ms
                 )
-            
-                # Логируем неудачное выполнение в sys_events
-                sys_logger.log_warning(
-                    "PositionCopyManager",
-                    f"Order execution failed: {copy_order.target_symbol}",
-                    {
-                        "execution_id": execution_id,
-                        "symbol": copy_order.target_symbol,
-                        "error": result.get('error', 'Unknown error'),
-                        "retry_count": copy_order.retry_count,
-                        "execution_time_ms": round(execution_time * 1000, 2),
-                        "status": "failed"
-                    }
-                )
-            
-                # Неуспех — считаем только ошибки/задержки (без инкремента успехов)
-                self._update_copy_stats(False, sync_delay, copy_order)
 
-                # Повторные попытки
-                if copy_order.retry_count < COPY_CONFIG['order_retry_attempts']:
+                # Retry logic
+                if not result.get("no_retry") and copy_order.retry_count < COPY_CONFIG['order_retry_attempts']:
                     copy_order.retry_count += 1
                     await asyncio.sleep(COPY_CONFIG['order_retry_delay'] * copy_order.retry_count)
                     await self.copy_queue.put((copy_order.priority, time.time(), copy_order))
-                    logger.warning(
-                        f"Retrying copy order for {copy_order.target_symbol} (attempt {copy_order.retry_count})"
-                    )
+                    logger.warning(f"Retrying copy order for {copy_order.target_symbol} (attempt {copy_order.retry_count})")
                 else:
-                    logger.error(
-                        f"Copy order failed after {COPY_CONFIG['order_retry_attempts']} attempts: "
-                        f"{copy_order.target_symbol}"
-                    )
-                    await send_telegram_alert(
-                        f"❌ Copy order failed: {copy_order.target_symbol} {copy_order.target_side} "
-                        f"{copy_order.target_quantity:.6f}"
-                    )
+                    logger.error(f"Copy order failed after {COPY_CONFIG['order_retry_attempts']} attempts: {copy_order.target_symbol}")
+                    await send_telegram_alert(f"❌ Copy order failed: {copy_order.target_symbol} {copy_order.target_side} {copy_order.target_quantity:.6f}")
 
         except Exception as e:
-            # НОВОЕ: В случае исключения также обновляем статус в orders_log
-            try:
-                orders_logger.update_order_status(
-                    exchange_order_id=execution_id,
-                    new_status=OrderStatus.FAILED.value,
-                    reason=str(e)
-                )
-            except:
-                pass  # Не прерываем основную обработку ошибки
-            
-            sys_logger.log_error(
-                "PositionCopyManager",
-                f"Copy order execution error: {str(e)}",
-                {
-                    "execution_id": execution_id,
-                    "symbol": copy_order.target_symbol,
-                    "error_type": type(e).__name__
-                }
+            logger.error(f"Copy order execution error: {e}", exc_info=True)
+            orders_logger.log_order(
+                account_id=1,
+                symbol=copy_order.target_symbol,
+                side=copy_order.target_side,
+                qty=copy_order.target_quantity,
+                status=OrderStatus.FAILED.value,
+                reason=str(e),
+                exchange_order_id=internal_order_id
             )
-            logger.error(f"Copy order execution error: {e}")
 
-
-
-    
     async def _setup_position_tracking(self, copy_order: CopyOrder, execution_result: Dict[str, Any]):
-        """Настройка отслеживания позиции после открытия"""
+        """Настройка отслеживания позиции после открытия и запись в БД."""
         try:
             symbol = copy_order.target_symbol
-            
-            # Сохраняем информацию о позиции
             position_data = {
                 'symbol': symbol,
                 'side': copy_order.target_side,
                 'quantity': copy_order.target_quantity,
                 'entry_price': execution_result.get('avg_price', copy_order.target_price),
-                'kelly_fraction': copy_order.kelly_fraction,
+                'leverage': copy_order.source_signal.metadata.get('leverage', '10'),
+                'position_idx': copy_order.source_signal.metadata.get('pos_idx', 0),
                 'open_time': time.time(),
-                'order_id': execution_result.get('order_id')
+                'order_id': execution_result.get('order_id'),
+                'metadata': execution_result,
             }
-            
             self.active_positions[symbol] = position_data
-            
-            # Создаем trailing stop
-            market_conditions = await self.order_manager.get_market_analysis(symbol)
-            current_price = execution_result.get('avg_price', copy_order.target_price)
-            position_value = copy_order.target_quantity * current_price
-            
-            trailing_stop = self.trailing_manager.create_trailing_stop(
-                symbol, copy_order.target_side, current_price, position_value, market_conditions
-            )
-            
-            logger.info(f"Position tracking setup for {symbol}: "
-                       f"entry=${current_price:.6f}, trailing_stop=${trailing_stop.stop_price:.6f}")
-            
+
+            # Log to positions_db
+            await positions_writer.update_position({
+                "account_id": 1,
+                "symbol": symbol,
+                "side": position_data['side'],
+                "qty": position_data['quantity'],
+                "entry_price": position_data['entry_price'],
+                "leverage": position_data['leverage'],
+                "position_idx": position_data['position_idx'],
+                "metadata": position_data['metadata'],
+                "opened_at": datetime.fromtimestamp(position_data['open_time'])
+            })
+            logger.info(f"DB_LOG_OPEN: Position {symbol} logged to DB.")
         except Exception as e:
-            logger.error(f"Position tracking setup error: {e}")
+            logger.error(f"Position tracking setup or DB logging error: {e}", exc_info=True)
     
-    async def _cleanup_position_tracking(self, copy_order: CopyOrder):
-        """Очистка отслеживания позиции после закрытия с записью в БД"""
+    async def _cleanup_position_tracking(self, copy_order: CopyOrder, execution_result: Dict[str, Any]):
+        """Очистка отслеживания позиции после закрытия и запись в БД."""
         try:
             symbol = copy_order.target_symbol
-        
             if symbol in self.active_positions:
-                position = self.active_positions[symbol]
-            
-                # Рассчитываем P&L для Kelly анализа
-                entry_price = position['entry_price']
-                exit_price = copy_order.target_price
-                quantity = position['quantity']
-            
-                if position['side'].lower() == 'buy':
-                    pnl = (exit_price - entry_price) * quantity
-                else:
-                    pnl = (entry_price - exit_price) * quantity
-            
-                # ===== НОВЫЙ КОД: ЗАПИСЬ В БД =====
-                try:
-                    api_payload = {
-                        "account_id": 1,
-                        "symbol": symbol,
-                        "side": position['side'],
-                        "qty": str(quantity),
-                        "position_idx": position.get('position_idx', 0),
-                        "entry_price": str(entry_price),
-                        "exit_price": str(exit_price),
-                        "realized_pnl": str(pnl),
-                        "leverage": position.get('leverage'),
-                        "margin_mode": position.get('margin_mode', 'Cross'),
-                        "opened_at": position.get('opened_at'),
-                        "closed_at": time.time() * 1000,
-                        "raw_open": position.get('raw_data', {}),
-                        "raw_close": {
-                            "exit_price": str(exit_price),
-                            "pnl": str(pnl),
-                            "cleanup_time": time.time()
-                        }
-                    }
-                
-                    async with aiohttp.ClientSession() as session:
-                        async with session.post(
-                            "http://localhost:8080/api/positions/close",
-                            json=api_payload,
-                            headers={"Content-Type": "application/json"},
-                            timeout=aiohttp.ClientTimeout(total=5)
-                        ) as response:
-                            if response.status == 200:
-                                logger.info(f"Position cleanup recorded in DB for {symbol}")
-                            else:
-                                logger.warning(f"Failed to record cleanup in DB: {response.status}")
-                            
-                except Exception as e:
-                    logger.warning(f"Non-critical: Failed to record position cleanup in DB: {e}")
-            
-                # ===== КОНЕЦ НОВОГО КОДА =====
-            
-                # Добавляем результат в Kelly анализ
-                self.kelly_calculator.add_trade_result(
-                    symbol, pnl, 
-                    {'position': position, 'exit_price': exit_price}
-                )
-            
-                # Удаляем из активных позиций
+                # Log close to DB
+                await positions_writer.update_position({
+                    "account_id": 1,
+                    "symbol": symbol,
+                    "qty": 0, # qty=0 signals a close
+                    "position_idx": copy_order.source_signal.metadata.get('pos_idx', 0),
+                    "metadata": execution_result # Pass execution result as raw close data
+                })
+                logger.info(f"DB_LOG_CLOSE: Position {symbol} closure logged to DB.")
                 del self.active_positions[symbol]
-            
-                # Удаляем trailing stop
-                self.trailing_manager.remove_trailing_stop(symbol)
-            
-                logger.info(f"Position tracking cleanup for {symbol}: P&L=${pnl:.2f}")
-        
+            else:
+                logger.warning(f"Attempted to cleanup untracked position: {symbol}")
         except Exception as e:
-            logger.error(f"Position tracking cleanup error: {e}")
+            logger.error(f"Position tracking cleanup or DB logging error: {e}", exc_info=True)
     
     def _estimate_trade_pnl(self, copy_order: CopyOrder, execution_result: Dict[str, Any]) -> float:
         """Оценка P&L сделки (приблизительная для открывающих позиций)"""
         try:
-            # Для открывающих позиций возвращаем 0 (P&L будет рассчитан при закрытии)
             if copy_order.source_signal.signal_type == SignalType.POSITION_OPEN:
                 return 0.0
             
-            # Для закрывающих позиций рассчитываем реальный P&L
             if copy_order.target_symbol in self.active_positions:
                 position = self.active_positions[copy_order.target_symbol]
                 entry_price = position['entry_price']
@@ -2366,7 +2494,6 @@ class PositionCopyManager:
                     return (entry_price - exit_price) * quantity
             
             return 0.0
-            
         except Exception as e:
             logger.error(f"P&L estimation error: {e}")
             return 0.0
@@ -2382,91 +2509,44 @@ class PositionCopyManager:
                 
                 self.copy_stats['total_volume_copied'] += copy_order.target_quantity * (copy_order.target_price or 0)
             
-            # Обновляем среднюю задержку синхронизации
             if self.copy_stats['avg_sync_delay'] == 0:
                 self.copy_stats['avg_sync_delay'] = sync_delay
             else:
-                self.copy_stats['avg_sync_delay'] = (
-                    self.copy_stats['avg_sync_delay'] * 0.9 + sync_delay * 0.1
-                )
+                self.copy_stats['avg_sync_delay'] = (self.copy_stats['avg_sync_delay'] * 0.9 + sync_delay * 0.1)
             
-            # Обновляем коэффициент успешности
             total_attempts = self.copy_stats['positions_copied'] + self.copy_stats['positions_closed']
             if total_attempts > 0:
                 self.copy_stats['copy_success_rate'] = total_attempts / (total_attempts + 1) * 100
-            
         except Exception as e:
             logger.error(f"Stats update error: {e}")
     
     async def update_trailing_stops(self):
         """Обновление всех trailing stops с валидацией и обработкой ошибок"""
         try:
-            # Собираем уникальные символы из активных позиций
-            symbols_to_check = set()
-
-            for position_key, position_data in list(self.active_positions.items()):
-                symbol = None
-                if isinstance(position_data, dict):
-                    symbol = position_data.get('symbol')
-
-                if not symbol:
-                    key_str = str(position_key)
-
-                    # Убираем суффиксы направления в разных вариантах
-                    for suffix in ('*Buy', '*Sell', '_Buy', '_Sell', ':Buy', ':Sell', 'Buy', 'Sell'):
-                        if key_str.endswith(suffix):
-                            key_str = key_str[:-len(suffix)]
-                            break
-
-                    # Если в конце ключа был таймстамп вида _1234567890 — уберём его
-                    if '_' in key_str:
-                        left, right = key_str.rsplit('_', 1)
-                        if right.isdigit():
-                            key_str = left
-
-                    symbol = key_str or None
-
-                    # Сохраняем символ в данные позиции, чтобы в следующий раз не парсить ключ
-                    if symbol and isinstance(position_data, dict):
-                        position_data['symbol'] = symbol
-
-                if symbol:
-                    symbols_to_check.add(symbol)
-
+            symbols_to_check = set(self.active_positions.keys())
             if not symbols_to_check:
-                logger.debug("No symbols to update trailing stops")
                 return
 
-            # Получаем цены (последовательно, без изменения логики ретраев)
             prices_cache = {}
             for symbol in symbols_to_check:
                 try:
-                    ticker_params = {
-                        "category": "linear",
-                        "symbol": symbol,
-                    }
-                    ticker_result = await self.main_client._make_request_with_retry(
-                        "GET", "market/tickers", ticker_params
-                    )
+                    ticker_params = {"category": "linear", "symbol": symbol}
+                    ticker_result = await self.main_client._make_request_with_retry("GET", "market/tickers", ticker_params)
                     if ticker_result and ticker_result.get('retCode') == 0:
                         lst = ticker_result.get('result', {}).get('list', [])
                         if lst:
                             current_price = safe_float(lst[0].get('lastPrice', 0))
                             if current_price > 0:
                                 prices_cache[symbol] = current_price
-                            else:
-                                logger.warning(f"Invalid price for {symbol}: {current_price}")
-                    else:
-                        logger.warning(f"Failed to get ticker for {symbol}: {ticker_result}")
                 except Exception as e:
                     logger.error(f"Error fetching price for {symbol}: {e}")
 
-            # Обновляем/проверяем trailing stops только для валидных цен
             for symbol, current_price in prices_cache.items():
                 try:
-                    self.trailing_manager.update_trailing_stop(symbol, current_price)
-                    if self.trailing_manager.check_stop_triggered(symbol, current_price):
-                        await self._execute_trailing_stop_exit(symbol, current_price)
+                    position = self.active_positions.get(symbol)
+                    if position:
+                        # Assuming update_trailing_stop needs the full position dict
+                        await self.trailing_manager.update_trailing_stop(position)
                 except Exception as e:
                     logger.error(f"Error handling trailing stop for {symbol}: {e}")
 
@@ -2483,7 +2563,6 @@ class PositionCopyManager:
             position = self.active_positions[symbol]
             close_side = "Sell" if position['side'] == "Buy" else "Buy"
             
-            # Создаем экстренный ордер закрытия
             emergency_signal = TradingSignal(
                 signal_type=SignalType.POSITION_CLOSE,
                 symbol=symbol,
@@ -2506,22 +2585,15 @@ class PositionCopyManager:
                 priority=3
             )
             
-            # Немедленно исполняем
             result = await self.order_manager.place_adaptive_order(copy_order)
             
             if result.get('success'):
-                await self._cleanup_position_tracking(copy_order)
-                
-                await send_telegram_alert(
-                    f"🛑 Trailing stop triggered: {symbol} closed at ${trigger_price:.6f}"
-                )
-                
+                await self._cleanup_position_tracking(copy_order, result)
+                await send_telegram_alert(f"🛑 Trailing stop triggered: {symbol} closed at ${trigger_price:.6f}")
                 logger.info(f"Trailing stop executed for {symbol} at ${trigger_price:.6f}")
             else:
                 logger.error(f"Trailing stop execution failed for {symbol}")
-                await send_telegram_alert(
-                    f"❌ Trailing stop execution failed for {symbol}"
-                )
+                await send_telegram_alert(f"❌ Trailing stop execution failed for {symbol}")
             
         except Exception as e:
             logger.error(f"Trailing stop execution error: {e}")
@@ -2542,6 +2614,46 @@ class PositionCopyManager:
             'trailing_stops_active': len(self.trailing_manager.get_all_stops())
         })
         return stats
+
+    async def _handle_position_modify(self, copy_order: CopyOrder, execution_result: Dict[str, Any]):
+        """Handles position modification tracking and DB logging."""
+        try:
+            symbol = copy_order.target_symbol
+            if symbol not in self.active_positions:
+                logger.warning(f"Cannot log MODIFY for untracked position: {symbol}")
+                await self._setup_position_tracking(copy_order, execution_result)
+                return
+
+            position = self.active_positions[symbol]
+
+            qty_change = safe_float(copy_order.target_quantity)
+            if copy_order.target_side == 'Sell':
+                qty_change = -qty_change
+
+            new_qty = safe_float(position['quantity']) + qty_change
+
+            logger.info(f"Modifying position for {symbol}. Old qty: {position['quantity']}, Change: {qty_change}, New qty: {new_qty}")
+
+            position['quantity'] = new_qty
+            position['last_modified_price'] = execution_result.get('avg_price', copy_order.target_price)
+            position['last_modified_time'] = time.time()
+            position['metadata'] = execution_result
+
+            # Log modification to positions_db
+            await positions_writer.update_position({
+                "account_id": 1,
+                "symbol": symbol,
+                "side": position['side'],
+                "qty": new_qty,
+                "entry_price": position['entry_price'], # Entry price doesn't change on modify
+                "leverage": position['leverage'],
+                "position_idx": position['position_idx'],
+                "metadata": { "execution": execution_result },
+                "updated_at": datetime.fromtimestamp(position['last_modified_time'])
+            })
+            logger.info(f"DB_LOG_MODIFY: Position {symbol} logged to DB.")
+        except Exception as e:
+            logger.error(f"Position modify handling or DB logging error: {e}", exc_info=True)
 
 # ================================
 # СИСТЕМА КОНТРОЛЯ РИСКОВ
@@ -3045,6 +3157,13 @@ class Stage2CopyTradingSystem:
         source_client=None,
         main_client=None,
         base_monitor: Optional[FinalTradingMonitor] = None,
+        main_api_key: Optional[str] = None,
+        main_api_secret: Optional[str] = None,
+        main_api_url: Optional[str] = None,
+        copy_config: Optional[dict] = None,
+        kelly_config: Optional[dict] = None,
+        trailing_config: Optional[dict] = None,
+        risk_config: Optional[dict] = None,
     ):
         # 1) Используем внешний монитор, если он передан
         self.base_monitor = base_monitor or FinalTradingMonitor(
@@ -3060,19 +3179,42 @@ class Stage2CopyTradingSystem:
         self._started = False
         self._handlers_registered = False
 
-        # 4) Основные компоненты Этапа 2
+        # 4) Конфигурации
+        self.copy_config = copy_config or COPY_CONFIG
+        self.kelly_config = kelly_config or KELLY_CONFIG
+        self.trailing_config = trailing_config or TRAILING_CONFIG
+        self.risk_config = risk_config or RISK_CONFIG
+
+
+        # 5) Основные компоненты Этапа 2
+        self.mode_detector = DonorPositionModeDetector(self.source_client)
         self.copy_manager = PositionCopyManager(
             self.source_client,
             self.main_client,
+            self.trailing_config
         )
         self.drawdown_controller = DrawdownController()
+
+        # ✅ Инициализация и алиас для Kelly Calculator (совместимость с Telegram)
+        self.kelly_calculator = self.copy_manager.kelly_calculator
+        self.kelly_calculator.apply_config(KELLY_CONFIG)
+
+        # ✅ Экспонируем trailing_manager для внешнего доступа (например, для телеметрии)
+        self.trailing_manager = self.copy_manager.trailing_manager
 
         # 5) Состояние системы
         self.system_active = False
         self.copy_enabled = True
+        self._copy_ready = False  # Unified readiness flag
+        self.copy_state = CopyState()
+        if self.main_client.api_key and self.main_client.api_secret:
+            self.copy_state.keys_loaded = True
         self.demo_mode = False
         self.last_balance_check = 0
         self.balance_check_interval = 60  # Проверяем баланс каждую минуту
+
+        # B. Stage2 Executor Flag
+        self.trade_executor_connected = False
 
         # 6) Статистика системы
         self.system_stats = {
@@ -3088,6 +3230,33 @@ class Stage2CopyTradingSystem:
         # 7) Доп. поля
         self._last_stage2_report_ts = 0.0
 
+        # Idempotency cache to prevent duplicate orders
+        self._recent_actions = {}
+        self._idempotency_window_sec = self.copy_config.get('idempotency_window_sec', 5)
+        self._idempotency_lock = asyncio.Lock()
+
+        # Cache for leverage sync to avoid redundant API calls
+        # 1) "Боевой" кэш (symbol -> "10") используется в _sync_leverage_non_blocking()
+        self._last_synced_leverage: dict[str, str] = {}
+        # 2) Пер-символьный кэш (symbol -> (buy, sell)) — для совместимости с местами,
+        #    где сравнивается именно пара плеч (например, ранее в ensure_trade_mode_and_leverage)
+        self._lev_cache: dict[str, tuple[int, int]] = {}
+        self._leverage_sync_locks = defaultdict(asyncio.Lock)        
+
+        # State for isolated margin mirroring
+        self._known_positions_margin = {}
+        self._last_margin_sync_time = {}
+
+        # Deferred modification queue
+        self._pending_modify = deque()
+        self._max_pending_modify = 100
+        self.copy_connected = False
+
+        # ✅ ПАТЧ 4: TTL-дедуп для OPEN сигналов
+        self._open_seen = {}   # dict[str, float]  # key -> last_ts
+        self._open_ttl = 3.0   # seconds
+
+
         # ВАЖНО: не регистрируем обработчики здесь, чтобы не плодить дубли.
         # Регистрация произойдёт один раз в start_system() через
         # await self.copy_manager.start_copying()
@@ -3097,60 +3266,135 @@ class Stage2CopyTradingSystem:
             type(self.base_monitor).__name__,
         )
     
+    async def enqueue_signal(self, signal: TradingSignal) -> None:
+        """
+        A stable, documented entry point for receiving signals from Stage-1.
+        This method routes the signal to the main position handler for processing.
+        """
+        try:
+            logger.info(f"STAGE2_ENQUEUE_SIGNAL: symbol={signal.symbol}, type={signal.signal_type.value}")
+
+            # The `on_position_item` method is the new central handler. We need to
+            # convert the TradingSignal into the dictionary format it expects and wrap it in a list.
+            item = {
+                'symbol': signal.symbol,
+                'side': signal.side,
+                'size': str(signal.size),
+                'entryPrice': str(signal.price),
+                'positionIdx': signal.metadata.get('position_idx', 0),
+                # ✅ ДОБАВЛЕНО: Извлекаем tradeMode и leverage из signal.metadata
+                'tradeMode': signal.metadata.get('tradeMode'),
+                'leverage': signal.metadata.get('leverage'),
+            }
+            await self.on_position_item([item])
+
+        except Exception as e:
+            logger.error(f"Failed to enqueue signal for {signal.symbol}: {e}", exc_info=True)
+
+    async def ensure_trade_mode_and_leverage(
+        self,
+        symbol: str,
+        donor_trade_mode: Optional[int],
+        donor_lev_buy: Optional[Union[str, int, float]],
+        donor_lev_sell: Optional[Union[str, int, float]],
+        *,
+        reduce_only: bool
+    ) -> None:
+        """
+        Синхронизация ПЛЕЧА перед ОТКРЫТИЕМ позиций.
+        ВНИМАНИЕ: тип маржи (Cross/Isolated) здесь больше НЕ трогаем.
+        Ничего не делаем при reduce_only=True.
+        """
+        if reduce_only:
+            return
+
+        def _to_int_or_none(v):
+            if v is None:
+                return None
+            if isinstance(v, str):
+                s = v.strip().lower()
+                try:
+                    return int(float(s))
+                except Exception:
+                    return None
+            if isinstance(v, (int, float)):
+                return int(v)
+            return None
+
+        # Не трогаем тип маржи (UTA account-wide)
+        if _to_int_or_none(donor_trade_mode) in (0, 1):
+            logger.debug(f"TRADE_MODE_SKIP: {symbol} (margin mode sync disabled - UTA 2.0)")
+
+        try:
+            # --- ПЛЕЧО ---
+            lb = _to_int_or_none(donor_lev_buy)
+            ls = _to_int_or_none(donor_lev_sell)
+            if lb is None and ls is None:
+                logger.debug(f"LEVERAGE_SKIP: {symbol} (no donor leverage)")
+                return
+
+            # зеркалим (система работает с единым плечом на символ)
+            if lb is None:
+                lb = ls
+            if ls is None:
+                ls = lb
+
+            leverage_str = str(lb)
+
+            # централизованный синк (локи, pre-check, 110043)
+            await self._sync_leverage_non_blocking(symbol, leverage_str)
+
+            # если «боевой» кэш обновился до нужного состояния — поддержим tuple-кэш
+            if self._last_synced_leverage.get(symbol) == leverage_str:
+                self._lev_cache[symbol] = (int(lb), int(ls))
+                logger.debug(f"LEVERAGE_CACHE_UPDATE: {symbol} -> buy={lb} sell={ls}")
+
+        except Exception as e:
+            logger.error(f"SYNC_ERROR: {symbol} leverage sync failed: {e}", exc_info=True)
+
+
     async def initialize(self):
-        """ИСПРАВЛЕННАЯ инициализация системы копирования"""
+        """Initializes the copy trading system and registers handlers."""
         try:
             logger.info("Initializing Stage 2 Copy Trading System...")
-    
-            # Инициализируем компоненты
-            self.kelly_calculator = AdvancedKellyCalculator()
-    
-            self.copy_manager = PositionCopyManager(
-                self.base_monitor.source_client,
-                self.base_monitor.main_client
-            )
-    
-            self.trailing_manager = DynamicTrailingStopManager()
-            self.drawdown_controller = DrawdownController()
-            self.order_manager = AdaptiveOrderManager(self.base_monitor.main_client)
-    
-            # ✅ ИСПРАВЛЕНО: Регистрируем обработчик через WebSocket менеджер
+
+            # Component initialization is now handled in __init__ to ensure correct dependency injection.
+            # This method is for registering handlers and activating the system.
+
             if hasattr(self.base_monitor, 'websocket_manager'):
                 self.base_monitor.websocket_manager.register_handler(
-                    'position_update', 
-                    self.handle_position_signal
+                    'position',
+                    self.on_position_item
                 )
-                logger.info("Copy signal handler registered through WebSocket manager")
-            
-                # ✅ НОВОЕ: Дополнительная проверка регистрации
-                handlers = self.base_monitor.websocket_manager.message_handlers.get('position_update', [])
-                logger.info(f"Registered position handlers count: {len(handlers)}")
-            
-                # ✅ НОВОЕ: Тестовый вызов для проверки
-                try:
-                    test_position = {
-                        'symbol': 'TEST',
-                        'size': '0.0',
-                        'side': 'Buy',
-                        'markPrice': '0'
-                    }
-                    await self.handle_position_signal(test_position)
-                    logger.info("✅ Test position signal handled successfully")
-                except Exception as e:
-                    logger.warning(f"Test position signal failed: {e}")
-    
+                self.copy_state.source_ws_ok = True
+                logger.info("Stage 2 'on_position_item' handler registered for 'position' topic.")
+
+            # ========== КРИТИЧЕСКОЕ ИСПРАВЛЕНИЕ: Биндинг связанного метода экземпляра ==========
+            om = getattr(self.copy_manager, "order_manager", None)
+            if om is not None and hasattr(om, "ensure_trade_mode_and_leverage_cb"):
+                # ПРАВИЛЬНО: self.ensure_trade_mode_and_leverage - это СВЯЗАННЫЙ метод экземпляра Stage2CopyTradingSystem
+                om.ensure_trade_mode_and_leverage_cb = self.ensure_trade_mode_and_leverage
+                logger.info("ENSURE_TRADE_SYNC_CB_BOUND: Stage2 -> OrderManager callback bound successfully")
+            else:
+                logger.warning("ENSURE_TRADE_SYNC_CB_SKIP: order_manager not ready or missing callback attribute")
+            # ====================================================================================
+
             self.system_active = True
             logger.info("✅ Stage 2 Copy Trading System initialized successfully")
-    
+
         except Exception as e:
-            logger.error(f"Stage 2 initialization error: {e}")
+            logger.error(f"Stage 2 initialization error: {e}", exc_info=True)
             raise
 
+
     def register_ws_handlers(self, ws_manager):
+        """Регистрирует обработчики WS. Теперь 'position' вместо 'position_update'."""
         if getattr(self, "_position_handler_registered", False):
             return
-        ws_manager.register_handler("position_update", self.handle_position_signal)
+        # Важно: подписываемся на 'position', как и в WS менеджере.
+        ws_manager.register_handler("position", self.on_position_item)
         self._position_handler_registered = True
+        logger.info("Stage 2 WS handler 'on_position_item' registered for 'position' topic.")
 
     def get_integration_status(self):
         """Получение статуса интеграции систем"""
@@ -3171,733 +3415,523 @@ class Stage2CopyTradingSystem:
             logger.error(f"Integration status error: {e}")
             return {'error': str(e)}
 
-    async def handle_position_update(self, data):
-        """
-        Обертка для совместимости с position_handlers из WebSocketManager.
-        Вызывается из списка position_handlers и делегирует в существующий handle_position_signal.
-        """
+    async def _mirror_margin_adjustment(self, symbol: str, donor_margin_change: float, position_idx: int):
+        """Calculates and applies a proportional margin adjustment to the main account."""
+        if not MARGIN_CONFIG['enabled']:
+            return
+
+        # Debounce check
+        now = time.time()
+        if now - self._last_margin_sync_time.get(symbol, 0) < MARGIN_CONFIG['debounce_sec']:
+            logger.info(f"MARGIN_MIRROR_DEBOUNCED: Skipping margin sync for {symbol}.")
+            return
+
         try:
-            # Если это обновление с массивом позиций (от reconcile)
-            if isinstance(data, dict) and 'data' in data:
-                items = data.get('data', [])
-                for item in items:
-                    await self.handle_position_signal(item)
-            # Если это одиночная позиция  
-            elif isinstance(data, dict):
-                await self.handle_position_signal(data)
-            else:
-                logger.warning(f"Unknown position update format: {type(data)}")
-            
-        except Exception as e:
-            logger.error(f"handle_position_update wrapper error: {e}")
+            # Get balances for proportional calculation
+            main_balance_raw = await self.main_client.get_balance()
+            source_balance_raw = await self.source_client.get_balance()
 
-    async def process_copy_signal(self, signal: TradingSignal):
-        """
-        Обработчик сигналов копирования для Stage2CopyTradingSystem.
-        Добавлен реальный bypass для /force_copy (metadata.force_copy=True),
-        глобальный gate от контроллера риска применяется только если НЕ force_copy.
-        Делегирует выполнение в PositionCopyManager.
-        """
-        try:
-            # ---- извлекаем основные поля и флаг форс-режима
-            symbol = getattr(signal, 'symbol', None)
-            side   = getattr(signal, 'side', None)
-            size   = float(getattr(signal, 'size', 0) or 0)
-            is_force = bool((getattr(signal, "metadata", {}) or {}).get("force_copy", False))
+            main_balance = safe_float(main_balance_raw.get("equity") if isinstance(main_balance_raw, dict) else main_balance_raw)
+            source_balance = safe_float(source_balance_raw.get("equity") if isinstance(source_balance_raw, dict) else source_balance_raw)
 
-            logger.info("🔄 COPY SIGNAL RECEIVED: %s %s %s", symbol, side, size)
-
-            # 0) Проверяем готовность системы
-            if not self.system_active:
-                logger.warning("Copy system not active - ignoring signal")
-                await send_telegram_alert(
-                    f"⚠️ **СИСТЕМА КОПИРОВАНИЯ НЕАКТИВНА**\n"
-                    f"Пропущен сигнал: {symbol} {side}\n"
-                    "Активируйте систему для копирования"
-                )
+            if not all([main_balance, source_balance]) or source_balance <= 0:
+                logger.warning(f"MARGIN_MIRROR_SKIP: Invalid balances for {symbol}.")
                 return
 
-            if not self.copy_enabled:
-                logger.warning("Copy disabled - ignoring signal")
-                await send_telegram_alert(
-                    f"⚠️ **КОПИРОВАНИЕ ОТКЛЮЧЕНО**\n"
-                    f"Пропущен сигнал: {symbol} {side}\n"
-                    "Включите копирование в настройках"
-                )
+            # Calculate proportional margin change
+            proportional_margin_change = donor_margin_change * (main_balance / source_balance)
+
+            # Check against min delta
+            if abs(proportional_margin_change) < MARGIN_CONFIG['min_usdt_delta']:
+                logger.info(f"MARGIN_MIRROR_SKIP: Proportional delta ${proportional_margin_change:.2f} for {symbol} is below min threshold.")
                 return
 
-            # 1) Глобальный gate от контроллера риска (только для открытия позиций)
-            #    Применяем ТОЛЬКО если НЕ force_copy.
-            if signal.signal_type == SignalType.POSITION_OPEN and not is_force:
-                if hasattr(self, 'drawdown_controller') and hasattr(self.drawdown_controller, 'can_open_positions'):
-                    if not self.drawdown_controller.can_open_positions():
-                        mode = getattr(getattr(self.drawdown_controller, 'supervisor', None), 'mode', None)
-                        mode_name = getattr(mode, 'value', str(mode)) if mode is not None else 'unknown'
-                    
-                        # НОВОЕ: Логируем в risk_events
-                        risk_events_logger.log_position_rejection(
-                            account_id=2,
-                            symbol=symbol,
-                            requested_size=size,
-                            reason=f"Blocked by risk manager: {mode_name} mode"
-                        )
-                    
-                        logger.warning("Cannot open new positions: system in %s mode", mode_name)
-                        await send_telegram_alert(
-                            "🛡️ **РИСК-МЕНЕДЖМЕНТ: БЛОКИРОВКА ОТКРЫТИЯ**\n"
-                            f"Сигнал: {symbol} {side}\n"
-                            f"Режим: {mode_name}"
-                        )
-                        return
-
-            # Если пришёл принудительный сигнал — явно логируем и уведомляем
-            if is_force:
-                logger.warning("FORCED COPY OVERRIDE: proceeding to open %s %s %s", symbol, side, size)
-                try:
-                    await send_telegram_alert(
-                        f"⚡️ **FORCED COPY**: исполняем {symbol} {side} {size} (обход DD-гейта)"
-                    )
-                except Exception:
-                    pass
-
-            # 2) Подробная проверка лимитов риска (твоя существующая логика)
-            #    Блокируем только если НЕ force_copy.
-            if hasattr(self, 'drawdown_controller'):
-                try:
-                    risk_check = await self.drawdown_controller.check_risk_limits()
-                    if signal.signal_type == SignalType.POSITION_OPEN and not is_force \
-                        and not risk_check.get('can_open_position', True):
-                    
-                        # НОВОЕ: Логируем в risk_events
-                        risk_events_logger.log_position_rejection(
-                            account_id=2,
-                            symbol=symbol,
-                            requested_size=size,
-                            reason=risk_check.get('reason', 'Risk limits exceeded')
-                        )
-                    
-                        logger.warning("Risk limits prevent copying: %s", risk_check.get('reason', 'Unknown'))
-                        await send_telegram_alert(
-                            "🛡️ **РИСК-МЕНЕДЖМЕНТ БЛОКИРОВАЛ КОПИРОВАНИЕ**\n"
-                            f"Сигнал: {symbol} {side}\n"
-                            f"Причина: {risk_check.get('reason', 'Risk limits')}"
-                        )
-                        return
-                except Exception as e:
-                    logger.warning(f"Risk check error: {e}")
-                    # продолжаем с предупреждением
-
-            # 3) Делегируем в copy_manager, где находятся нужные методы
-            if signal.signal_type == SignalType.POSITION_OPEN:
-                await self._handle_position_open_for_copy(signal)
-            elif signal.signal_type == SignalType.POSITION_CLOSE:
-                await self._handle_position_close_for_copy(signal)
-            elif signal.signal_type == SignalType.POSITION_MODIFY:
-                await self._handle_position_modify_for_copy(signal)
-            else:
-                logger.warning(f"Unknown signal type: {signal.signal_type}")
+            # For now, we only handle adding margin, not reducing it.
+            if proportional_margin_change < 0:
+                logger.info(f"MARGIN_MIRROR_SKIP: Reducing margin is not currently supported for {symbol}.")
                 return
 
-            # 4) Обновляем статистику
-            self.system_stats['total_signals_processed'] += 1
-            self.system_stats['successful_copies'] += 1
+            # TODO: Add capping logic based on MARGIN_MAX_PCT_OF_EQUITY
 
-            # 5) Отправляем уведомление об обработке
-            forced_note = " (FORCED)" if is_force else ""
-            await send_telegram_alert(
-                "✅ **СИГНАЛ ОБРАБОТАН**\n"
-                f"Action: {signal.signal_type.value}{forced_note}\n"
-                f"Symbol: {symbol}\n"
-                f"Size: {size:.6f}\n"
-                "Status: Делегировано в PositionCopyManager"
+            margin_str = f"{proportional_margin_change:.4f}" # Format to string with precision
+
+            logger.info(f"MARGIN_MIRROR_APPLY: donorΔIM=${donor_margin_change:+.2f}, mainΔIM=${proportional_margin_change:+.2f} for {symbol}")
+
+            result = await self.main_client.add_margin(
+                symbol=symbol,
+                margin=margin_str,
+                position_idx=position_idx
             )
 
+            if result.get("success"):
+                self._last_margin_sync_time[symbol] = now
+                logger.info(f"MARGIN_MIRROR_OK: Successfully added margin for {symbol}.")
+            else:
+                logger.error(f"MARGIN_MIRROR_FAIL: Failed to add margin for {symbol}. Reason: {result.get('error')}")
+
         except Exception as e:
-            logger.error(f"Copy signal processing error: {e}")
-            self.system_stats['failed_copies'] += 1
-            await send_telegram_alert(f"❌ **ОШИБКА КОПИРОВАНИЯ**: {str(e)}")
+            logger.error(f"MARGIN_MIRROR_EXCEPTION: for {symbol}", exc_info=True)
 
-    async def _handle_position_open_for_copy(self, signal):
-        """Обработка открытия позиции для копирования - ПОЛНАЯ ИСПРАВЛЕННАЯ ВЕРСИЯ"""
-        try:
-            logger.info(f"🟢 COPYING POSITION OPEN: {signal.symbol}")
-    
-            # Получаем балансы для расчета размера
-            source_balance = 0.0
-            main_balance = 0.0
-    
-            try:
-                source_balance = await self.base_monitor.source_client.get_balance()
-                main_balance = await self.base_monitor.main_client.get_balance()
-            except Exception as e:
-                logger.error(f"Balance retrieval error: {e}")
-                await send_telegram_alert(f"❌ **ОШИБКА ПОЛУЧЕНИЯ БАЛАНСОВ**: {str(e)}")
+    async def _sync_leverage_non_blocking(self, symbol: str, leverage: str):
+        """
+        Sets leverage for a symbol without blocking the caller.
+        Checks current leverage first and handles '110043' (not modified) as a success.
+        """
+        async with self._leverage_sync_locks[symbol]:
+            # Quick check from local cache
+            if self._last_synced_leverage.get(symbol) == leverage:
                 return
-        
-            if source_balance <= 0 or main_balance <= 0:
-                logger.error("Invalid balances for copying")
-                await send_telegram_alert("❌ **НЕДОПУСТИМЫЕ БАЛАНСЫ ДЛЯ КОПИРОВАНИЯ**")
-                return
-    
-            # Рассчитываем размер позиции
-            try:
-                # Процент от баланса источника
-                source_position_value = signal.size * signal.price
-                source_percentage = source_position_value / source_balance
-        
-                # Применяем к основному балансу
-                target_value = main_balance * source_percentage
-                target_size = target_value / signal.price
-        
-                # ✅ KELLY CRITERION: Если доступен, оптимизируем размер
-                # ✅ KELLY CRITERION: ограничиваем влияние в безопасном коридоре
-                if hasattr(self, 'kelly_calculator'):
-                    try:
-                        base_target_size = target_size  # запомним пропорциональную копию
-                        kelly_data = await self.kelly_calculator.calculate_optimal_size(
-                            signal.symbol, target_size, signal.price
-                        )
-                        if kelly_data['recommended_size'] > 0:
-                            ksize = kelly_data['recommended_size']
-                            k_min = COPY_CONFIG.get('kelly_min_mult', 0.5)
-                            k_max = COPY_CONFIG.get('kelly_max_mult', 2.0)
-                            target_size = min(max(ksize, base_target_size * k_min), base_target_size * k_max)
-                            logger.info(f"Kelly adjustment: {ksize:.6f} -> bounded {target_size:.6f} "
-                                        f"(bounds {k_min}x..{k_max}x of {base_target_size:.6f})")
-                    except Exception as e:
-                        logger.warning(f"Kelly calculation error: {e}")
 
-        
-                # Ограничиваем размер позиции (безопасность)
-                max_position_value = main_balance * 0.1  # Максимум 10% от баланса
-                if target_value > max_position_value:
-                    target_size = max_position_value / signal.price
-                    logger.info(f"Position size limited for safety: {target_size:.6f}")
-            
-                logger.info(f"📊 COPY CALCULATION: Source ${source_position_value:.2f} ({source_percentage:.2%}) -> Target ${target_size * signal.price:.2f}")
-        
-                # ✅ РЕАЛЬНОЕ РАЗМЕЩЕНИЕ ОРДЕРА
-                if hasattr(self, 'copy_manager') and hasattr(self.copy_manager, 'order_manager'):
-                    try:
-                        # В демо режиме только логируем БЕЗ обновления статистики
-                        if getattr(self, 'demo_mode', True):
-                            logger.info(f"🔄 DEMO MODE: Would place order {signal.symbol} {signal.side} {target_size:.6f}")
-                        
-                            # Сохраняем в активные позиции для отслеживания
-                            if hasattr(self.copy_manager, 'active_positions'):
-                                self.copy_manager.active_positions[signal.symbol] = {
-                                    'symbol': signal.symbol,
-                                    'side': signal.side,
-                                    'size': target_size,
-                                    'entry_price': signal.price,
-                                    'timestamp': time.time(),
-                                    'source_signal_id': getattr(signal, 'id', None)
-                                }
-                        
-                            # НЕ обновляем статистику в DEMO режиме
-                        
-                        else:
-                            # LIVE режим - реальное размещение
-                            from stage2_copy_system import CopyOrder, OrderStrategy
-                        
-                            copy_order = CopyOrder(
-                                source_signal=signal,
-                                target_symbol=signal.symbol,
-                                target_side=signal.side,
-                                target_quantity=target_size,
-                                target_price=signal.price,
-                                kelly_fraction=target_size / signal.size if signal.size > 0 else 1.0,
-                                priority=3,
-                                order_strategy=OrderStrategy.MARKET
-                            )
-                        
-                            order_result = await self.copy_manager.order_manager.place_adaptive_order(copy_order)
-                    
-                            if order_result.get('success'):
-                                logger.info(f"✅ Order placed successfully: {order_result.get('order_id', 'N/A')}")
-                            
-                                # Сохраняем в активные позиции
-                                if hasattr(self.copy_manager, 'active_positions'):
-                                    self.copy_manager.active_positions[signal.symbol] = {
-                                        'symbol': signal.symbol,
-                                        'side': signal.side,
-                                        'size': target_size,
-                                        'entry_price': signal.price,
-                                        'timestamp': time.time(),
-                                        'source_signal_id': getattr(signal, 'id', None),
-                                        'order_id': order_result.get('order_id')
-                                    }
-                            
-                                # Обновляем статистику ТОЛЬКО в LIVE режиме
-                                if hasattr(self.copy_manager, 'copy_stats'):
-                                    ##self.copy_manager.copy_stats['positions_copied'] += 1
-                                    self.copy_manager.copy_stats['total_volume_copied'] += target_size * signal.price
-                            
-                                # Создаем trailing stop
-                                if hasattr(self.copy_manager, 'trailing_manager'):
-                                    try:
-                                        market_conditions = await self.copy_manager.order_manager.get_market_analysis(signal.symbol)
-                                    
-                                        trailing_stop = self.copy_manager.trailing_manager.create_trailing_stop(
-                                            symbol=signal.symbol,
-                                            side=signal.side,
-                                            current_price=signal.price,
-                                            position_size=target_size * signal.price,
-                                            market_conditions=market_conditions
-                                        )
-                                    
-                                        if trailing_stop:
-                                            logger.info(f"✅ Trailing stop created for {signal.symbol}: "
-                                                      f"stop_price={trailing_stop.stop_price:.2f}, "
-                                                      f"distance={trailing_stop.distance_percent:.2%}")
-                                        
-                                    except Exception as e:
-                                        logger.error(f"Trailing stop creation error: {e}")
-                            
-                            else:
-                                error_msg = order_result.get('error', 'Unknown error')
-                                raise Exception(f"Order failed: {error_msg}")
-                        
-                    except Exception as e:
-                        logger.error(f"Order placement error: {e}")
-                        await send_telegram_alert(f"❌ **ОШИБКА РАЗМЕЩЕНИЯ ОРДЕРА**: {str(e)}")
+            try:
+                # 1. Pre-check current leverage from the exchange to avoid unnecessary API calls.
+                positions = await self.main_client.get_positions(category="linear", symbol=symbol)
+                if positions:
+                    # Leverage is set per symbol, so we can take it from the first position entry.
+                    current_leverage_str = positions[0].get('leverage')
+                    if current_leverage_str and current_leverage_str == leverage:
+                        logger.info(f"LEVERAGE_SKIP_SAME: symbol={symbol} current={current_leverage_str} target={leverage}")
+                        self._last_synced_leverage[symbol] = leverage
                         return
-        
-                # Успешное уведомление
-                await send_telegram_alert(
-                    f"✅ **ПОЗИЦИЯ СКОПИРОВАНА**\n"
-                    f"Symbol: {signal.symbol}\n"
-                    f"Side: {signal.side}\n"
-                    f"Original: {signal.size:.6f} (${source_position_value:.2f})\n"
-                    f"Copy: {target_size:.6f} (${target_size * signal.price:.2f})\n"
-                    f"Ratio: {source_percentage:.2%}\n"
-                    f"Mode: {'DEMO' if getattr(self, 'demo_mode', True) else 'LIVE'}"
-                )
-        
-                # Обновляем статистику успеха
-                ##self.system_stats['successful_copies'] += 1
-        
-            except Exception as e:
-                logger.error(f"Position size calculation error: {e}")
-                await send_telegram_alert(f"❌ **ОШИБКА РАСЧЕТА РАЗМЕРА**: {str(e)}")
-        
-        except Exception as e:
-            logger.error(f"Position copy open error: {e}")
-            await send_telegram_alert(f"❌ **ОШИБКА КОПИРОВАНИЯ ОТКРЫТИЯ**: {str(e)}")
 
-    async def _handle_position_close_for_copy(self, signal):
-        """Обработка закрытия позиции для копирования с записью в БД"""
-        try:
-            logger.info(f"🔴 COPYING POSITION CLOSE: {signal.symbol}")
-        
-            # Логирование входящего сигнала
-            logger.info(f"[DEBUG] Incoming signal data: symbol={signal.symbol}, price={signal.price}, timestamp={signal.timestamp}")
-        
-            # ИСПРАВЛЕНИЕ: используем правильный ключ с учетом side
-            position_key = f"{signal.symbol}_{signal.side}"
-            position_to_close = None
-            if hasattr(self.copy_manager, 'active_positions'):
-                # Сначала пробуем с составным ключом
-                position_to_close = self.copy_manager.active_positions.get(position_key)
-                if not position_to_close:
-                    # Fallback на простой ключ для обратной совместимости
-                    position_to_close = self.copy_manager.active_positions.get(signal.symbol)
-            
-                # Детальное логирование найденной позиции
-                if position_to_close:
-                    logger.info(f"[DEBUG] Found position_to_close: {position_to_close}")
-                    logger.info(f"[DEBUG] Position fields: side={position_to_close.get('side')}, size={position_to_close.get('size')}, entry_price={position_to_close.get('entry_price')}, leverage={position_to_close.get('leverage')}")
+                # 2. If leverage differs or is unknown, attempt to set it.
+                logger.info(f"LEVERAGE_SYNC_START: Attempting to set leverage for {symbol} to {leverage}x.")
+
+                # Pass the callback to remember the leverage upon success
+                leverage_result = await self.main_client.set_leverage(
+                    category="linear",
+                    symbol=symbol,
+                    leverage=leverage,
+                    on_success_callback=self.base_monitor.signal_processor._remember_leverage
+                )
+
+                # 3. Handle the response based on Bybit's retCode.
+                ret_code = (leverage_result or {}).get("retCode")
+                if ret_code == 0:
+                    logger.info(f"LEVERAGE_SYNC_SUCCESS: Leverage for {symbol} set to {leverage}x.")
+                    self._last_synced_leverage[symbol] = leverage
+                elif ret_code == 110043:
+                    logger.info(f"LEVERAGE_NOOP: symbol={symbol} ret=110043")
+                    # The state is confirmed to be the target state, so we update the cache.
+                    self._last_synced_leverage[symbol] = leverage
                 else:
-                    logger.warning(f"[DEBUG] No position found in active_positions for {signal.symbol} (tried keys: {position_key}, {signal.symbol})")
+                    error_msg = (leverage_result or {}).get('retMsg', 'Unknown error')
+                    logger.error(f"LEVERAGE_SYNC_FAILED: for {symbol} to {leverage}x. Reason: {error_msg} (retCode: {ret_code})")
 
-            if not position_to_close:
-                logger.warning(f"No active position found to close: {signal.symbol}")
-                await send_telegram_alert(
-                    f"⚠️ **НЕТ ПОЗИЦИИ ДЛЯ ЗАКРЫТИЯ**\n"
-                    f"Symbol: {signal.symbol}\n"
-                    "Возможно позиция уже была закрыта или не была скопирована"
+            except Exception as e:
+                logger.error(f"LEVERAGE_SYNC_EXCEPTION: for {symbol} to {leverage}x.", exc_info=True)
+
+    async def on_position_item(self, positions: Union[list, dict]):
+        """Main entry point for position updates."""
+    
+        # ✅ СОХРАНЯЕМ ИСХОДНЫЙ ОБЪЕКТ ДО ЛЮБЫХ ПРЕОБРАЗОВАНИЙ
+        if isinstance(positions, dict):
+            original_ws_item = {**positions}  # Глубокая копия
+            positions = [positions]
+        else:
+            original_ws_item = {**positions[0]} if positions else None  # Глубокая копия
+    
+        if not isinstance(positions, list) or not positions:
+            return
+
+        symbol = positions[0].get('symbol')
+        if not symbol:
+            return
+
+        # mode_detector может модифицировать positions, но original_ws_item защищён
+        self.mode_detector.update_from_ws(symbol, positions, category="linear")
+    
+        mode = self.mode_detector.get_mode(symbol)
+
+        if mode is None:
+            asyncio.create_task(self.mode_detector.ensure_rest_probe(symbol))
+            logger.info(f"MODE_PENDING: Position mode for {symbol} is unknown. Scheduling probe.")
+            return
+
+        if not self.trade_executor_connected:
+            logger.warning("COPY_GATE: System not connected, skipping position processing.")
+            return
+
+        if mode == PositionMode.HEDGE:
+            for item in positions:
+                await self._process_single_position_update(item, mode)
+        elif mode == PositionMode.ONEWAY:
+            await self._process_aggregate_position_update(positions, mode, ws_item=original_ws_item)
+
+    async def _check_and_record_action(self, action_key: tuple) -> bool:
+        """
+        Centralized idempotency check. Returns True if the action should be skipped.
+        Includes a probabilistic cleanup of the cache to prevent memory leaks.
+        """
+        async with self._idempotency_lock:
+            # 1. Check if the action is a recent duplicate
+            if time.time() - self._recent_actions.get(action_key, 0) < self._idempotency_window_sec:
+                logger.info(f"IDEMPOTENCY_SKIP: Skipping duplicate action for key {action_key}")
+                return True  # True means "skip this action"
+
+            # 2. Record the new action
+            self._recent_actions[action_key] = time.time()
+
+            # 3. Probabilistic cleanup (e.g., 5% chance on each new action)
+            if random.random() < 0.05:
+                now = time.time()
+                # Clean keys older than 10x the window to be safe
+                cleanup_threshold = now - (self._idempotency_window_sec * 10)
+                keys_to_delete = [k for k, ts in self._recent_actions.items() if ts < cleanup_threshold]
+                for k in keys_to_delete:
+                    del self._recent_actions[k]
+                if keys_to_delete:
+                    logger.debug(f"IDEMPOTENCY_CLEANUP: Removed {len(keys_to_delete)} old action keys.")
+
+            return False # False means "do not skip"
+
+    async def _process_single_position_update(self, item: dict, mode: PositionMode):
+        """
+        Self-contained handler for a single position update in HEDGE mode.
+        Calculates delta, determines order parameters, and queues the order.
+        Includes a first-class branch for force-closing positions when the donor closes.
+        """
+        try:
+            symbol = item.get('symbol')
+            pos_idx = int(item.get('positionIdx', 0))
+            donor_size = float(item.get('size', 0) or 0)
+
+            target_positions = await self.main_client.get_positions(category="linear", symbol=symbol)
+            main_pos = next((p for p in target_positions if int(p.get('positionIdx', 0)) == pos_idx), None)
+            main_size = safe_float(main_pos.get('size')) if main_pos else 0.0
+
+            # --- HEDGE FULL CLOSE ---
+            # This branch handles donor->0 full closes, bypassing normal delta logic and min_qty gates.
+            if donor_size <= 0 and main_size > 0:
+                main_side = (main_pos.get('side') or '').strip()
+                close_side = 'Sell' if main_side == 'Buy' else 'Buy'
+
+                # Resolve the MAIN position index for the close order based on the ACTUAL open position side.
+                pos_idx_main = 1 if main_side == "Buy" else 2
+
+                # Format quantity and log intent
+                formatted_qty = await format_quantity_for_symbol_live(self.main_client, symbol, main_size, None)
+                logger.info(f"HEDGE_CLOSE_SYNC: symbol={symbol}, idx={pos_idx_main}, qty={formatted_qty}")
+
+                # Create and place the order directly, awaiting the result.
+                close_signal = TradingSignal(
+                    signal_type=SignalType.POSITION_CLOSE, symbol=symbol, side=close_side, size=main_size,
+                    price=0, timestamp=time.time(),
+                    metadata={'reason': 'hedge_full_close', 'reduceOnly': True, 'position_idx': pos_idx_main}
                 )
+                close_order = CopyOrder(
+                    source_signal=close_signal, target_symbol=symbol, target_side=close_side,
+                    target_quantity=main_size, target_price=None,
+                    order_strategy=OrderStrategy.MARKET, kelly_fraction=0.0, priority=0,
+                    metadata={'reason': 'hedge_full_close', 'reduceOnly': True, 'position_idx': pos_idx_main}
+                )
+
+                result = await self.copy_manager.order_manager.place_adaptive_order(close_order)
+
+                if result and result.get("success"):
+                    logger.info(f"HEDGE_CLOSE_OK: Market close for {symbol} idx={pos_idx_main} successful.")
+                    # Immediately clear the trailing stop for the now-closed position.
+                    await self.copy_manager.order_manager.place_trailing_stop(
+                        symbol=symbol, trailing_stop_price="0", position_idx=pos_idx_main
+                    )
+                else:
+                    logger.error(f"HEDGE_CLOSE_FAIL: Market close for {symbol} idx={pos_idx_main} failed. Reason: {result.get('error')}")
+                return # Exit after handling full close
+
+            if donor_size <= 0 and main_size <= 0:
+                logger.info(f"NOOP_ZERO: donor_size=0 and MAIN is empty for {symbol} (pos_idx={pos_idx}) - ignoring snapshot.")
                 return
 
-            # ✅ РЕАЛЬНОЕ ЗАКРЫТИЕ ПОЗИЦИИ
-            if hasattr(self, 'copy_manager') and hasattr(self.copy_manager, 'order_manager'):
-                try:
-                    if getattr(self, 'demo_mode', True):
-                        logger.info(f"🔄 DEMO MODE: Would close position {signal.symbol}")
+            # --- Standard Incremental Update Logic ---
+            main_balance = await self.main_client.get_balance()
+            source_balance = await self.source_client.get_balance()
+            main_equity = safe_float(main_balance.get("equity") if isinstance(main_balance, dict) else main_balance)
+            src_equity  = safe_float(source_balance.get("equity") if isinstance(source_balance, dict) else source_balance)
+            if main_equity <= 0 or src_equity <= 0:
+                logger.warning("Skipping copy due to invalid or zero balance.")
+                return
+
+            donor_side = (item.get('side') or "").strip()
+            entry_price = float(item.get('entryPrice') or item.get('markPrice') or 0)
+            main_side = (main_pos.get('side') or '').strip() if main_pos else ''
+            main_signed_qty = main_size if main_side == 'Buy' else -main_size if main_side == 'Sell' else 0.0
+
+            target_size = 0.0
+            kelly_fraction = 0.0
+            if donor_size > 0 and donor_side:
+                proportional_size = donor_size * (main_equity / src_equity)
+                kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(symbol=symbol, current_size=proportional_size, price=entry_price, balance=main_equity, source_balance=src_equity)
+                target_size = kelly_result.get('recommended_size', proportional_size)
+                kelly_fraction = kelly_result.get('kelly_fraction', 0.0)
+
+            min_qty = await self.copy_manager.order_manager.get_min_order_qty(symbol, price=entry_price)
+            if 0 < target_size < min_qty:
+                target_size = min_qty
+
+            donor_signed = target_size if donor_side == 'Buy' else -target_size if donor_side == 'Sell' else 0.0
+            delta = donor_signed - main_signed_qty
+
+            if abs(delta) < min_qty and donor_signed != 0:
+                logger.info(f"HEDGE_SKIP_MIN_DELTA: Calculated delta {delta} for {symbol} is below min_qty {min_qty}. No action taken.")
+                return
+
+            side = 'Buy' if delta > 0 else 'Sell'
+            qty = abs(delta)
+
+            reduce_only = (_sign(delta) != _sign(main_signed_qty)) and (abs(delta) <= abs(main_signed_qty))
+            final_position_idx = pos_idx # In Hedge mode, final pos_idx is the same as received.
+
+            is_opening = (main_signed_qty == 0 and donor_signed != 0)
+            is_full_close = (main_signed_qty != 0 and donor_signed == 0)
+
+            if is_full_close:
+                logger.info(f"HEDGE_CLOSE_SYNC: Donor closed position for {symbol} idx={final_position_idx}. Syncing MAIN to zero.")
+                qty = abs(main_signed_qty)
+                side = 'Sell' if main_signed_qty > 0 else 'Buy'
+                reduce_only = True
+
+                cleanup_tasks = [
+                    self.trailing_manager.remove_trailing_stop({'symbol': symbol, 'position_idx': final_position_idx}),
+                    self.copy_manager.order_manager.cancel_all_symbol_orders(symbol)
+                ]
+                await asyncio.gather(*cleanup_tasks)
+
+            action_key = (symbol, final_position_idx, side, round(qty, 6))
+            if await self._check_and_record_action(action_key):
+                return
+
+            # ✅ ПАТЧ 4.A: TTL-дедуп для WS OPEN сигналов
+            if is_opening:
+                key = f"{symbol}:{side}:{final_position_idx}"
+                now = time.time()
             
-                        # Удаляем из активных позиций (пробуем оба ключа)
-                        if hasattr(self.copy_manager, 'active_positions'):
-                            if position_key in self.copy_manager.active_positions:
-                                del self.copy_manager.active_positions[position_key]
-                            elif signal.symbol in self.copy_manager.active_positions:
-                                del self.copy_manager.active_positions[signal.symbol]
-                
-                        # Обновляем статистику
-                        if hasattr(self.copy_manager, 'copy_stats'):
-                            self.copy_manager.copy_stats['positions_closed'] += 1
-                
-                    else:
-                        # Реальное закрытие
-                        close_side = 'Sell' if position_to_close['side'] == 'Buy' else 'Buy'
-                        close_result = await self.copy_manager.order_manager.place_order(
-                            symbol=signal.symbol,
-                            side=close_side,
-                            size=position_to_close['size'],
-                            order_type='Market'
-                        )
-                
-                        if close_result['success']:
-                            logger.info(f"✅ Position closed successfully: {close_result['order_id']}")
-                            # Удаляем из активных позиций после успешного закрытия
-                            if hasattr(self.copy_manager, 'active_positions'):
-                                if position_key in self.copy_manager.active_positions:
-                                    del self.copy_manager.active_positions[position_key]
-                                elif signal.symbol in self.copy_manager.active_positions:
-                                    del self.copy_manager.active_positions[signal.symbol]
-                        else:
-                            raise Exception(f"Close failed: {close_result['error']}")
-                
-                except Exception as e:
-                    logger.error(f"Position close error: {e}")
-                    await send_telegram_alert(f"❌ **ОШИБКА ЗАКРЫТИЯ ПОЗИЦИИ**: {str(e)}")
+                # Очистка старых записей
+                for k, ts in list(self._open_seen.items()):
+                    if now - ts > self._open_ttl:
+                        self._open_seen.pop(k, None)
+            
+                # Проверка дубликата
+                if key in self._open_seen:
+                    logger.info(f"OPEN_DEDUP: skip duplicate {key}")
                     return
+            
+                # Помечаем как увиденный
+                self._open_seen[key] = now
+
+            await self._queue_copy_order(
+                symbol, entry_price, side, qty, reduce_only, final_position_idx, is_opening, is_full_close,
+                kelly_fraction, mode, delta=delta, main_qty=main_signed_qty, target_qty=donor_signed,
+                item=item  # ✅ ПЕРЕДАЁМ item с данными WS
+            )
+
+        except Exception as e:
+            logger.error(f"HEDGE_FAIL: Processing single position update for {item.get('symbol')} failed: {e}", exc_info=True)
+
+    async def _process_aggregate_position_update(self, positions: list, mode: PositionMode, ws_item: dict = None):
+        """
+        Self-contained handler for an aggregated position update in ONE-WAY mode.
+        Calculates net delta, determines order params, and queues the order.
+        """
+        try:
+            symbol = positions[0].get('symbol')
+            donor_net = sum(float(p.get('size', 0)) * (1 if p.get('side') == 'Buy' else -1) for p in positions)
+
+            target_positions = await self.main_client.get_positions(category="linear", symbol=symbol)
+            main_pos = next((p for p in target_positions if int(p.get('positionIdx', 0)) == 0), None)
+            main_net = (safe_float(main_pos.get('size')) if main_pos else 0.0) * (1 if (main_pos and (main_pos.get('side') or '').strip() == 'Buy') else -1 if main_pos else 0)
+
+            if donor_net == 0 and main_net == 0:
+                logger.info(f"NOOP_ZERO: donor_net=0 and MAIN is empty for {symbol} (one-way) - ignoring snapshot.")
+                return
+
+            main_balance = await self.main_client.get_balance()
+            source_balance = await self.source_client.get_balance()
+            main_equity = safe_float(main_balance.get("equity") if isinstance(main_balance, dict) else main_balance)
+            src_equity  = safe_float(source_balance.get("equity") if isinstance(source_balance, dict) else source_balance)
+            if main_equity <= 0 or src_equity <= 0:
+                logger.warning("Skipping copy due to invalid or zero balance.")
+                return
+
+            entry_price = float(positions[0].get('markPrice') or positions[0].get('entryPrice') or 0)
+
+            target_size = 0.0
+            kelly_fraction = 0.0
+            min_qty = await self.copy_manager.order_manager.get_min_order_qty(symbol, price=entry_price)
+
+            if abs(donor_net) > 0:
+                proportional = abs(donor_net) * (main_equity / src_equity)
+                kelly_result = await self.copy_manager.kelly_calculator.calculate_optimal_size(symbol=symbol, current_size=proportional, price=entry_price, balance=main_equity, source_balance=src_equity)
+                target_size = kelly_result.get('recommended_size', proportional)
+                kelly_fraction = kelly_result.get('kelly_fraction', 0.0)
+
+                if 0 < target_size < min_qty:
+                    target_size = min_qty
+
+            final_target_net = target_size * _sign(donor_net)
+            delta = final_target_net - main_net
+
+            if abs(delta) < min_qty and final_target_net != 0:
+                logger.info(f"ONEWAY_SKIP_MIN_DELTA: Calculated delta {delta} for {symbol} is below min_qty {min_qty}. No action taken.")
+                return
+
+            side = 'Buy' if delta > 0 else 'Sell'
+            qty = abs(delta)
+
+            reduce_only = (_sign(delta) != _sign(main_net) and abs(delta) <= abs(main_net))
+            is_opening = (main_net == 0 and final_target_net != 0)
+            is_full_close = (main_net != 0 and final_target_net == 0)
+
+            # Always resolve main pos_idx AFTER the final side is determined.
+            final_position_idx = await self._resolve_main_pos_idx(symbol, side)
+            logger.info(f"IDX_MAP_MAIN: symbol={symbol}, main_idx={final_position_idx}, side={side}, source_mode=ONEWAY")
+
+            action_key = (symbol, final_position_idx, side, round(qty, 6))
+            if await self._check_and_record_action(action_key):
+                return
+
+            await self._queue_copy_order(
+                symbol, entry_price, side, qty, reduce_only, final_position_idx, is_opening, is_full_close,
+                kelly_fraction, mode, delta=delta, main_qty=main_net, target_qty=final_target_net,
+                item=ws_item or (positions[0] if positions else None)  # ✅ ПЕРЕДАЁМ первую позицию
+            )
+
+        except Exception as e:
+            logger.error(f"ONEWAY_FAIL: Processing aggregate update for {positions[0].get('symbol')} failed: {e}", exc_info=True)
+
+    async def _queue_copy_order(
+        self, 
+        symbol: str, 
+        entry_price: float, 
+        order_side: str, 
+        order_qty: float, 
+        reduce_only_flag: bool, 
+        final_position_idx: int, 
+        is_opening: bool, 
+        is_full_close: bool, 
+        kelly_fraction: float, 
+        mode: PositionMode, 
+        delta: float = 0.0, 
+        main_qty: float = 0.0, 
+        target_qty: float = 0.0,
+        item: dict = None
+    ):
+        """
+        Helper to create and queue a copy order.
+
+        Args:
+            item: Optional WebSocket position data containing tradeMode and leverage
+        """
+        reason = "ws_open" if is_opening else "ws_full_close" if is_full_close else "ws_modify"
+        signal_type_enum = SignalType.POSITION_OPEN if is_opening else SignalType.POSITION_CLOSE if is_full_close else SignalType.POSITION_MODIFY
+
+        log_main_qty_field = 'main_net' if mode == PositionMode.ONEWAY else 'main_signed'
+        log_target_qty_field = 'final_target_net' if mode == PositionMode.ONEWAY else 'target_signed'
+
+        logger.info(
+            f"COPY_ACTION ({mode.name}): {reason.upper()} symbol={symbol} "
+            f"delta={delta:+.4f} {log_main_qty_field}={main_qty:+.4f} {log_target_qty_field}={target_qty:+.4f} "
+            f"-> qty={order_qty:.4f} side={order_side} reduceOnly={reduce_only_flag} position_idx={final_position_idx}"
+        )
+
+        # ✅ ОБОГАЩЕНИЕ METADATA: tradeMode и leverage из WS position
+        meta = {
+            'reason': reason,
+            'reduceOnly': reduce_only_flag,
+            'position_idx': final_position_idx
+        }
+
+        # Извлекаем tradeMode и leverage из item, если доступны
+        if item:
+            tm = item.get("tradeMode")
+            if tm in (0, 1):
+                meta["tradeMode"] = tm  # 0=cross, 1=isolated
+                meta["trade_mode"] = tm  # Дублируем для совместимости
     
-            # ===== ЗАПИСЬ В БД ЧЕРЕЗ WEB API С ПОЛУЧЕНИЕМ ПОЛНЫХ ДАННЫХ =====
-            try:
-                import aiohttp
-                import json
-                import psycopg2
-            
-                # Получаем полные данные из БД
-                logger.info(f"[DEBUG] Fetching position data from DB for {signal.symbol}")
-            
-                entry_price = None
-                leverage = None
-                margin_mode = 'Cross'
-                raw_open = {}
-            
+            # Извлекаем leverage
+            lev = item.get("leverage")
+            if lev is not None:
                 try:
-                    conn = psycopg2.connect("postgresql://sa:1Qaz2wsX@127.0.0.1:5432/trading_bot")
-                    cur = conn.cursor()
-                    cur.execute("""
-                        SELECT entry_price, leverage, margin_mode, raw::text, qty, side
-                        FROM positions_open 
-                        WHERE account_id = 1 AND symbol = %s 
-                        LIMIT 1
-                    """, (signal.symbol,))
-                    db_position = cur.fetchone()
-                
-                    if db_position:
-                        logger.info(f"[DEBUG] Found DB position: entry_price={db_position[0]}, leverage={db_position[1]}, margin_mode={db_position[2]}")
-                        entry_price = str(db_position[0]) if db_position[0] else None
-                        leverage = int(db_position[1]) if db_position[1] else None
-                        margin_mode = db_position[2] or 'Cross'
-                        if db_position[3]:
-                            raw_open = json.loads(db_position[3])
-                            logger.info(f"[DEBUG] Raw open data keys: {list(raw_open.keys())[:10]}")
-                    else:
-                        logger.warning(f"[DEBUG] No position found in DB for {signal.symbol}")
-                    
-                    cur.close()
-                    conn.close()
-                except Exception as db_error:
-                    logger.error(f"[DEBUG] DB fetch error: {db_error}")
-                    # Используем данные из position_to_close как fallback
-                    entry_price = str(position_to_close.get('entry_price', 0)) if position_to_close.get('entry_price') else None
-                    leverage = position_to_close.get('leverage')
-                    margin_mode = position_to_close.get('margin_mode', 'Cross')
-            
-                # Подготовка данных для API
-                api_payload = {
-                    "account_id": 1,
-                    "symbol": signal.symbol,
-                    "side": position_to_close.get('side', signal.side),  # Используем side из позиции или сигнала
-                    "qty": str(position_to_close.get('size', 0)),
-                    "position_idx": 0,
-                    "entry_price": entry_price,
-                    "exit_price": str(signal.price) if signal.price else None,
-                    "mark_price": str(signal.price) if signal.price else None,
-                    "leverage": leverage,
-                    "margin_mode": margin_mode,
-                    "liq_price": str(position_to_close.get('liq_price')) if position_to_close.get('liq_price') else None,
-                    "realized_pnl": None,  # Будет рассчитан в API
-                    "fees": None,
-                    "exchange_position_id": position_to_close.get('exchange_position_id'),
-                    "opened_at": position_to_close.get('opened_at') or position_to_close.get('timestamp'),
-                    "closed_at": signal.timestamp * 1000 if signal.timestamp else None,
-                    "raw_open": raw_open or position_to_close.get('raw_open', {}),
-                    "raw_close": {
-                        "symbol": signal.symbol,
-                        "side": position_to_close.get('side', signal.side),
-                        "markPrice": str(signal.price) if signal.price else None,
-                        "size": "0",
-                        "closedTime": str(int(signal.timestamp * 1000)) if signal.timestamp else None,
-                        "signal_metadata": signal.metadata if hasattr(signal, 'metadata') else {}
-                    }
-                }
-            
-                logger.info(f"[DEBUG] API payload prepared: entry_price={api_payload['entry_price']}, exit_price={api_payload['exit_price']}, leverage={api_payload['leverage']}")
-        
-                # Асинхронный вызов Web API
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(
-                        "http://localhost:8080/api/positions/close",
-                        json=api_payload,
-                        headers={"Content-Type": "application/json"},
-                        timeout=aiohttp.ClientTimeout(total=5)
-                    ) as response:
-                        if response.status == 200:
-                            result = await response.json()
-                            if result.get("success"):
-                                logger.info(f"✅ Position close recorded in DB: position_id={result.get('position_id')}")
-                            else:
-                                logger.warning(f"DB recording issue: {result.get('message')}")
-                        else:
-                            error_text = await response.text()
-                            logger.error(f"Failed to record position close in DB: {response.status} - {error_text}")
-                    
-            except asyncio.TimeoutError:
-                logger.warning("Timeout recording position close to DB (non-critical)")
-            except Exception as e:
-                logger.error(f"Error recording position close to DB: {e}")
-                import traceback
-                logger.error(f"[DEBUG] Full traceback: {traceback.format_exc()}")
-    
-            # ===== КОНЕЦ КОДА ЗАПИСИ =====
-    
-            await send_telegram_alert(
-                f"🔄 **ПОЗИЦИЯ ЗАКРЫТА**\n"
-                f"Symbol: {signal.symbol}\n"
-                f"Original Side: {position_to_close.get('side', 'Unknown')}\n"
-                f"Size: {position_to_close.get('size', 0):.6f}\n"
-                f"Mode: {'DEMO' if getattr(self, 'demo_mode', True) else 'LIVE'}"
-            )
+                    # Leverage может прийти как строка или число
+                    lev_int = int(lev) if isinstance(lev, (int, float)) else int(float(lev))
+                    meta["leverage"] = lev_int
+                    meta["leverage_buy"] = lev_int
+                    meta["leverage_sell"] = lev_int
+                except (ValueError, TypeError):
+                    logger.warning(f"LEVERAGE_PARSE_FAIL: Unable to parse leverage value: {lev}")
 
-            # Обновляем статистику успеха
-            ##self.system_stats['successful_copies'] += 1
+        # Опционально: канонические ключи для downstream-совместимости
+        if "tradeMode" in meta:
+            meta["donor_trade_mode"] = meta["tradeMode"]
+        if "leverage" in meta:
+            meta["donor_leverage_buy"] = meta["leverage"]
+            meta["donor_leverage_sell"] = meta["leverage"]
 
-        except Exception as e:
-            logger.error(f"Position copy close error: {e}")
-            await send_telegram_alert(f"❌ **ОШИБКА КОПИРОВАНИЯ ЗАКРЫТИЯ**: {str(e)}")
+        # --- PRE-ORDER SYNC OF TRADE MODE & LEVERAGE (strictly before order placement) ---
+        if is_opening and not reduce_only_flag:
+            donor_trade_mode = None
+            donor_lev_buy = None
+            donor_lev_sell = None
 
-    async def _handle_position_modify_for_copy(self, signal):
-        """Обработка изменения позиции для копирования"""
-        try:
-            logger.info(f"🟡 COPYING POSITION MODIFY: {signal.symbol}")
+            if item:
+                tm = item.get("tradeMode")
+                if tm in (0, 1):
+                    donor_trade_mode = int(tm)
 
-            # Находим активную позицию
-            current_position = None
-            if hasattr(self.copy_manager, 'active_positions'):
-                current_position = self.copy_manager.active_positions.get(signal.symbol)
+                lev = item.get("leverage")
+                if lev is not None:
+                    try:
+                        lev_int = int(lev) if isinstance(lev, (int, float)) else int(float(lev))
+                        donor_lev_buy = lev_int
+                        donor_lev_sell = lev_int
+                    except (ValueError, TypeError):
+                        logger.warning(f"LEVERAGE_PARSE_FAIL: Unable to parse leverage value: {lev}")
 
-            if not current_position:
-                logger.warning(f"No position to modify: {signal.symbol}")
-                await send_telegram_alert(
-                    f"⚠️ **НЕТ ПОЗИЦИИ ДЛЯ ИЗМЕНЕНИЯ**\n"
-                    f"Symbol: {signal.symbol}\n"
-                    "Позиция может быть еще не скопирована"
-                )
-                return
-
-            # Рассчитываем новый размер (аналогично открытию)
             try:
-                source_balance = await self.base_monitor.source_client.get_balance()
-                main_balance   = await self.base_monitor.main_client.get_balance()
-
-                source_position_value = signal.size * signal.price
-                source_percentage     = source_position_value / source_balance
-                target_value          = main_balance * source_percentage
-                new_target_size       = target_value / signal.price
-
-                old_size = float(current_position.get('size', 0))
-                logger.info(f"🟡 MODIFY CALCULATION: Current {old_size:.6f} -> New {new_target_size:.6f}")
-
-                # DEMO: просто обновляем локальные данные и НИЧЕГО НЕ считаем как "скопировано"
-                if getattr(self, 'demo_mode', True):
-                    current_position['size'] = new_target_size
-                    current_position['last_modified'] = time.time()
-                    result_success = False  # нет реального ордера
-                else:
-                    # TODO: здесь должна быть реальная логика доведения позиции до new_target_size
-                    # пример: self.copy_manager.order_manager.place_adaptive_order(...)
-                    logger.info(f"🔄 LIVE MODE: would modify position to {new_target_size:.6f}")
-                    result_success = False  # пока реальный modify не реализован
-
+                await self.ensure_trade_mode_and_leverage(
+                    symbol=symbol,
+                    donor_trade_mode=donor_trade_mode,
+                    donor_lev_buy=donor_lev_buy,
+                    donor_lev_sell=donor_lev_sell,
+                    reduce_only=False,
+                )
             except Exception as e:
-                logger.error(f"Position modify calculation error: {e}")
-                await send_telegram_alert(f"❌ **ОШИБКА РАСЧЕТА ИЗМЕНЕНИЯ**: {str(e)}")
-                return
+                logger.warning(f"PREORDER_SYNC_WARN: {symbol} failed to sync tradeMode/leverage before order: {e}")
 
-            await send_telegram_alert(
-                f"🔄 **ПОЗИЦИЯ ИЗМЕНЕНА**\n"
-                f"Symbol: {signal.symbol}\n"
-                f"Old Size: {old_size:.6f}\n"
-                f"New Size: {new_target_size:.6f}\n"
-                f"Mode: {'DEMO' if getattr(self, 'demo_mode', True) else 'LIVE'}"
-            )
+        # Формируем синтетический сигнал и заявку
+        synthetic_signal = TradingSignal(
+            signal_type=signal_type_enum,
+            symbol=symbol,
+            side=order_side,
+            size=order_qty,
+            price=entry_price,
+            timestamp=time.time(),
+            metadata=meta
+        )
 
-            # ✔ Считаем "скопировано" ТОЛЬКО при реальном успешном изменении (когда появится ордер)
-            ##if result_success:
-                ##self.system_stats['successful_copies'] += 1
+        order = CopyOrder(
+            source_signal=synthetic_signal,
+            target_symbol=symbol,
+            target_side=order_side,
+            target_quantity=order_qty,
+            target_price=entry_price,
+            order_strategy=OrderStrategy.MARKET,
+            kelly_fraction=kelly_fraction,
+            priority=0 if is_full_close else (1 if is_opening else 2),
+            metadata=meta  # ✅ ИСПОЛЬЗУЕМ ТОТ ЖЕ ОБОГАЩЕННЫЙ meta
+        )
 
-        except Exception as e:
-            logger.error(f"Position copy modify error: {e}")
-            await send_telegram_alert(f"❌ **ОШИБКА КОПИРОВАНИЯ ИЗМЕНЕНИЯ**: {str(e)}")
-
-
-    async def handle_position_signal(self, position_data):
+        await self.copy_manager.copy_queue.put((order.priority, order.created_at, order))
+    
+    async def _resolve_main_pos_idx(self, symbol: str, side: str) -> int:
         """
-        ИСПРАВЛЕННЫЙ обработчик сигналов позиций для системы копирования
+        Return correct Bybit v5 positionIdx for the MAIN account state.
+        HEDGE: Buy->1, Sell->2; ONEWAY: 0
         """
-        try:
-            # ✅ ДОБАВЛЕНО: Детальное логирование для диагностики
-            logger.info(f"🔄 Stage2 received position signal: {position_data}")
-        
-            if not self.system_active or not self.copy_enabled:
-                logger.info(f"Stage2 not ready: active={self.system_active}, enabled={self.copy_enabled}")
-                return
-    
-            symbol = position_data.get('symbol', '')
-            current_size = float(position_data.get('size', '0'))
-            side = position_data.get('side', '')
-            price = float(position_data.get('markPrice', '0'))
-    
-            logger.info(f"📊 Position signal details: {symbol} {side} size={current_size} price={price}")
-        
-            # Игнорируем тестовые сигналы
-            if symbol == 'TEST':
-                return
-    
-            # Проверяем изменения позиции
-            position_key = f"{symbol}_{side}"
-    
-            # ✅ ИСПРАВЛЕНО: Используем copy_manager.active_positions вместо self.active_positions
-            if position_key in self.copy_manager.active_positions:
-                # Существующая позиция - проверяем изменения
-                prev_size = self.copy_manager.active_positions[position_key].get('size', 0)
-                size_delta = current_size - prev_size
-            
-                logger.info(f"📈 Position change: {symbol} {prev_size:.6f} -> {current_size:.6f} (delta: {size_delta:.6f})")
-        
-                if abs(size_delta) > 0.001:  # Минимальное изменение 0.001
-                    if size_delta > 0:
-                        # Увеличение позиции
-                        signal = TradingSignal(
-                            signal_type=SignalType.POSITION_MODIFY,
-                            symbol=symbol,
-                            side=side,
-                            size=abs(size_delta),
-                            price=price,
-                            timestamp=time.time(),
-                            metadata={
-                                'action': 'increase',
-                                'prev_size': prev_size,
-                                'new_size': current_size,
-                                'source': 'websocket'
-                            }
-                        )
-                        logger.info(f"🟡 Generated MODIFY signal for increase: {symbol}")
-                        await self.process_copy_signal(signal)
-                
-                    elif current_size == 0:
-                        # Закрытие позиции
-                        signal = TradingSignal(
-                            signal_type=SignalType.POSITION_CLOSE,
-                            symbol=symbol,
-                            side=side,
-                            size=prev_size,
-                            price=price,
-                            timestamp=time.time(),
-                            metadata={
-                                'action': 'close',
-                                'prev_size': prev_size,
-                                'source': 'websocket'
-                            }
-                        )
-                        logger.info(f"🔴 Generated CLOSE signal: {symbol}")
-                        await self.process_copy_signal(signal)
-                
-                    else:
-                        # Уменьшение позиции
-                        signal = TradingSignal(
-                            signal_type=SignalType.POSITION_MODIFY,
-                            symbol=symbol,
-                            side=side,
-                            size=abs(size_delta),
-                            price=price,
-                            timestamp=time.time(),
-                            metadata={
-                                'action': 'decrease',
-                                'prev_size': prev_size,
-                                'new_size': current_size,
-                                'source': 'websocket'
-                            }
-                        )
-                        logger.info(f"🟡 Generated MODIFY signal for decrease: {symbol}")
-                        await self.process_copy_signal(signal)
-            else:
-                # Новая позиция
-                if current_size > 0:
-                    signal = TradingSignal(
-                        signal_type=SignalType.POSITION_OPEN,
-                        symbol=symbol,
-                        side=side,
-                        size=current_size,
-                        price=price,
-                        timestamp=time.time(),
-                        metadata={
-                            'action': 'open',
-                            'source': 'websocket'
-                        }
-                    )
-                    logger.info(f"🟢 Generated OPEN signal: {symbol}")
-                    await self.process_copy_signal(signal)
-    
-            # ✅ ИСПРАВЛЕНО: Обновляем состояние позиций в правильном месте
-            if current_size > 0:
-                self.copy_manager.active_positions[position_key] = {
-                    'symbol': symbol,
-                    'side': side,
-                    'size': current_size,
-                    'price': price,
-                    'last_update': time.time()
-                }
-                logger.debug(f"Updated position state: {position_key}")
-            elif position_key in self.copy_manager.active_positions:
-                del self.copy_manager.active_positions[position_key]
-                logger.debug(f"Removed position state: {position_key}")
-    
-            # Обновляем статистику
-            self.system_stats['total_signals_processed'] += 1
-    
-        except Exception as e:
-            logger.error(f"Position signal handling error: {e}")
-            logger.error(f"Position data: {position_data}")
+        main_positions = await self.main_client.get_positions(category="linear", symbol=symbol) or []
+        is_hedge = any(int(p.get("positionIdx", 0)) in (1, 2) for p in main_positions)
+        if is_hedge:
+            return 1 if (side or "").strip() == "Buy" else 2
+        return 0
 
-    def _register_copy_signal_handler(self):
-        """Регистрация обработчика сигналов для копирования"""
-        try:
-            # Расширяем signal processor из Этапа 1 для обработки копирования
-            original_execute_signal = self.base_monitor.signal_processor._execute_signal_processing
-            
-            async def enhanced_signal_processing(signal: TradingSignal):
-                """Расширенная обработка сигналов с копированием"""
-                # Сначала выполняем базовую обработку
-                await original_execute_signal(signal)
-                
-                # Затем обрабатываем копирование
-                if self.copy_enabled and not self.drawdown_controller.emergency_stop_active:
-                    await self.process_copy_signal(signal)
-                    self.system_stats['total_signals_processed'] += 1
-            
-            # Подменяем обработчик
-            self.base_monitor.signal_processor._execute_signal_processing = enhanced_signal_processing
-            
-            logger.info("Copy signal handler registered")
-            
-        except Exception as e:
-            logger.error(f"Copy signal handler registration error: {e}")
-    
     async def start_system(self):
         """Идемпотентный запуск Stage-2 без повторного старта Stage-1"""
         if getattr(self, "_started", False):
@@ -3924,6 +3958,29 @@ class Stage2CopyTradingSystem:
             trailing_task   = asyncio.create_task(self._trailing_stop_loop())
 
             self.system_active = True
+            # Set readiness flags
+            self._copy_ready = True
+            self.copy_state.main_rest_ok = True
+            self.copy_state.limits_checked = True # Assume checked during startup
+
+            # B. Stage2 Executor Flag
+            self.trade_executor_connected = self.copy_state.ready and not dry_run
+            logger.info(
+                f"COPY_EXECUTOR_READY={self.trade_executor_connected} "
+                f"(dry_run={dry_run}, main_client.ready={self.copy_state.ready})"
+            )
+
+            # --- Deferred Modify Flush ---
+            self.copy_connected = True
+            logger.info("✅ Copy system is now connected.")
+            if self._pending_modify:
+                logger.info(f"▶️ MODIFY_FLUSHED: count={len(self._pending_modify)}")
+                while self._pending_modify:
+                    item = self._pending_modify.popleft()
+                    await self.on_position_item(item)
+            # -----------------------------
+
+            logger.info("✅ Copy system is ready and accepting signals. State: %s", self.copy_state)
 
             # Единичное уведомление о старте Stage-2
             await send_telegram_alert(
@@ -4296,5 +4353,5 @@ if __name__ == "__main__":
         print(f"\n💥 Ошибка запуска: {e}")
         print("Убедитесь что:")
         print("1. Файл enhanced_trading_system_final_fixed.py находится в той же директории")
-        print("2. Все зависимости установлены: pip install numpy pandas scipy")
+        print("2. Все зависимости установлены: pip install scipy")
         print("3. API ключи корректно настроены в конфигурационных файлах")
