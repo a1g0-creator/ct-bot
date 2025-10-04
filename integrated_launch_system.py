@@ -611,123 +611,6 @@ class IntegratedTradingSystem:
         return ("telegram" in n) or (name in {"Stage2_TelegramBot", "TelegramBot"})
 
 
-    async def apply_new_credentials(self, account_id: int) -> bool:
-        """
-        Горячее применение ключей без остановки Telegram:
-        - корректно гасим старые Stage1/Stage2
-        - пересоздаём их «как с нуля»
-        - читаем ключи ИЗ ЕДИНОГО STOREA (database_security_implementation)
-        - применяем ключи ко всем компонентам
-        - стартуем Stage1/Stage2
-        """
-        logger.info("[HotReload] Starting trading systems after keys update")
-
-        # --- 1) Читаем ключи ПРАВИЛЬНЫМ способом (никакого app.crypto_store) ---
-        try:
-            try:
-                from app.database_security_implementation import CredentialsStore
-            except Exception:
-                from database_security_implementation import CredentialsStore
-            store = CredentialsStore()
-
-            # TARGET/DONOR берём из self или self.config (что есть)
-            target_id = (
-                getattr(self, "TARGET_ACCOUNT_ID", None)
-                or getattr(getattr(self, "config", object()), "TARGET_ACCOUNT_ID", None)
-                or 1
-            )
-            donor_id = (
-                getattr(self, "DONOR_ACCOUNT_ID", None)
-                or getattr(getattr(self, "config", object()), "DONOR_ACCOUNT_ID", None)
-            )
-
-            main_creds = store.get_account_credentials(int(target_id))
-            donor_creds = store.get_account_credentials(int(donor_id)) if donor_id else None
-
-            if not main_creds or not all(main_creds):
-                logger.warning("[HotReload] Keys for TARGET account_id=%s not found in DB", target_id)
-                return False
-
-            main_api_key, main_api_secret = main_creds
-            source_api_key, source_api_secret = (donor_creds or (None, None))
-
-            logger.info("[HotReload] Found keys: TARGET=%s, DONOR=%s",
-                    target_id, donor_id if donor_creds else "—")
-        except Exception as e:
-            logger.error("[HotReload] Failed to load credentials from DB: %s", e, exc_info=True)
-            return False
-
-        try:
-            # --- 2) не трогаем Telegram, гасим только Stage1/Stage2 ---
-            await self._cancel_active_tasks(names_to_keep=frozenset({"Stage2_TelegramBot"}))
-
-            # --- 3) погасить внутренние фоновые таски старых систем (если реализовано) ---
-            if hasattr(self, "_stop_existing_systems"):
-                await self._stop_existing_systems()
-
-            # --- 4) короткая пауза на закрытие соединений ---
-            import asyncio
-            await asyncio.sleep(0.5)
-
-            # --- 5) пересоздать экземпляры «как при первом старте» ---
-            self.stage1_monitor = FinalTradingMonitor()
-            if hasattr(self, "_patch_ws_connect"):
-                self._patch_ws_connect()  # защищённая аутентификация WS
-            if hasattr(self, "_refresh_bot_refs"):
-                self._refresh_bot_refs()
-
-            # ВАЖНО: правильный ключ конструктора — base_monitor
-            self.stage2_system = Stage2CopyTradingSystem(base_monitor=self.stage1_monitor)
-            if hasattr(self, "_refresh_bot_refs"):
-                self._refresh_bot_refs()  # после создания Stage2 обновляем ссылки бота
-
-            logger.info("[HotReload] Stage 1/2 instances re-created")
-
-            # --- 6) применить ключи ко всем компонентам (без сторонних лоадеров) ---
-            await self._apply_credentials_to_all_components(
-                source_api_key=source_api_key,
-                source_api_secret=source_api_secret,
-                main_api_key=main_api_key,
-                main_api_secret=main_api_secret,
-            )
-            logger.info("[HotReload] Credentials applied to all components")
-
-            # --- 7) полная инициализация Stage2 и принудительное включение LIVE-флагов ---
-            await self.stage2_system.initialize()
-            self.stage2_system.system_active = True
-            self.stage2_system.copy_enabled = True
-
-            # --- 8) старт Stage1 ---
-            t1 = asyncio.create_task(self.stage1_monitor.start(), name="Stage1_Monitor")
-            self.active_tasks.add(t1)
-            logger.info("[HotReload] Stage 1 monitoring task created")
-
-            # --- 9) старт Stage2 (безопасный выбор корутины) ---
-            t2_coro = self._pick_stage2_start_coro(self.stage2_system)
-            t2 = asyncio.create_task(t2_coro, name="Stage2_CopySystem")
-            self.active_tasks.add(t2)
-            logger.info("[HotReload] Stage 2 copy system task created")
-
-            # --- 10) убедиться, что Telegram-бот жив ---
-            if hasattr(self, "_ensure_telegram_running"):
-                await self._ensure_telegram_running()
-
-            self.integrated_stats["successful_starts"] += 1
-            logger.info("[HotReload] Trading systems started successfully with new credentials")
-            return True
-
-        except Exception as e:
-            logger.error("[HotReload] Failed to apply credentials: %s", e, exc_info=True)
-            self.integrated_stats["critical_errors"] += 1
-            from contextlib import suppress
-            with suppress(Exception):
-                await send_telegram_alert(
-                    f"❌ **Ошибка применения ключей!**\n"
-                    f"📊 Аккаунт: {account_id}\n"
-                    f"⚠️ {e}\n"
-                    f"Попробуйте перезапуск либо проверьте ключи в БД."
-                )
-            return False
 
     
     async def _apply_credentials_to_all_components(
@@ -1089,177 +972,34 @@ class IntegratedTradingSystem:
 
 
 
-    # ---- PATCHED ----
     async def _on_keys_saved(self):
         """
-        Горячая замена ключей:
-        • НЕ рестартим Telegram
-        • Переинициализируем Stage‑1/Stage‑2
-        • Загружаем ключи из БД и применяем
-        • ИДЕМПОТЕНТНО патчим Supervisor
-        • Авто‑активируем Stage‑2
+        Triggered by the Telegram menu. Resolves account IDs and delegates
+        the hot-swap process to the main trading monitor. This is the single,
+        clean entry point from the launcher.
         """
-        import sys, importlib, asyncio
         from contextlib import suppress
+        logger.info("HSWAP: Triggered from Telegram. Delegating to Stage 1 Monitor.")
 
-        logger.info("[HotReload] Starting trading systems after keys update")
+        if not self.stage1_monitor:
+            logger.error("HSWAP: Aborted. stage1_monitor is not available.")
+            with suppress(Exception):
+                await send_telegram_alert("❌ Hot-swap failed: Stage 1 monitor not found.")
+            return
+
         try:
-            # 0) Проверим, что TARGET действительно появился в БД
-            try:
-                try:
-                    from app.database_security_implementation import CredentialsStore
-                except Exception:
-                    from database_security_implementation import CredentialsStore
-                store = CredentialsStore()
+            target_id, donor_id = self._resolve_account_ids()
+            logger.info(f"HSWAP: Resolved account IDs: TARGET={target_id}, DONOR={donor_id}")
 
-                target_id = (getattr(self, "TARGET_ACCOUNT_ID", None)
-                             or getattr(getattr(self, "config", object()), "TARGET_ACCOUNT_ID", None)
-                             or 1)
-                have_main = store.get_account_credentials(int(target_id))
-                if not have_main or not all(have_main):
-                    logger.warning("[HotReload] Keys still not found after save (TARGET id=%s)", target_id)
-                    return
-            except Exception as e:
-                logger.error("[HotReload] Failed to verify keys in DB: %s", e, exc_info=True)
-                return
-
-            # 1) Уведомление
-            with suppress(Exception):
-                await send_telegram_alert("🔑 **КЛЮЧИ СОХРАНЕНЫ**\n\nЗапускаю торговые системы...")
-
-            # 2) Идемпотентный сетевой патч
-            with suppress(Exception):
-                try:
-                    ns_mod = (sys.modules.get("network_supervisor")
-                              or sys.modules.get("network_supervisor_fix")
-                              or importlib.import_module("network_supervisor_fix"))
-                except Exception:
-                    ns_mod = importlib.import_module("network_supervisor")
-
-                ns_fn = (getattr(ns_mod, "patch_trading_system_with_supervisor", None)
-                         or getattr(ns_mod, "patch_trading_system", None))
-                if callable(ns_fn):
-                    ns_fn()
-                    logger.info("[HotReload] Network Supervisor patch applied")
-                else:
-                    logger.info("[HotReload] Network Supervisor patch skipped (module/func not present)")
-
-            # 3) Останавливаем все фоновые таски КРОМЕ Telegram
-            await self._cancel_active_tasks(names_to_keep=frozenset({"Stage2_TelegramBot"}))
-
-            # 4) Корректно стопаем старые подсистемы
-            if getattr(self, "stage1_monitor", None) and hasattr(self.stage1_monitor, "stop"):
-                with suppress(Exception):
-                    await self.stage1_monitor.stop()
-                    logger.info("[HotReload] Stage‑1 stopped")
-
-            if getattr(self, "stage2_system", None) and hasattr(self.stage2_system, "stop"):
-                with suppress(Exception):
-                    await self.stage2_system.stop()
-                    logger.info("[HotReload] Stage‑2 stopped")
-
-            # Небольшой дренаж соединений
-            await asyncio.sleep(0.5)
-
-            # 5) Создаём новые инстансы
-            await self._initialize_stage1_monitor()
-            logger.info("[HotReload] Stage‑1 monitor initialized")
-
-            await self._initialize_stage2_system()
-            logger.info("[HotReload] Stage‑2 system initialized")
-
-            # >>> ВАЖНО: сразу после реинициализации — обновляем ссылки бота
-            try:
-                self._refresh_bot_refs("after Stage1/Stage2 reinit")
-            except TypeError:
-                self._refresh_bot_refs()
-            logger.info("Telegram bot references refreshed (after Stage1/Stage2 reinit)")
-
-            # 6) Загружаем и применяем ключи
-            if not await self._load_and_apply_credentials():
-                raise RuntimeError("Failed to load/apply credentials to systems")
-            logger.info("[HotReload] Credentials loaded and applied to all systems")
-
-            # После применения ключей — ещё раз
-            try:
-                self._refresh_bot_refs("after credentials apply (hot)")
-            except TypeError:
-                self._refresh_bot_refs()
-            logger.info("Telegram bot references refreshed (after credentials apply)")
-
-            # 6b) АВТО‑АКТИВАЦИЯ Stage‑2 (ключевой фикс)
-            try:
-                self.system_active = True
-                s2 = getattr(self, "stage2_system", None)
-                if s2:
-                    if hasattr(s2, "copy_enabled"):
-                        s2.copy_enabled = True
-                    if hasattr(s2, "active"):
-                        s2.active = True
-
-                    start_coro = (getattr(s2, "start_copying", None)
-                                  or getattr(s2, "enable_copying", None))
-                    if callable(start_coro):
-                        res = start_coro()
-                        if hasattr(res, "__await__"):
-                            await res
-                    logger.info("[HotReload] Stage‑2 auto‑activated (active=True, copy_enabled=True)")
-                else:
-                    logger.warning("[HotReload] Stage‑2 instance is missing — auto‑activation skipped")
-            except Exception:
-                logger.exception("[HotReload] Failed to auto‑activate Stage‑2")
-
-            # И ещё раз после активации
-            try:
-                self._refresh_bot_refs("after Stage2 auto-activation (hot)")
-            except TypeError:
-                self._refresh_bot_refs()
-            logger.info("Telegram bot references refreshed (after Stage2 auto-activation)")
-
-            # 7) Запускаем Stage‑1
-            if self.stage1_monitor:
-                t1 = asyncio.create_task(self.stage1_monitor.start(), name="Stage1_Monitor")
-                self.active_tasks.add(t1)
-                logger.info("[HotReload] Stage‑1 monitoring task created")
-
-            # 8) Запускаем Stage‑2
-            if self.stage2_system:
-                t2 = asyncio.create_task(self._pick_stage2_start_coro(self.stage2_system),
-                                         name="Stage2_CopySystem")
-                self.active_tasks.add(t2)
-                logger.info("[HotReload] Stage‑2 copy system task created")
-
-            # 9) Health monitor — создаём, если нет
-            if not any(t.get_name() == "SystemMonitor" and not t.done() for t in self.active_tasks):
-                hm = asyncio.create_task(self._system_health_monitor(), name="SystemMonitor")
-                self.active_tasks.add(hm)
-                logger.info("[HotReload] System health monitor task created")
-
-            # 10) Финал
-            self.system_active = True
-            logger.info("[HotReload] Trading systems started successfully with credentials")
-
-            # Дадим WebSocket’у подключиться
-            await asyncio.sleep(2)
-
-            with suppress(Exception):
-                await send_telegram_alert(
-                    "✅ **ТОРГОВЫЕ СИСТЕМЫ ЗАПУЩЕНЫ**\n\n"
-                    "• Ключи загружены и применены ✅\n"
-                    "• Stage‑1: Мониторинг активен ✅\n"
-                    "• Stage‑2: Копирование ВКЛЮЧЕНО ✅\n"
-                    "• Telegram Bot: уже работал ✅\n"
-                    "• WebSocket: подключается... ⏳"
-                )
-
+            # Delegate the call to the robust, centralized method in FinalTradingMonitor
+            await self.stage1_monitor.hot_swap_credentials(
+                target_account_id=target_id,
+                donor_account_id=donor_id
+            )
         except Exception as e:
-            logger.error("[HotReload] Error during systems start: %s", e, exc_info=True)
+            logger.error(f"HSWAP: Failed to delegate hot-swap call: {e}", exc_info=True)
             with suppress(Exception):
-                await send_telegram_alert(
-                    "⚠️ **ОШИБКА ЗАПУСКА СИСТЕМ**\n\n"
-                    f"{str(e)}\n\n"
-                    "При необходимости выполните ручной перезапуск процесса."
-                )
+                await send_telegram_alert(f"❌ Hot-swap initiation failed: {e}")
 
 
     async def _auto_activate_stage2(self) -> None:

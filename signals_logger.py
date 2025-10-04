@@ -9,9 +9,9 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from sqlalchemy.exc import IntegrityError
 
-from app.db_session import SessionLocal
-from app.db_models import SignalsLog
-from app.sys_events_logger import sys_logger
+from db_session import SessionLocal
+from db_models import SignalsLog
+from sys_events_logger import sys_logger
 
 import logging
 

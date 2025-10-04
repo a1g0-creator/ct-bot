@@ -9,8 +9,8 @@ from datetime import datetime
 from typing import Optional, Dict, Any
 from contextlib import contextmanager
 
-from app.db_session import SessionLocal
-from app.db_models import SysEvents
+from db_session import SessionLocal
+from db_models import SysEvents
 
 logger = logging.getLogger(__name__)
 
