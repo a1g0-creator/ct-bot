@@ -60,6 +60,9 @@ BYBIT_RECV_WINDOW = int(os.getenv("BYBIT_RECV_WINDOW", "20000"))
 TARGET_ACCOUNT_ID = int(os.getenv("TARGET_ACCOUNT_ID", "1"))
 DONOR_ACCOUNT_ID  = int(os.getenv("DONOR_ACCOUNT_ID",  "2"))
 
+# Тип аккаунта для v5 API (для баланса и других запросов)
+BALANCE_ACCOUNT_TYPE = "UNIFIED"
+
 # ── Совместимость с более новой версией кода ──
 DEFAULT_TRADE_ACCOUNT_ID = int(os.getenv("DEFAULT_TRADE_ACCOUNT_ID", str(TARGET_ACCOUNT_ID)))
 # (опционально, на будущее)

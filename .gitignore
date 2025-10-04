@@ -1,0 +1,24 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Log files
+logs/
+*.log
+
+# Metrics files
+metrics/
+
+# Environment variables
+.env
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE files
+.idea/
+.vscode/
